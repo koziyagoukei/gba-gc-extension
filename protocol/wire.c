@@ -32,7 +32,7 @@ static uint32_t frame_crc(const uint32_t *words, unsigned bytes) {
 }
 
 unsigned wire_encode(const Frame *f, uint32_t w[WIRE_WORDS]) {
-    if (f->len > WIRE_PAYLOAD || f->type < HELLO || f->type > BULK_END) return 0;
+    if (f->len > WIRE_PAYLOAD || f->type < HELLO || f->type > WIRE_TYPE_LAST) return 0;
     w[0] = WIRE_MAGIC;
     w[1] = (uint32_t)f->len<<16 | (uint32_t)f->type<<8 | WIRE_VERSION;
     w[2] = f->seq;
@@ -48,7 +48,7 @@ enum ParseResult wire_feed(Parser *p, uint32_t word, Frame *f) {
     if (p->count == 2) {
         const unsigned len = word >> 16;
         const unsigned type = (word >> 8) & 255;
-        if ((word & 255) != WIRE_VERSION || type < HELLO || type > BULK_END || len > WIRE_PAYLOAD) {
+        if ((word & 255) != WIRE_VERSION || type < HELLO || type > WIRE_TYPE_LAST || len > WIRE_PAYLOAD) {
             p->count = 0;
             return BAD_HEADER;
         }

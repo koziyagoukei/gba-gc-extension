@@ -12,7 +12,10 @@ extern "C" {
 #define WIRE_PAYLOAD 224
 #define WIRE_WORDS ((16 + WIRE_PAYLOAD) / 4)
 
-enum { HELLO = 1, ACK, NACK, PING, BULK_BEGIN, BULK_DATA, BULK_END };
+// Frame types. 1-7 are the Phase 1 PoC set; 8-12 are the generic message layer
+// (protocol/message.h). The frame format itself is unchanged (WIRE_VERSION 1).
+enum { HELLO = 1, ACK, NACK, PING, BULK_BEGIN, BULK_DATA, BULK_END,
+       CAPS, APP, ASSET_INFO, ASSET_CHUNK, BYE, WIRE_TYPE_LAST = BYE };
 typedef struct {
     uint32_t seq;
     uint16_t len;
