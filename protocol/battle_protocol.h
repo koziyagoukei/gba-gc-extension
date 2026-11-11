@@ -20,7 +20,7 @@ extern "C" {
 #define BATTLE_MODE_VERSION 1
 
 enum BattleFormat { BATTLE_FORMAT_SINGLE = 1, BATTLE_FORMAT_DOUBLE = 2, BATTLE_FORMAT_TRIPLE = 3, BATTLE_FORMAT_ROTATION = 4 };
-enum BattleType { BATTLE_TYPE_TRAINER = 1 };
+enum BattleKind { BTYPE_TRAINER = 1 };  // prefixed: games define BATTLE_TYPE_* flags
 enum BattleResultPolicy { RESULT_POLICY_DISPLAY_ONLY = 0, RESULT_POLICY_APPLY_HP_PP = 1 };
 
 // Rules: mechanics the request explicitly normalises away for this battle.
@@ -38,7 +38,10 @@ enum BattleResultPolicy { RESULT_POLICY_DISPLAY_ONLY = 0, RESULT_POLICY_APPLY_HP
 //   0 u16 power   2 u8 type   3 u8 category   4 u8 accuracy (0 = never misses)
 //   5 s8 priority 6 u8 target  7 u8 unsupported reasons (0 = supported)
 enum BattleCategory { BCAT_STATUS = 0, BCAT_PHYSICAL = 1, BCAT_SPECIAL = 2 };
-enum BattleTarget { BTARGET_OTHER = 0, BTARGET_SINGLE = 1 };
+// ALL_FOES = spread moves (both foes / foes and ally). In SINGLE there is one
+// foe and no ally, so they hit that foe at full power; other formats will need
+// spread damage and ally hits before accepting them.
+enum BattleTarget { BTARGET_OTHER = 0, BTARGET_SINGLE = 1, BTARGET_ALL_FOES = 2 };
 #define UNSUP_EFFECT      (1u << 0)  // not a plain damaging effect
 #define UNSUP_SECONDARY   (1u << 1)  // has additional effects
 #define UNSUP_PRIORITY    (1u << 2)

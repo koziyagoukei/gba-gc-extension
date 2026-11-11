@@ -25,7 +25,9 @@ const char *battle_init_error_name(int error) {
 
 bool battle_move_supported(const BattleRequest *r, const BattleMove *m) {
     return m->unsupported == 0 && (m->category == BCAT_PHYSICAL || m->category == BCAT_SPECIAL) &&
-           m->power > 0 && m->priority == 0 && m->target == BTARGET_SINGLE && m->type < r->type_count &&
+           m->power > 0 && m->priority == 0 &&
+           (m->target == BTARGET_SINGLE || (m->target == BTARGET_ALL_FOES && r->format == BATTLE_FORMAT_SINGLE)) &&
+           m->type < r->type_count &&
            m->accuracy <= 100;
 }
 

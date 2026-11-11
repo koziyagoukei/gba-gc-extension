@@ -35,7 +35,7 @@ static void set_move(BattleEntry *e, unsigned i, uint16_t id, BattleMove m, uint
 static void make_request(BattleRequest *r) {
     memset(r, 0, sizeof(*r));
     r->format = BATTLE_FORMAT_SINGLE;
-    r->battle_type = BATTLE_TYPE_TRAINER;
+    r->battle_type = BTYPE_TRAINER;
     r->player_count = r->opponent_count = r->active_per_side = 1;
     r->rules = RULE_IGNORE_ABILITIES | RULE_IGNORE_ITEMS | RULE_NO_GIMMICKS | RULE_NO_CRITICAL_HITS;
     r->trainer_id = 42;
@@ -106,6 +106,12 @@ static void test_core(void) {
     assert(battle_damage(&b, p, &p->moves[0], o, 85, &eff) == (19 * 85 / 100) * 3 / 2 * 2);
     assert(battle_damage(&b, o, &o->moves[0], p, 100, &eff) == 14 && eff == 2);
 
+    BattleMove spread = hit(40, T_WATER, BCAT_SPECIAL);
+    spread.target = BTARGET_ALL_FOES;
+    assert(battle_move_supported(&r, &spread));
+    r.format = BATTLE_FORMAT_DOUBLE;
+    assert(!battle_move_supported(&r, &spread));
+    r.format = BATTLE_FORMAT_SINGLE;
     Action bad = {ACT_MOVE, {0, 0}, 1, {{1, 0}}};
     assert(!battle_validate_action(&b, &bad));
     Action acts[2] = {{ACT_MOVE, {0, 0}, 0, {{1, 0}}}, {ACT_NONE, {1, 0}, 0, {{0, 0}}}};
