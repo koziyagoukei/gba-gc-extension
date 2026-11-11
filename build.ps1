@@ -22,7 +22,7 @@ try {
     Invoke-Tool devkitPPC/bin/powerpc-eabi-gcc ($ppc + @("-DPOC_AUTO=$Auto","-DPOC_FAULTS=$([int]$Faults.IsPresent)","-DPOC_INTERVAL=$Interval",'-std=c11','-Wl,--gc-sections,-Map,build/host.map','gamecube/main.c','gamecube/joybus.c','gamecube/raw_link.c','gamecube/session.c','gamecube/benchmark.c','gamecube/bulk.c','gamecube/sprite.c','protocol/wire.c',"-L$kit/libogc/lib/cube",'-logc','-lm','-o','build/host.elf'))
     Invoke-Tool tools/bin/elf2dol @('build/host.elf','build/host.dol')
     # Phase 2 companion host for pokeemerald-expansion GC Extension Mode.
-    $companion = @('gamecube/companion/main.c','gamecube/companion/party_view.c','gamecube/companion/host.c','gamecube/companion/cache.c','gamecube/companion/render.c','gamecube/joybus.c','gamecube/raw_link.c','gamecube/session.c','protocol/wire.c','protocol/message.c','protocol/pkmn_protocol.c')
+    $companion = @('gamecube/companion/main.c','gamecube/companion/party_view.c','gamecube/companion/host.c','gamecube/companion/cache.c','gamecube/companion/render.c','gamecube/companion/battle_view.c','gamecube/battle/battle_core.c','gamecube/joybus.c','gamecube/raw_link.c','gamecube/session.c','protocol/wire.c','protocol/message.c','protocol/pkmn_protocol.c','protocol/battle_protocol.c')
     Invoke-Tool devkitPPC/bin/powerpc-eabi-gcc ($ppc + @('-Igamecube',"-DCOMPANION_INTERVAL=$Interval",'-std=gnu11','-Wl,--gc-sections,-Map,build/companion.map') + $companion + @("-L$kit/libogc/lib/cube",'-logc','-lm','-o','build/companion.elf'))
     Invoke-Tool tools/bin/elf2dol @('build/companion.elf','build/companion.dol')
 } finally { Pop-Location }

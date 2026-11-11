@@ -3,8 +3,10 @@
 #include <ogc/lwp_watchdog.h>
 #include <stdio.h>
 #include <string.h>
+#include "battle_view.h"
 #include "cache.h"
 #include "host.h"
+#include "battle_protocol.h"
 #include "pkmn_protocol.h"
 #include "raw_link.h"
 #include "render.h"
@@ -12,8 +14,8 @@
 #define MAX_PARTY 6
 #define MAX_PLAN (MAX_PARTY * 9)
 
-enum ViewState { V_PROBE, V_SESSION, V_PARTY, V_ASSETS, V_ACTIVE, V_ENDED };
-static const char *const state_names[] = {"PROBE", "SESSION", "PARTY", "ASSETS", "ACTIVE", "ENDED"};
+enum ViewState { V_PROBE, V_SESSION, V_PARTY, V_ASSETS, V_ACTIVE, V_ENDED, V_BATTLE };
+static const char *const state_names[] = {"PROBE", "SESSION", "PARTY", "ASSETS", "ACTIVE", "ENDED", "BATTLE"};
 
 static struct {
     enum ViewState state;
@@ -129,6 +131,19 @@ static void step_session(void) {
         return;
     }
     ++v.sessions;
+    ModeInfo mode;
+    if (!host_mode(&v.link, &mode)) { lost("MODE"); return; }
+    if (mode.mode_id == GC_MODE_BATTLE && mode.app_id == APP_GC_BATTLE && mode.app_version == BATTLE_APP_VERSION) {
+        battle_view_begin(&v.link, &mode);
+        set_state(V_BATTLE, "Battle");
+        return;
+    }
+    if (mode.mode_id != GC_MODE_PARTY_VIEW) {
+        SYS_Report("PH3 MODE %u not supported by this host\n", mode.mode_id);
+        host_bye(&v.link, BYE_HOST_EXIT);
+        set_state(V_ENDED, "Unsupported mode");
+        return;
+    }
     if (!app(PKMN_PARTY_INFO, NULL, 0, &d, &n) || !party_ui_decode(d, n, true, &v.ui)) { lost("PARTY_INFO"); return; }
     if (v.ui.record_version != PKMN_RECORD_VERSION || v.ui.record_length != PKMN_RECORD_BYTES) {
         set_state(V_ENDED, "Unsupported record version");
@@ -253,7 +268,7 @@ void party_view_init(void) {
 }
 
 void party_view_update(bool start_pressed, bool a_pressed, bool z_pressed) {
-    if (z_pressed && v.state == V_ACTIVE) {
+    if (z_pressed && (v.state == V_ACTIVE || v.state == V_BATTLE)) {
         // Test hook: stop talking to the GBA for 3 s (> its 2 s silence timeout).
         v.silent_until = gettime() + secs_to_ticks(3);
         SYS_Report("PH2 TEST host silent for 3 s\n");
@@ -275,6 +290,15 @@ void party_view_update(bool start_pressed, bool a_pressed, bool z_pressed) {
         break;
     }
     case V_SESSION: step_session(); break;
+    case V_BATTLE: {
+        const char *message = NULL;
+        switch (battle_view_update(start_pressed, &message)) {
+        case BV_RUNNING: break;
+        case BV_ENDED: set_state(V_ENDED, message); break;
+        case BV_LOST: lost("BATTLE"); break;
+        }
+        break;
+    }
     case V_PARTY: step_party(); break;
     case V_ASSETS: step_assets(); break;
     case V_ACTIVE: step_active(start_pressed); break;
@@ -379,6 +403,7 @@ static void draw_party(void) {
 }
 
 void party_view_draw(void) {
+    if (v.state == V_BATTLE) { battle_view_draw(); return; }
     render_begin();
     render_rect(0, 0, 640, 44, RGBA(22, 28, 48, 255));
     render_text(16, 10, 1.5f, WHITE, "GBA-GC EXTENSION");

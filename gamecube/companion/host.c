@@ -10,13 +10,14 @@ bool host_open(HostLink *link) {
     Frame request = {.type = HELLO};
     memset(link, 0, sizeof(*link));
     if (!session_request(&link->session, &request, &reply, NO_FAULT) || reply.len != 0) return false;
-    const Caps caps = {MSG_PROTOCOL_VERSION, PEER_GC_HOST, HOST_BUILD_ID, CAP_APP | CAP_ASSETS | CAP_BYE,
+    const Caps caps = {MSG_PROTOCOL_VERSION, PEER_GC_HOST, HOST_BUILD_ID,
+                       CAP_APP | CAP_ASSETS | CAP_BYE | CAP_MODE | CAP_RESULT,
                        WIRE_PAYLOAD, APP_POKEMON, PKMN_APP_VERSION, {'G', 'C', 'X', 'H'}};
     request.type = CAPS;
     request.len = (uint16_t)caps_encode(&caps, request.payload);
     // A Phase 1 PoC client NACKs CAPS; session_request then fails after retries.
     if (!session_request(&link->session, &request, &reply, NO_FAULT)) return false;
-    if (!caps_decode(reply.payload, reply.len, &link->client) || link->client.version < MSG_PROTOCOL_VERSION)
+    if (!caps_decode(reply.payload, reply.len, &link->client) || link->client.version < MSG_PROTOCOL_MIN_VERSION)
         return false;
     SYS_Report("PH2 CAPS peer=%u build=%08x caps=%x app=%04x v%u max=%u tag=%.4s\n", link->client.peer_type,
                link->client.build_id, link->client.caps, link->client.app_id, link->client.app_version,
@@ -26,9 +27,14 @@ bool host_open(HostLink *link) {
 
 bool host_app(HostLink *link, uint16_t opcode, const uint8_t *args, unsigned length,
               const uint8_t **data, unsigned *data_length, uint16_t *status) {
+    return host_app_to(link, link->client.app_id, opcode, args, length, data, data_length, status);
+}
+
+bool host_app_to(HostLink *link, uint16_t app_id, uint16_t opcode, const uint8_t *args, unsigned length,
+                 const uint8_t **data, unsigned *data_length, uint16_t *status) {
     Frame request = {.type = APP};
     if (length > WIRE_PAYLOAD - APP_REQUEST_HEADER) return false;
-    msg_put16(request.payload, link->client.app_id);
+    msg_put16(request.payload, app_id);
     msg_put16(request.payload + 2, opcode);
     memcpy(request.payload + APP_REQUEST_HEADER, args, length);
     request.len = (uint16_t)(APP_REQUEST_HEADER + length);
@@ -38,6 +44,33 @@ bool host_app(HostLink *link, uint16_t opcode, const uint8_t *args, unsigned len
     *status = msg_get16(reply.payload + 4);
     if (data) *data = reply.payload + APP_REPLY_HEADER;
     if (data_length) *data_length = reply.len - APP_REPLY_HEADER;
+    return true;
+}
+
+bool host_mode(HostLink *link, ModeInfo *mode) {
+    Frame request = {.type = MODE};
+    if (!(link->client.caps & CAP_MODE)) {
+        *mode = (ModeInfo){.mode_id = GC_MODE_PARTY_VIEW, .mode_version = 1};
+        return true;
+    }
+    if (!session_request(&link->session, &request, &reply, NO_FAULT) || !mode_info_decode(reply.payload, reply.len, mode))
+        return false;
+    SYS_Report("PH3 MODE id=%u v%u app=%04x v%u request=%u crc=%08x nonce=%08x\n", mode->mode_id, mode->mode_version,
+               mode->app_id, mode->app_version, mode->request_length, mode->request_crc, mode->nonce);
+    return true;
+}
+
+bool host_result(HostLink *link, uint16_t mode_id, uint16_t version, uint32_t result_id,
+                 const uint8_t *payload, unsigned length, uint16_t *status) {
+    Frame request = {.type = RESULT};
+    if (!(link->client.caps & CAP_RESULT) || length > RESULT_MAX_PAYLOAD) return false;
+    msg_put16(request.payload, mode_id);
+    msg_put16(request.payload + 2, version);
+    wire_put32(request.payload + 4, result_id);
+    memcpy(request.payload + RESULT_HEADER_BYTES, payload, length);
+    request.len = (uint16_t)(RESULT_HEADER_BYTES + length);
+    if (!session_request(&link->session, &request, &reply, NO_FAULT) || reply.len < 2) return false;
+    *status = msg_get16(reply.payload);
     return true;
 }
 

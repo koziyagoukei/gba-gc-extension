@@ -18,6 +18,14 @@ bool host_open(HostLink *link);  // after the raw JoyBus handshake
 bool host_app(HostLink *link, uint16_t opcode, const uint8_t *args, unsigned length,
               const uint8_t **data, unsigned *data_length, uint16_t *status);
 bool host_bye(HostLink *link, uint16_t reason);
+// MODE (message layer v3). Clients without CAP_MODE run GC_MODE_PARTY_VIEW.
+bool host_mode(HostLink *link, ModeInfo *mode);
+// Sends a RESULT for the current mode; *status receives the client's ResultStatus.
+bool host_result(HostLink *link, uint16_t mode_id, uint16_t version, uint32_t result_id,
+                 const uint8_t *payload, unsigned length, uint16_t *status);
+// APP request to a specific app id (the mode app).
+bool host_app_to(HostLink *link, uint16_t app_id, uint16_t opcode, const uint8_t *args, unsigned length,
+                 const uint8_t **data, unsigned *data_length, uint16_t *status);
 
 enum FetchResult { FETCH_PENDING, FETCH_DONE, FETCH_MISSING, FETCH_FAILED };
 typedef struct {

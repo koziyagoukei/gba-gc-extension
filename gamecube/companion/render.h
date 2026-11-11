@@ -18,6 +18,8 @@ void render_rect(float x, float y, float w, float h, uint32_t rgba);
 void render_text(float x, float y, float scale, uint32_t rgba, const char *fmt, ...)
     __attribute__((format(printf, 5, 6)));
 void render_texture(GXTexObj *texture, float x, float y, float w, float h, uint32_t rgba);
+// Same, mirrored horizontally (e.g. the player's battler, which only has a front sprite).
+void render_texture_mirrored(GXTexObj *texture, float x, float y, float w, float h, uint32_t rgba);
 // Call after new texture data was written (flushes the texture cache once).
 void render_textures_changed(void);
 

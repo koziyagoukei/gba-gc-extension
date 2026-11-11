@@ -149,6 +149,11 @@ void render_texture(GXTexObj *texture, float x, float y, float w, float h, uint3
     quad(x, y, w, h, rgba, 0, 0, 1, 1);
 }
 
+void render_texture_mirrored(GXTexObj *texture, float x, float y, float w, float h, uint32_t rgba) {
+    GX_LoadTexObj(texture, GX_TEXMAP0);
+    quad(x, y, w, h, rgba, 1, 0, 0, 1);
+}
+
 void render_text(float x, float y, float scale, uint32_t rgba, const char *fmt, ...) {
     char text[160];
     va_list args;
