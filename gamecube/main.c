@@ -4,6 +4,7 @@
 #include "joybus.h"
 #include "round_trip.h"
 #include "benchmark.h"
+#include "bulk.h"
 
 static bool read_marker(uint32_t marker) {
     const uint64_t deadline = gettime() + millisecs_to_ticks(350);
@@ -53,6 +54,7 @@ int main(void) {
     bool connected = false;
     bool tested = false;
     bool ran_benchmark = false;
+    bool ran_bulk = false;
     Session session = {0};
     uint64_t check_at = 0;
     for (;;) {
@@ -72,6 +74,10 @@ int main(void) {
                 if (connected && POC_AUTO == 2 && !ran_benchmark) {
                     ran_benchmark = true;
                     connected = reliability_test(&session, POC_INTERVAL, POC_FAULTS != 0);
+                }
+                if (connected && POC_AUTO == 3 && !ran_bulk) {
+                    ran_bulk = true;
+                    connected = bulk_test(&session, POC_INTERVAL);
                 }
                 check_at = gettime() + millisecs_to_ticks(250);
             }
