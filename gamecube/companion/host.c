@@ -9,6 +9,7 @@ static Frame reply;
 bool host_open(HostLink *link) {
     Frame request = {.type = HELLO};
     memset(link, 0, sizeof(*link));
+    link->session.timeout_ms = HOST_REPLY_TIMEOUT_MS;
     if (!session_request(&link->session, &request, &reply, NO_FAULT) || reply.len != 0) return false;
     const Caps caps = {MSG_PROTOCOL_VERSION, PEER_GC_HOST, HOST_BUILD_ID,
                        CAP_APP | CAP_ASSETS | CAP_BYE | CAP_MODE | CAP_RESULT,

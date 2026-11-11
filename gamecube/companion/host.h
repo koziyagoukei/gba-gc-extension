@@ -8,6 +8,8 @@
 
 #define HOST_BUILD_ID 0x48320001u  // "H2" companion host, revision 1
 #define ASSET_STAGING_BYTES 8192u
+// The game answers once per GBA frame; allow for an occasional long frame.
+#define HOST_REPLY_TIMEOUT_MS 500u
 
 typedef struct {
     Session session;
