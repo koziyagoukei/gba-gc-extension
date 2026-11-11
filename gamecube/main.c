@@ -5,6 +5,7 @@
 #include "round_trip.h"
 #include "benchmark.h"
 #include "bulk.h"
+#include "sprite.h"
 
 static bool read_marker(uint32_t marker) {
     const uint64_t deadline = gettime() + millisecs_to_ticks(350);
@@ -55,6 +56,8 @@ int main(void) {
     bool tested = false;
     bool ran_benchmark = false;
     bool ran_bulk = false;
+    static uint8_t asset[SPRITE_BYTES];
+    void *sprite_fb = POC_AUTO == 4 ? MEM_K0_TO_K1(SYS_AllocateFramebuffer(mode)) : NULL;
     Session session = {0};
     uint64_t check_at = 0;
     for (;;) {
@@ -71,13 +74,17 @@ int main(void) {
                     SYS_Report("POC1 RESET/DISCONNECT/RECONNECT %s\n", tested ? "PASS" : "FAIL");
                 }
                 if (connected) connected = open_session(&session);
-                if (connected && POC_AUTO == 2 && !ran_benchmark) {
+                if (connected && (POC_AUTO == 2 || POC_AUTO == 4) && !ran_benchmark) {
                     ran_benchmark = true;
                     connected = reliability_test(&session, POC_INTERVAL, POC_FAULTS != 0);
                 }
-                if (connected && POC_AUTO == 3 && !ran_bulk) {
+                if (connected && (POC_AUTO == 3 || POC_AUTO == 4) && !ran_bulk) {
                     ran_bulk = true;
                     connected = bulk_test(&session, POC_INTERVAL);
+                    if (connected && POC_AUTO == 4) {
+                        connected = fetch_sprite(&session, POC_INTERVAL, asset) && draw_sprite(mode, sprite_fb, asset);
+                        if (!connected) SYS_Report("POC4 FAIL\n");
+                    }
                 }
                 check_at = gettime() + millisecs_to_ticks(250);
             }

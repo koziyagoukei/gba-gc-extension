@@ -5,11 +5,12 @@
 #include "round_trip.h"
 #include "wire.h"
 #include "bulk.h"
+#include "test_sprite.hpp"
 
 namespace {
 Parser parser{};
 Frame previous{}, cached{};
-uint32_t bulk_size, bulk_offset, bulk_crc;
+uint32_t bulk_size, bulk_offset, bulk_crc, bulk_kind;
 uint32_t resets, overflows, crc_errors, duplicates;
 bool connected;
 unsigned last_activity;
@@ -33,9 +34,12 @@ void nack(uint32_t seq) {
 bool handle_bulk(const Frame &request, Frame &reply) {
     switch (request.type) {
     case BULK_BEGIN:
-        if (request.len != 4 || bulk_size) return false;
+        if (request.len != 8 || bulk_size) return false;
         bulk_size = wire_get32(request.payload);
-        if (bulk_size != 1024 && bulk_size != 4096 && bulk_size != 16384 && bulk_size != 65536) {
+        bulk_kind = wire_get32(request.payload+4);
+        if (!((bulk_kind == BULK_SPRITE && bulk_size == SPRITE_BYTES) ||
+              (bulk_kind == BULK_PATTERN &&
+               (bulk_size == 1024 || bulk_size == 4096 || bulk_size == 16384 || bulk_size == 65536)))) {
             bulk_size = 0;
             return false;
         }
@@ -47,7 +51,8 @@ bool handle_bulk(const Frame &request, Frame &reply) {
         const uint32_t length = wire_get32(request.payload+4);
         if (!length || length > WIRE_PAYLOAD || length > bulk_size - bulk_offset) return false;
         reply.len = (uint16_t)length;
-        for (unsigned i=0; i<length; ++i) reply.payload[i] = bulk_pattern(bulk_offset+i);
+        for (unsigned i=0; i<length; ++i) reply.payload[i] = bulk_kind == BULK_SPRITE ?
+            sprite_byte(bulk_offset+i) : bulk_pattern(bulk_offset+i);
         bulk_offset += length;
         bulk_crc = wire_crc(bulk_crc, reply.payload, length);
         return true;
