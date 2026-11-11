@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include "joybus.h"
 #include "round_trip.h"
-#include "session.h"
+#include "benchmark.h"
 
 static bool read_marker(uint32_t marker) {
     const uint64_t deadline = gettime() + millisecs_to_ticks(350);
@@ -25,13 +25,6 @@ static bool round_trip(void) {
     if (!joy_write(RAW_ACK) || !read_marker(RAW_CONFIRM)) return false;
     SYS_Report("POC1 PASS %08x %08x %08x\n", words[0], words[1], words[2]);
     return true;
-}
-
-static bool ping(Session *session, uint32_t pattern, Frame *reply, enum Fault fault) {
-    Frame req = {.len=4, .type=PING};
-    wire_put32(req.payload, pattern);
-    return session_request(session, &req, reply, fault) && reply->len == 20 &&
-           wire_get32(reply->payload) == pattern;
 }
 
 static bool open_session(Session *session) {
@@ -59,6 +52,7 @@ int main(void) {
     SYS_Report("JoyBus PoC boot\n");
     bool connected = false;
     bool tested = false;
+    bool ran_benchmark = false;
     Session session = {0};
     uint64_t check_at = 0;
     for (;;) {
@@ -75,6 +69,10 @@ int main(void) {
                     SYS_Report("POC1 RESET/DISCONNECT/RECONNECT %s\n", tested ? "PASS" : "FAIL");
                 }
                 if (connected) connected = open_session(&session);
+                if (connected && POC_AUTO == 2 && !ran_benchmark) {
+                    ran_benchmark = true;
+                    connected = reliability_test(&session, POC_INTERVAL, POC_FAULTS != 0);
+                }
                 check_at = gettime() + millisecs_to_ticks(250);
             }
             else for (unsigned i = 0; i < 20; ++i) VIDEO_WaitVSync();
