@@ -9,6 +9,7 @@
 #include "battle_protocol.h"
 #include "pkmn_protocol.h"
 #include "raw_link.h"
+#include "../joybus.h"
 #include "render.h"
 
 #define MAX_PARTY 6
@@ -47,9 +48,10 @@ static void set_state(enum ViewState state, const char *message) {
 }
 
 static void lost(const char *why) {
-    SYS_Report("PH2 LINK LOST during %s (%s) seq=%u retries=%u timeouts=%u nacks=%u\n", state_names[v.state], why,
+    SYS_Report("PH2 LINK LOST during %s (%s) seq=%u retries=%u timeouts=%u nacks=%u bad_headers=%u crc=%u si_errors=%u last=%s\n", state_names[v.state], why,
                v.link.session.seq, v.link.session.stats.retries, v.link.session.stats.timeouts,
-               v.link.session.stats.nacks);
+               v.link.session.stats.nacks, v.link.session.stats.bad_headers, v.link.session.stats.crc_errors,
+               joy_errors(), session_last_failure());
     v.fetching = false;
     v.probe_wait = 0;
     set_state(V_PROBE, "Link lost - reconnecting");

@@ -5,11 +5,12 @@
 #include <string.h>
 #include "../battle/battle_core.h"
 #include "battle_protocol.h"
+#include "../joybus.h"
 #include "cache.h"
 #include "render.h"
 
 #define EVENT_FRAMES 45
-#define KEEPALIVE_FRAMES 20
+#define KEEPALIVE_FRAMES 1
 #define MAX_PLAN 24
 
 enum BState { B_REQUEST, B_ASSETS, B_START, B_CHOOSE, B_PLAY, B_RESULT, B_WAIT_EXIT };
@@ -33,6 +34,7 @@ static struct {
     uint64_t started, turn_started;
     uint32_t request_us, assets_us, asset_bytes;
     const char *status;
+    bool digest_logged;
 } b;
 static AssetFetch fetch;
 
@@ -55,6 +57,19 @@ static bool set_phase(uint8_t phase, unsigned done, unsigned total) {
 }
 
 static Battler *battler(uint8_t side) { return battle_active(&b.battle, side); }
+
+static bool log_digest(const char *when) {
+    const uint8_t *d;
+    unsigned n;
+    uint16_t status;
+    if (!host_app_to(b.link, APP_POKEMON, PKMN_STATE_DIGEST, NULL, 0, &d, &n, &status) || status != APP_OK ||
+        n < STATE_DIGEST_BYTES)
+        return false;
+    SYS_Report("PH3 DIGEST %s party=%08x bag=%08x flags=%08x vars=%08x sb1=%08x match=%02x%s\n", when,
+               wire_get32(d), wire_get32(d + 4), wire_get32(d + 8), wire_get32(d + 12), wire_get32(d + 16), d[20],
+               d[20] == STATE_DIGEST_ALL_MATCH ? " UNCHANGED" : " CHANGED");
+    return true;
+}
 
 static bool send_state(uint8_t phase) {
     BattleState s = {0};
@@ -79,8 +94,16 @@ static bool poll_action(BattleAction *a) {
     const uint8_t *d;
     unsigned n;
     uint16_t status;
-    return host_app_to(b.link, b.mode.app_id, BATTLE_OP_ACTION, NULL, 0, &d, &n, &status) && status == APP_OK &&
-           battle_action_decode(d, n, a);
+    if (!host_app_to(b.link, b.mode.app_id, BATTLE_OP_ACTION, NULL, 0, &d, &n, &status)) {
+        SYS_Report("PH3 ACTION poll: request failed (seq=%u si=%u)\n", b.link->session.seq, joy_errors());
+        return false;
+    }
+    if (status != APP_OK || !battle_action_decode(d, n, a)) {
+        SYS_Report("PH3 ACTION poll: status=%u length=%u bytes=%02x %02x %02x %02x\n", status, n, n > 0 ? d[0] : 0,
+                   n > 1 ? d[1] : 0, n > 2 ? d[2] : 0, n > 3 ? d[3] : 0);
+        return false;
+    }
+    return true;
 }
 
 static AssetKey label(uint32_t kind, uint32_t value) { return (AssetKey){ASSET_TEXT_LABEL, LABEL_ID(kind, value), 0, 0}; }
@@ -211,7 +234,10 @@ static BattleViewStatus step_play(void) {
     if (++b.keepalive >= KEEPALIVE_FRAMES) {  // the GBA times out after 2 s of silence
         BattleAction a;
         b.keepalive = 0;
-        if (!poll_action(&a)) return BV_LOST;
+        if (!poll_action(&a)) {
+            SYS_Report("PH3 keepalive failed in PLAY event=%u/%u\n", b.event_index, b.log.count);
+            return BV_LOST;
+        }
     }
     if (b.event_index < b.log.count) {
         const BattleEvent *e = &b.log.events[b.event_index];
@@ -245,6 +271,10 @@ BattleViewStatus battle_view_update(bool start_pressed, const char **message) {
     }
     switch (b.state) {
     case B_REQUEST:
+        if (!b.digest_logged) {
+            if (!log_digest("start")) return BV_LOST;
+            b.digest_logged = true;
+        }
         switch (fetch_step(b.link, &fetch)) {
         case FETCH_PENDING: return BV_RUNNING;
         case FETCH_DONE: break;
@@ -315,6 +345,7 @@ BattleViewStatus battle_view_update(bool start_pressed, const char **message) {
         BattleAction a;
         if (!poll_action(&a)) return BV_LOST;
         if (a.flags & BACTION_FLAG_EXIT) {
+            log_digest("end");
             *message = host_bye(b.link, BYE_CLIENT_EXIT) ? "Battle finished" : "Battle finished (BYE lost)";
             SYS_Report("PH3 BYE after battle\n");
             return BV_ENDED;
