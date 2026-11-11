@@ -42,7 +42,14 @@ bool joy_status(void) { return transfer(0x00, 0, 1, 3) && rx[1] == 4; }
 bool joy_reset(void) { return transfer(0xff, 0, 1, 3) && rx[1] == 4; }
 
 bool joy_read(uint32_t *word) {
-    if (!transfer(0x14, 0, 1, 5)) return false;
+    // A READ without JOYSTAT.TRANS returns the previous register contents.
+    // The command also gives the slave an IRQ to refill the register.
+    const uint64_t deadline = gettime() + millisecs_to_ticks(30);
+    do {
+        if (!transfer(0x14, 0, 1, 5)) return false;
+        if (rx[4] & 8u) break;
+    } while (gettime() < deadline);
+    if (!(rx[4] & 8u)) { ++errors; return false; }
     *word = 0;
     for (unsigned i = 0; i < 4; ++i) *word |= (uint32_t)rx[i] << (8*i);
     return true;
