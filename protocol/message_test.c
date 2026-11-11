@@ -9,7 +9,7 @@ static void test_caps(void) {
     uint8_t bytes[CAPS_BYTES];
     Caps out;
     assert(caps_encode(&in, bytes) == CAPS_BYTES);
-    assert(bytes[0] == 2 && bytes[1] == 0 && bytes[2] == 2 && bytes[4] == 0xef && bytes[7] == 0x89);
+    assert(bytes[0] == MSG_PROTOCOL_VERSION && bytes[1] == 0 && bytes[2] == 2 && bytes[4] == 0xef && bytes[7] == 0x89);
     assert(!caps_decode(bytes, CAPS_BYTES - 1, &out));
     assert(caps_decode(bytes, CAPS_BYTES, &out));
     assert(memcmp(&in.tag, &out.tag, 4) == 0 && out.build_id == in.build_id && out.caps == in.caps &&
@@ -85,6 +85,17 @@ static void test_ui(void) {
            out.screen == SCREEN_PARTY && out.flags == UI_EXIT_REQUESTED);
 }
 
+static void test_mode_info(void) {
+    const ModeInfo in = {GC_MODE_BATTLE, 1, 0x4247, 1, 777, 0xcafef00du, 0x01020304u, 0};
+    uint8_t bytes[MODE_INFO_BYTES];
+    ModeInfo out;
+    assert(mode_info_encode(&in, bytes) == MODE_INFO_BYTES);
+    assert(!mode_info_decode(bytes, MODE_INFO_BYTES - 1, &out));
+    assert(mode_info_decode(bytes, MODE_INFO_BYTES, &out));
+    assert(out.mode_id == GC_MODE_BATTLE && out.app_id == 0x4247 && out.request_length == 777 &&
+           out.request_crc == in.request_crc && out.nonce == in.nonce);
+}
+
 static void test_new_frame_types(void) {
     Frame in = {.seq = 9, .len = 4, .type = BYE}, out;
     Parser parser = {0};
@@ -94,6 +105,8 @@ static void test_new_frame_types(void) {
     for (unsigned i = 0; i < n; ++i)
         assert(wire_feed(&parser, words[i], &out) == (i+1 == n ? FRAME_OK : INCOMPLETE));
     assert(out.type == BYE);
+    in.type = RESULT;
+    assert(wire_encode(&in, words) == 5);
     in.type = WIRE_TYPE_LAST + 1;
     assert(wire_encode(&in, words) == 0);
 }
@@ -103,6 +116,7 @@ int main(void) {
     test_asset_info();
     test_record();
     test_ui();
+    test_mode_info();
     test_new_frame_types();
     return 0;
 }
