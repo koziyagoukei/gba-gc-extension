@@ -6,7 +6,7 @@
 *.iso
 *.gcm
 *.bios
-bios*.bin
+*bios*.bin
 *.sav
 *.srm
 *.ss?
@@ -15,3 +15,6 @@ bios*.bin
 *.log
 *.7z
 .DS_Store
+*.exe
+*.dll
+*.zip
