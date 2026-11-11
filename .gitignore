@@ -1,0 +1,17 @@
+/build/
+/.dolphin/
+*.gba
+*.dol
+*.elf
+*.iso
+*.gcm
+*.bios
+bios*.bin
+*.sav
+*.srm
+*.ss?
+*.o
+*.map
+*.log
+*.7z
+.DS_Store
