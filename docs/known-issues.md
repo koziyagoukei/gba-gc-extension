@@ -17,3 +17,14 @@
 - The cache is RAM only and is lost when `companion.dol` restarts. It is bounded at 1 MiB / 128 entries and does no eviction; a full cache logs `CACHE FULL`.
 - The entry point is the debug menu only (Utilities > GC Extension Mode), which exists in non-release builds.
 - The raw SaveBlock1 CRC differs between two visits because the game re-keys encryption on map load. Party, bag (decrypted), flags and vars are compared across visits.
+
+## Phase 3
+
+- In Dolphin, the first SI write after a pause of several frames with no JoyBus traffic can fail. Hosts must keep traffic continuous (the battle and party views poll every frame).
+- The battle core is SINGLE with one Pokémon per side.
+  - **Moves:** only plain damaging moves without additional effects, at priority 0, are supported. Everything else is marked unsupported and cannot be chosen.
+  - **Not simulated:** abilities, items, status, crits and gimmicks are normalised away by request rules. There is no switching and no Struggle.
+- A reconnect in the middle of a battle restarts it from the request. Only the final result of a battle id is ever applied.
+- The frontier test picks the first able party member with a supported move, not a player-chosen one.
+- Party digests are compared within one mode visit. Walking in the field legitimately changes party bytes (step counters), so digests from different visits or boots differ.
+- On the TV, the ENDED screen after a battle falls back to the last party-view drawing.
