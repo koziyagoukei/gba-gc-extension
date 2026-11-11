@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include "joybus.h"
 #include "round_trip.h"
+#include "session.h"
 
 static bool read_marker(uint32_t marker) {
     const uint64_t deadline = gettime() + millisecs_to_ticks(350);
@@ -26,6 +27,22 @@ static bool round_trip(void) {
     return true;
 }
 
+static bool ping(Session *session, uint32_t pattern, Frame *reply, enum Fault fault) {
+    Frame req = {.len=4, .type=PING};
+    wire_put32(req.payload, pattern);
+    return session_request(session, &req, reply, fault) && reply->len == 20 &&
+           wire_get32(reply->payload) == pattern;
+}
+
+static bool open_session(Session *session) {
+    Frame hello = {.type=HELLO}, reply;
+    *session = (Session){0};
+    if (!session_request(session, &hello, &reply, NO_FAULT) || reply.len != 0) return false;
+    if (!ping(session, RAW_PATTERN, &reply, NO_FAULT)) return false;
+    SYS_Report("POC2 HELLO/PING PASS\n");
+    return true;
+}
+
 int main(void) {
     VIDEO_Init();
     GXRModeObj *mode = VIDEO_GetPreferredMode(NULL);
@@ -42,6 +59,7 @@ int main(void) {
     SYS_Report("JoyBus PoC boot\n");
     bool connected = false;
     bool tested = false;
+    Session session = {0};
     uint64_t check_at = 0;
     for (;;) {
         if (!connected) {
@@ -56,12 +74,14 @@ int main(void) {
                     tested = disconnected && connected;
                     SYS_Report("POC1 RESET/DISCONNECT/RECONNECT %s\n", tested ? "PASS" : "FAIL");
                 }
+                if (connected) connected = open_session(&session);
                 check_at = gettime() + millisecs_to_ticks(250);
             }
             else for (unsigned i = 0; i < 20; ++i) VIDEO_WaitVSync();
         }
         if (connected && gettime() >= check_at) {
-            connected = joy_status();
+            Frame reply;
+            connected = ping(&session, 0, &reply, NO_FAULT);
             if (!connected) puts("Link lost - retrying");
             check_at = gettime() + millisecs_to_ticks(250);
         }
