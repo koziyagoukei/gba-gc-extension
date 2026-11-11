@@ -2,29 +2,16 @@
 #include <ogc/lwp_watchdog.h>
 #include <stdio.h>
 #include "joybus.h"
+#include "raw_link.h"
 #include "round_trip.h"
 #include "benchmark.h"
 #include "bulk.h"
 #include "sprite.h"
 
-static bool read_marker(uint32_t marker) {
-    const uint64_t deadline = gettime() + millisecs_to_ticks(350);
-    do {
-        uint32_t word;
-        if (!joy_read(&word)) return false;
-        if (word == marker) return true;
-    } while (gettime() < deadline);
-    return false;
-}
-
 static bool round_trip(void) {
     uint32_t words[3];
-    if (!joy_reset() || !joy_write(RAW_PROBE) || !read_marker(RAW_VALUES)) return false;
-    for (unsigned i = 0; i < 3; ++i)
-        if (!joy_read(&words[i])) return false;
-    if (words[0] != 0 || words[1] != UINT32_MAX || words[2] != RAW_PATTERN) return false;
+    if (!raw_round_trip(words)) return false;
     printf("GBA: %08x %08x %08x\n", words[0], words[1], words[2]);
-    if (!joy_write(RAW_ACK) || !read_marker(RAW_CONFIRM)) return false;
     SYS_Report("POC1 PASS %08x %08x %08x\n", words[0], words[1], words[2]);
     return true;
 }
