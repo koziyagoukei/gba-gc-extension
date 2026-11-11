@@ -25,3 +25,7 @@ The GC assigns contiguous sequences beginning with 1 (HELLO). Replies echo the r
 | 7 | BULK_END | Empty request; ACK carries u32 CRC-32 of the complete object |
 
 The sprite object contains 2,048 bytes of 8×8 tiled 4bpp indices, followed by a 32-byte BGR555 palette. Even x uses the low nibble. Index zero is transparent. The bulk test pattern is `((offset*29) ^ (offset>>8) ^ 0xa5) & 255`.
+
+## Message layer (version 2) and Pokémon application
+
+Frame types 8–12 (CAPS, APP, ASSET_INFO, ASSET_CHUNK, BYE) use the same frame format. A client that does not know them NACKs them, as the Phase 1 client does. The layouts, the Pokémon APP opcodes and the 100-byte PokemonRecordV1 are in [Phase 2](phase2.md). The C definitions are in `protocol/message.h` and `protocol/pkmn_protocol.h`, with tests in `protocol/message_test.c`.

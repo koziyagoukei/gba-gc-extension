@@ -1,21 +1,32 @@
 # GBA–GameCube Extension
 
-Experimental framework for local GBA ↔ GameCube communication over standard JoyBus. It runs independently of pokeemerald-expansion.
+Experimental framework for local GBA ↔ GameCube communication over standard JoyBus. The GBA owns game data and acts as controller and second screen. The GameCube runs special modes and renders.
 
-The PoC exchanges 32-bit values, tests framed request/response reliability over 10,000 requests, streams test data up to 64 KiB, and renders an original sprite received from the GBA. The reference test environment is Dolphin 2609b with integrated mGBA on port 2. Real GBA/GC hardware is a future validation target.
+**Primary target:** Dolphin + Integrated GBA (reference: Dolphin 2609b, GBA on GC port 2).
+**Real hardware support:** Not currently a project requirement. GBA/GC hardware, DOL-011 or third-party cables, multiboot and real link timing are not validated.
 
-Requires PowerShell 7 and devkitPro (devkitARM + libgba, devkitPPC + libogc, gbafix and elf2dol).
+- **Phase 1 (PoC):** exchanges 32-bit values, runs framed request/response reliability over 10,000 requests, and streams test data up to 64 KiB. It also renders an original sprite received from the GBA.
+- **Phase 2:** connects a real pokeemerald-expansion ROM. In-game *GC Extension Mode* sends the player's party (versioned records), real ROM front sprites and game-font name labels to the GameCube. The TV follows the party slot selected on the GBA. See [Phase 2](docs/phase2.md).
+
+Requires Windows PowerShell 5.1 or PowerShell 7, and devkitPro (devkitARM + libgba, devkitPPC + libogc, gbafix and elf2dol).
 
 ```powershell
 ./build.ps1
 ```
 
-Use `build/client.gba` for the GBA and `build/host.dol` for the GameCube. [Build instructions](docs/build.md) · [Test procedure](docs/testing.md) · [Benchmarks](docs/benchmarks.md) · [Known issues](docs/known-issues.md).
+Outputs:
 
-- `gba/` — standalone GBA client and original test sprite.
-- `gamecube/` — SI transport, test runner and GX display.
-- `protocol/` — platform-independent serialization, CRC and fixture definitions.
+- `build/client.gba` + `build/host.dol`: Phase 1 suite.
+- `build/companion.dol`: Phase 2 host for a pokeemerald-expansion ROM in GC Extension Mode.
+
+[Build instructions](docs/build.md) · [Test procedure](docs/testing.md) · [Protocol](docs/protocol.md) · [Phase 2](docs/phase2.md) · [Benchmarks](docs/benchmarks.md) · [Known issues](docs/known-issues.md).
+
+- `gba/` — standalone Phase 1 GBA client and original test sprite.
+- `gamecube/` — SI transport, raw handshake, session, Phase 1 test runner and GX display.
+- `gamecube/companion/` — Phase 2 host: message-layer client, asset RAM cache, GX party view.
+- `protocol/` — platform-independent frames, generic messages (CAPS/APP/ASSET/BYE) and the Pokémon application protocol.
+- `tools/sync-pokeemerald.ps1` — vendors `protocol/` into a pokeemerald-expansion checkout (`-Check` verifies).
 - `third_party/` — pinned MIT LinkCube dependency.
 - `docs/` — architecture, protocol, testing and results.
 
-Only original test content and licensed dependencies belong in this repository. Supply any required BIOS privately. ROMs, BIOS, official Nintendo/Pokémon assets, emulator packages and generated executables are excluded. No save integration, battle engine, online transport or matchmaking is implemented.
+Only original code, original test content and licensed dependencies belong in this repository. Supply any required BIOS privately. ROMs, saves, BIOS, official Nintendo/Pokémon assets, emulator packages and generated executables are excluded. Pokémon graphics reach the GameCube only at run time from the user's own ROM. No battle engine, write-back, online transport or matchmaking is implemented.

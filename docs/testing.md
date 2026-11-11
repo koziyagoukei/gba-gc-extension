@@ -10,3 +10,26 @@
 Dolphin 2412 requires a valid GBA BIOS for this integrated path. In the tested 2609b build the ROM booted without an external BIOS despite a BIOS-not-found log entry. Neither the BIOS nor the emulator is part of this repository.
 
 Log records use the emulated GC time base. The elapsed time displayed in a log timestamp or on a host stopwatch depends on emulation speed. Count a frame as delivered only after the expected reply passes CRC and content checks.
+
+## Phase 2: pokeemerald-expansion GC Extension Mode
+
+1. Build the ROM from the pokeemerald-expansion `gc-extension` branch and `build/companion.dol` here.
+2. In Dolphin, set port 2 to **GBA (Integrated)** with that ROM and a save that has a party. Copy your save into the profile's `GBA/Saves/<rom name>-2.sav`; the mode never writes it.
+3. Give GC pad 1 and the GBA different keyboard keys. Otherwise one key press reaches both devices. The reference test profile uses:
+   - GBA: A = X, B = Z, Start = Enter, D-pad = T/F/G/H.
+   - GC: A = M, Start = B, Z = D.
+4. Use a graphics backend and start `companion.dol`. The TV shows `PROBE / Waiting for GBA`.
+5. On the GBA, load the save, then open START > debug menu > Utilities and choose **GC Extension Mode** (the last entry). The GBA shows progress (`Sending party`, `Sending sprites n/m`), then `GC CONNECTED > PARTY`. The TV shows the party list and the slot details.
+6. On the GBA, A opens the party list. Up/Down moves the cursor and the TV follows. A marks the selection (`SEL` on the TV). B goes back. B in the menu closes the session and returns to the field after `Party/bag/flags/vars unchanged.`.
+7. Host controls: START ends the session (the GBA shows `The GameCube ended the session`, with A: reconnect, B: exit). A reconnects after an end. Z stops the link for 3 s; the GBA times out and the host reconnects automatically, using the cache.
+8. Cancel checks: B on the GBA while it waits for the GC, or during `Sending sprites`, returns to the field. The host logs `LINK LOST` and keeps probing.
+
+Machine-readable `PH2 ...` lines go to the OSReport log:
+
+- `CAPS`
+- `RECORD` with every field
+- `ASSET` with key, size, CRC and time
+- `READY` with totals and cache use
+- `UI` for every GBA input change
+- `DIGEST start/end` with match bits
+- `BYE`
