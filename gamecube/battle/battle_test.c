@@ -371,7 +371,7 @@ static void test_roster_wire(void) {
     assert(n && buffer[0] == BATTLE_REQUEST_VERSION_ROSTER);
     assert(battle_request_decode(buffer, n, &decoded) && decoded.player_count == 2);
     assert(decoded.version == BATTLE_REQUEST_VERSION_ROSTER);
-    buffer[0] = BATTLE_REQUEST_VERSION_ROSTER + 1;
+    buffer[0] = BATTLE_REQUEST_VERSION_SWITCH + 1;
     assert(!battle_request_decode(buffer, n, &decoded));
 
     const BattleRosterState state = {
@@ -493,6 +493,99 @@ static void test_rotation_replacement(void) {
     assert(battle_active(&b, 1)->stat_stages[0] == 2);
 }
 
+static void test_voluntary_switch(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_multi(&r, BATTLE_FORMAT_DOUBLE);
+    add_reserve(&r, 0);
+    add_reserve(&r, 0);
+    r.player[0].record.status = 16;
+    r.opponent[0].mon.moves[0].priority = 3;
+    Action actions[] = {
+        {.kind = ACT_SWITCH, .user = {0, 0}, .reserve = 2},
+        {.kind = ACT_SWITCH, .user = {0, 1}, .reserve = 2},
+        move(1, 0, 0),
+    };
+    r.version = BATTLE_REQUEST_VERSION_ROSTER;
+    assert(battle_init(&b, &r, 91) == BI_OK && !battle_validate_action(&b, &actions[0]));
+    r.version = BATTLE_REQUEST_VERSION_SWITCH;
+    assert(battle_init(&b, &r, 91) == BI_OK);
+    assert(battle_switch_mask(&b, actions[0].user) == 12);
+    assert(battle_validate_action(&b, &actions[0]));
+    b.sides[0].battlers[0].stat_stages[2] = 4;
+    battle_run_turn(&b, actions, 3, &log);
+    assert(log.events[0].kind == EV_WITHDRAW && log.events[1].kind == EV_SEND_OUT);
+    assert(log.events[2].kind == EV_MOVE_USED && log.events[2].user.side == 1);
+    assert(event_count(&log, EV_WITHDRAW) == 1); // The second command repeated the first reserve.
+    assert(b.sides[0].active[0] == 2 && b.sides[0].active[1] == 1);
+    const Battler *old = &b.sides[0].battlers[0], *entrant = &b.sides[0].battlers[2];
+    assert(old->hp == 200 && old->pp[0] == 20 && old->status == 16 && old->stat_stages[2] == 0);
+    assert(entrant->hp < 200 && entrant->pp[0] == 20);
+
+    actions[1].reserve = 3;
+    assert(battle_init(&b, &r, 91) == BI_OK);
+    battle_run_turn(&b, actions, 3, &log);
+    assert(event_count(&log, EV_WITHDRAW) == 2 && b.sides[0].active[0] == 2 && b.sides[0].active[1] == 3);
+    const uint16_t hp = b.sides[0].battlers[2].hp;
+    const uint32_t rng = b.rng;
+    assert(battle_init(&b, &r, 91) == BI_OK);
+    battle_run_turn(&b, actions, 3, &log);
+    assert(b.sides[0].battlers[2].hp == hp && b.rng == rng); // Replay with the same seed.
+
+    make_multi(&r, BATTLE_FORMAT_SINGLE);
+    add_reserve(&r, 0);
+    r.version = BATTLE_REQUEST_VERSION_SWITCH;
+    assert(battle_init(&b, &r, 91) == BI_OK);
+    const Action single = {.kind = ACT_SWITCH, .user = {0, 0}, .reserve = 1};
+    assert(battle_validate_action(&b, &single));
+    battle_run_turn(&b, &single, 1, &log);
+    assert(battle_active(&b, 0)->party_slot == r.player[1].record.slot);
+
+    make_multi(&r, BATTLE_FORMAT_TRIPLE);
+    add_reserve(&r, 0);
+    r.version = BATTLE_REQUEST_VERSION_SWITCH;
+    assert(battle_init(&b, &r, 91) == BI_OK);
+    const Action triple[] = {
+        {.kind = ACT_SHIFT, .user = {0, BPOS_LEFT}},
+        {.kind = ACT_SWITCH, .user = {0, BPOS_CENTER}, .reserve = 3},
+    };
+    b.sides[0].battlers[0].stat_stages[0] = 1;
+    battle_run_turn(&b, triple, 2, &log);
+    assert(log.events[0].kind == EV_WITHDRAW && log.events[1].kind == EV_SEND_OUT && log.events[2].kind == EV_SHIFT);
+    assert(b.sides[0].active[BPOS_LEFT] == 3 && b.sides[0].active[BPOS_CENTER] == 0);
+    assert(b.sides[0].battlers[0].stat_stages[0] == 1);
+
+    make_multi(&r, BATTLE_FORMAT_ROTATION);
+    add_reserve(&r, 0);
+    r.version = BATTLE_REQUEST_VERSION_SWITCH;
+    assert(battle_init(&b, &r, 91) == BI_OK);
+    Action rot_switch = {.kind = ACT_SWITCH, .user = {0, BPOS_CENTER}, .reserve = 3};
+    assert(battle_validate_action(&b, &rot_switch));
+    rot_switch.rotation = BROT_LEFT;
+    assert(!battle_validate_action(&b, &rot_switch));
+    rot_switch.rotation = BROT_KEEP;
+    rot_switch.user.slot = BPOS_LEFT;
+    assert(!battle_validate_action(&b, &rot_switch));
+    rot_switch.user.slot = BPOS_CENTER;
+    battle_run_turn(&b, &rot_switch, 1, &log);
+    assert(b.sides[0].active[BPOS_CENTER] == 3 && b.sides[0].active[BPOS_LEFT] == 1);
+    assert(log.events[0].kind == EV_WITHDRAW && log.events[1].kind == EV_SEND_OUT);
+    assert(!event_count(&log, EV_ROTATE));
+}
+
+static void test_switch_wire(void) {
+    const BattleMultiAction action = {.token = 90, .action = BACTION_SWITCH, .target = 5};
+    uint8_t bytes[BATTLE_MULTI_ACTION_BYTES];
+    BattleMultiAction decoded;
+    battle_multi_action_encode(&action, bytes);
+    assert(battle_switch_action_decode(bytes, sizeof(bytes), &decoded) && decoded.target == 5);
+    assert(!battle_roster_action_decode(bytes, sizeof(bytes), &decoded));
+    assert(!battle_multi_action_decode(bytes, sizeof(bytes), &decoded));
+    bytes[6] = BROT_LEFT;
+    assert(!battle_switch_action_decode(bytes, sizeof(bytes), &decoded));
+}
+
 int main(void) {
     test_request_roundtrip();
     test_messages();
@@ -506,6 +599,8 @@ int main(void) {
     test_double_replacements();
     test_triple_center();
     test_rotation_replacement();
+    test_voluntary_switch();
+    test_switch_wire();
     puts("battle tests passed");
     return 0;
 }

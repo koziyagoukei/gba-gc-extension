@@ -95,9 +95,42 @@ by 4,744 / 800 / 224 B. Frontier link use is 26,315,396 B ROM (+1,544 B),
 231,980 B EWRAM (+52 B) and 28,532 B IWRAM (unchanged). The padded GBA ROM
 remains 32 MiB. Hardware has not been tested for this stage.
 
-The next lifecycle step is voluntary switching, including reservation of
-distinct bench slots in a multi-battler turn. Struggle, drag/phazing and
-pivots are pending. A player-selected pivot needs a resumable turn boundary
-so the queued actions can continue after the reserve choice. Status, stat
-stages, residual effects, abilities, items, field effects and gimmicks follow
-the lifecycle work. Active support is documented with each implementation.
+## Lifecycle, stage 2
+
+Voluntary switching uses battle request and APP V3. The roster state keeps
+the V2 layout and also supplies the legal reserve mask in CHOOSE. SWITCH
+uses the roster index in the action target byte. V1 and V2 continue to
+decode their own commands. The GBA opens the reserve selector with START,
+uses the GC mask and echoes the current actor and token. It can return
+to the command screen with B.
+
+A turn reserves each selected bench index once per side. The host removes
+reserved indices from later prompts and the core checks duplication
+independently. Recall and send-out resolve before Shift and attacks.
+Other actions aimed at the affected position see the entrant. The
+outgoing Pokémon keeps HP, PP and major status, and its stat-stage storage
+is cleared. Shift and Rotation keep their own state and events. Rotation
+permits a voluntary switch of FRONT with a bench member. A rotation plus
+a switch in one command and a direct wing switch are rejected.
+
+The native suite covers switching in all four formats, simultaneous
+distinct choices, duplicate reserve rejection, hit resolution against
+the entrant, stage cleanup, wire version rejection, and seeded replay.
+The core suite also passed ASan/UBSan. On Dolphin, the player recalled
+Taillow at 1 HP, sent Grovyle into the left slot before attacks, and won in
+three turns. Taillow retained 1 HP and its original PP. The GBA accepted
+the result and returned to the field. V2 replacement and the tagged V1
+Triple/Rotation ROM were exercised against the V3 host. The JoyBus
+fault-injection, Party Viewer reconnect and Single apply/readback/cancel
+regressions also passed.
+
+The switch battle logged 11 µs peak core resolution, 8 events in the
+largest batch and a 50.05 ms maximum interval between presentation polls.
+The GC DOL is 244,256 B (+1,344 B since stage 1), with +1,248 B text,
++92 B data and unchanged BSS. Frontier link use is 26,315,644 B ROM
+(+248 B), 231,980 B EWRAM and 28,532 B IWRAM.
+
+Struggle, drag/phazing and pivots remain pending. A player-selected pivot
+needs a resumable turn boundary so the queued actions can continue after
+the reserve choice. Stat stages, status, residual effects, abilities,
+items, field effects and gimmicks follow the lifecycle work.

@@ -36,6 +36,7 @@ static struct {
     unsigned player_commands, choosing;
     Action actions[BC_MAX_ACTIONS];
     uint16_t token;
+    uint8_t reserved;
     uint8_t outcome;
     uint16_t result_status;
     uint64_t started, turn_started, last_play_poll;
@@ -49,7 +50,7 @@ static AssetFetch fetch;
 static uint32_t us_since(uint64_t t) { return (uint32_t)ticks_to_microsecs(gettime() - t); }
 static uint32_t build_id(void) { return b.link->client.build_id; }
 static Battler *battler(uint8_t side) { return battle_active(&b.battle, side); }
-static bool roster(void) { return b.mode.app_version == BATTLE_APP_VERSION_ROSTER; }
+static bool roster(void) { return b.mode.app_version >= BATTLE_APP_VERSION_ROSTER; }
 static bool multi(void) { return roster() || b.request.format != BATTLE_FORMAT_SINGLE; }
 
 static void set_bstate(enum BState s) {
@@ -94,6 +95,7 @@ static bool send_multi_state(uint8_t phase) {
         const Position user = b.players[b.choosing];
         state->actor = user.slot;
         state->flags = battle_can_shift(&b.battle, user) ? BATTLE_MULTI_SHIFT : 0;
+        extended.reserves = battle_switch_mask(&b.battle, user) & ~b.reserved;
     } else if (phase == BPHASE_REPLACE) {
         state->actor = b.replacement.slot;
         extended.reserves = battle_replacement_mask(&b.battle, b.replacement);
@@ -174,8 +176,13 @@ static bool poll_multi_action(BattleMultiAction *a) {
     uint16_t status;
     const uint16_t opcode = roster() ? BATTLE_OP_ACTION_ROSTER : BATTLE_OP_ACTION_MULTI;
     if (!host_app_to(b.link, b.mode.app_id, opcode, NULL, 0, &d, &n, &status)) return false;
-    if (status == APP_OK && (roster() ? battle_roster_action_decode(d, n, a) : battle_multi_action_decode(d, n, a)))
-        return true;
+    if (status == APP_OK) {
+        switch (b.mode.app_version) {
+        case BATTLE_APP_VERSION_SWITCH: return battle_switch_action_decode(d, n, a);
+        case BATTLE_APP_VERSION_ROSTER: return battle_roster_action_decode(d, n, a);
+        default: return battle_multi_action_decode(d, n, a);
+        }
+    }
     SYS_Report("MULTI ACTION poll: status=%u length=%u\n", status, n);
     return false;
 }
@@ -363,7 +370,7 @@ static BattleViewStatus step_choose(void) {
 }
 
 static bool player_can_act(Position user) {
-    if (battle_can_shift(&b.battle, user)) return true;
+    if (battle_can_shift(&b.battle, user) || (battle_switch_mask(&b.battle, user) & ~b.reserved)) return true;
     const bool rotation = b.request.format == BATTLE_FORMAT_ROTATION;
     for (uint8_t slot = 0; slot < b.battle.sides[0].active_count; ++slot) {
         if (!rotation && slot != user.slot) continue;
@@ -378,6 +385,7 @@ static BattleViewStatus step_multi_choose(void) {
     if (!b.player_commands) {
         b.player_commands = battle_collect_actors(&b.battle, 0, b.players);
         b.choosing = 0;
+        b.reserved = 0;
         b.turn_started = gettime();
     }
     const Position user = b.players[b.choosing];
@@ -402,17 +410,20 @@ static BattleViewStatus step_multi_choose(void) {
         return play_turn(turn);
     }
     if (a.token != b.token || a.actor != user.slot || a.action == BACTION_NONE) return BV_RUNNING;
+    const bool switching = a.action == BACTION_SWITCH;
     const Action act = {
-        .kind = a.action == BACTION_SHIFT ? ACT_SHIFT : ACT_MOVE,
-        .user = user, .move_slot = a.move_slot, .target = {{1, a.target}}, .rotation = a.rotation,
+        .kind = switching ? ACT_SWITCH : a.action == BACTION_SHIFT ? ACT_SHIFT : ACT_MOVE,
+        .user = user, .move_slot = a.move_slot, .target = {{1, a.target}}, .rotation = a.rotation, .reserve = a.target,
     };
-    if (a.action > BACTION_SHIFT || !battle_validate_action(&b.battle, &act)) {
+    if ((a.action > BACTION_SHIFT && !switching) || !battle_validate_action(&b.battle, &act) ||
+        (switching && (b.reserved & (1u << act.reserve)))) {
         SYS_Report("MULTI ACTION turn=%u actor=%u target=%u rejected\n", turn, user.slot, a.target);
         b.state_sent = false;
         return BV_RUNNING;
     }
     SYS_Report("MULTI ACTION turn=%u actor=%u kind=%u move_slot=%u target=%u rotation=%u\n", turn, user.slot,
                act.kind, act.move_slot, a.target, act.rotation);
+    if (switching) b.reserved |= 1u << act.reserve;
     b.actions[b.choosing++] = act;
     b.state_sent = false;
     if (b.choosing < b.player_commands) return BV_RUNNING;
@@ -482,7 +493,7 @@ BattleViewStatus battle_view_update(bool start_pressed, const char **message) {
         }
         b.request_us = fetch_elapsed_us(&fetch);
         if (!battle_request_decode(fetch.data, fetch.info.length, &b.request) ||
-            b.request.version != (roster() ? BATTLE_REQUEST_VERSION_ROSTER : BATTLE_REQUEST_VERSION)) {
+            b.request.version != b.mode.app_version) {
             SYS_Report("PH3 REQUEST rejected (decode)\n");
             *message = "Battle request rejected";
             host_bye(b.link, BYE_HOST_EXIT);

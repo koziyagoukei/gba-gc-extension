@@ -148,6 +148,7 @@ static const char *message_text(const SceneMessage *msg) {
     case MSG_FAINT: return "Fainted!";
     case MSG_CANCEL: return "The battle was cancelled.";
     case MSG_NO_MOVES: return "No supported move remains.";
+    case MSG_WITHDRAW: return "Returned to the party.";
     case MSG_SHIFT: return "Shifted to the center!";
     case MSG_ROTATE: return "Rotated to the front!";
     case MSG_RESULT: return msg->outcome == OUTCOME_WIN ? "You won!" : msg->outcome == OUTCOME_LOSE ? "You lost..." : "Draw.";
@@ -166,7 +167,7 @@ static void draw_message(const BattleLayout *layout) {
     const float x = layout->message.x + 14, y = layout->message.y + 8;
     render_text(x, y, 1.25f, UI_INK, "%s", message_text(msg));
     if (msg->kind == MSG_ENTER || msg->kind == MSG_MOVE || msg->kind == MSG_FAINT ||
-        msg->kind == MSG_SHIFT || msg->kind == MSG_ROTATE) {
+        msg->kind == MSG_SHIFT || msg->kind == MSG_ROTATE || msg->kind == MSG_WITHDRAW) {
         const Battler *b = battler_at(msg->subject);
         CacheEntry *name = b ? battle_label(scene.build, &b->entry->record) : NULL;
         if (name) draw_label(name, x, y + 27, 190, 23);

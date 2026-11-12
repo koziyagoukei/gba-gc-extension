@@ -96,6 +96,11 @@ void animation_play(BattleAnimation *a, const BattleLayout *layout, const EventL
             add(a, (AnimationStep){.kind = ANIM_ROTATE, .target = e->target, .rotation = e->rotation});
             message(a, (SceneMessage){.kind = MSG_ROTATE, .subject = e->target}, 22);
             break;
+        case EV_WITHDRAW:
+            if (!battle_layout_anchor(layout, e->target)) break;
+            message(a, (SceneMessage){.kind = MSG_WITHDRAW, .subject = e->target}, 0);
+            add(a, (AnimationStep){.kind = ANIM_WITHDRAW, .target = e->target, .frames = 18});
+            break;
         case EV_SEND_OUT:
             if (!battle_layout_anchor(layout, e->target) || e->battler >= BATTLE_MAX_PER_SIDE) break;
             message(a, (SceneMessage){.kind = MSG_ENTER, .subject = e->target}, 0);
@@ -148,6 +153,10 @@ static bool advance(BattleAnimation *a, const BattleLayout *layout, const Animat
         actor->hp = s->hp;
         return true;
     }
+    case ANIM_WITHDRAW:
+        actor->scale = 1 - t;
+        if (t >= 1) actor->visible = false;
+        break;
     case ANIM_FAINT:
         actor->drop = battle_layout_anchor(layout, s->target)->sprite_size * t;
         if (t >= 1) actor->visible = false;
