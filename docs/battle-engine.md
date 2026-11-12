@@ -340,3 +340,59 @@ on the presentation timeline. The GBA shows a condition badge per
 position and the selected Pokémon's nonzero stages. The GC polls
 during all presentation steps. The GBA's four V7 debug fixtures use
 temporary export slots for both parties.
+
+
+### Milestone 2 verification
+
+The desktop wire, message, battle and presentation suites passed,
+including the V7 codec bounds, all stage modifiers, status immunity,
+cures, paralysis and sleep interruption, toxic reset on switch,
+Rotation retention, both sides fainting at end of turn, replacement,
+and pivot continuation before residuals. The Battle Core also passed
+ASan and UBSan.
+
+Dolphin 2609b with Integrated GBA ran the V7 fixtures to a win, accepted
+result and BYE in 2, 2, 6 and 9 turns for Single, Double, Triple and
+Rotation. The Double fixture applied Growl to both opposing positions,
+processed two residual faints in turn one and filled one position with
+the available reserve. Triple exercised residuals and empty positions.
+Rotation retained the burn badge and Attack stage when the same
+Pokémon returned to the front. The GBA field was observed after Double
+and Rotation. The test profiles used copies of a test save and verified
+SHA-256 after exit. The V7 timeout test forced a three-second link
+silence mid-battle, reconnected, restarted with the original fixture
+HP and PP, then cancelled and returned safely.
+
+Phase 1 passed 10,000 round trips with fault injection, CRC rejection,
+two retries and duplicate detection. The 64 KiB transfer completed in
+11.070 s at 5.781 KiB/s and GX rendered the transferred sprite. Phase 2
+reconnected with 42 cache hits and returned to the field. Phase 3
+applied HP/PP, read the decremented PP on reentry, and cancelled safely.
+The V1 Triple Shift and Rotation runs also completed. The lifecycle
+regression exercised replacement, voluntary switch, Struggle,
+Roar and Dragon Tail, and U-turn resumption in the original turn.
+
+| V7 format | Peak core | Peak event batch | Longest presentation poll gap |
+| --- | ---: | ---: | ---: |
+| Single | 10 µs | 5 | 33.366 ms |
+| Double | 23 µs | 13 | 33.366 ms |
+| Triple | 37 µs | 15 | 33.366 ms |
+| Rotation | 11 µs | 7 | 50.050 ms |
+
+One concurrent V2 run logged a 533.866 ms gap and finished with a
+normal result and BYE. A separate V2 run recorded 50.050 ms, with the
+same 16 µs peak core time. These are emulator measurements.
+
+| Build measurement | Milestone 1 | Milestone 2 |
+| --- | ---: | ---: |
+| GC DOL | 249,472 B | 259,232 B |
+| GC ELF text | 199,238 B | 208,014 B |
+| GC ELF data | 49,936 B | 50,920 B |
+| GC ELF BSS | 2,738,944 B | 2,741,568 B |
+| Frontier linked ROM | 26,316,980 B | 26,320,076 B |
+| Frontier EWRAM | 231,980 B | 231,980 B |
+| Frontier IWRAM | 28,532 B | 28,532 B |
+
+Physical hardware and persistent V7 results remain outside this
+verification. The Move Effect System can build on the primary status
+and stat-stage paths and the existing mid-turn action suspension.
