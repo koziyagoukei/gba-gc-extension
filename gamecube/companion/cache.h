@@ -7,7 +7,7 @@
 // Entries are stored as ready-to-draw GX textures. Nothing is persisted; a
 // different build id never matches, so assets of another ROM are not reused.
 
-#define CACHE_ARENA_BYTES (1024u * 1024u)
+#define CACHE_ARENA_BYTES (2048u * 1024u)
 #define CACHE_MAX_ENTRIES 128
 
 typedef struct {

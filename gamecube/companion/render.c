@@ -149,6 +149,20 @@ void render_texture(GXTexObj *texture, float x, float y, float w, float h, uint3
     quad(x, y, w, h, rgba, 0, 0, 1, 1);
 }
 
+void render_texture_part(GXTexObj *texture, unsigned tw, unsigned th, unsigned u, unsigned v, unsigned uw, unsigned vh,
+                         float x, float y, float w, float h, uint32_t rgba) {
+    GX_LoadTexObj(texture, GX_TEXMAP0);
+    quad(x, y, w, h, rgba, (float)u / tw, (float)v / th, (float)(u + uw) / tw, (float)(v + vh) / th);
+}
+
+void render_scissor(float x, float y, float w, float h) {
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    GX_SetScissor((u32)x, (u32)y, w > 0 ? (u32)w : 0, h > 0 ? (u32)h : 0);
+}
+
+void render_scissor_reset(void) { GX_SetScissor(0, 0, mode->fbWidth, mode->efbHeight); }
+
 void render_texture_mirrored(GXTexObj *texture, float x, float y, float w, float h, uint32_t rgba) {
     GX_LoadTexObj(texture, GX_TEXMAP0);
     quad(x, y, w, h, rgba, 1, 0, 0, 1);

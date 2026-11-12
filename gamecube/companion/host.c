@@ -12,7 +12,7 @@ bool host_open(HostLink *link) {
     link->session.timeout_ms = HOST_REPLY_TIMEOUT_MS;
     if (!session_request(&link->session, &request, &reply, NO_FAULT) || reply.len != 0) return false;
     const Caps caps = {MSG_PROTOCOL_VERSION, PEER_GC_HOST, HOST_BUILD_ID,
-                       CAP_APP | CAP_ASSETS | CAP_BYE | CAP_MODE | CAP_RESULT,
+                       CAP_APP | CAP_ASSETS | CAP_BYE | CAP_MODE | CAP_RESULT | CAP_RLE,
                        WIRE_PAYLOAD, APP_POKEMON, PKMN_APP_VERSION, {'G', 'C', 'X', 'H'}};
     request.type = CAPS;
     request.len = (uint16_t)caps_encode(&caps, request.payload);
@@ -106,11 +106,14 @@ enum FetchResult fetch_step(HostLink *link, AssetFetch *fetch) {
             return FETCH_FAILED;
         }
         if (fetch->info.status != ASSET_OK || fetch->info.length == 0 || fetch->info.length > ASSET_STAGING_BYTES ||
+            fetch->info.raw_length == 0 || fetch->info.raw_length > ASSET_STAGING_BYTES ||
+            fetch->info.encoding > ASSET_ENCODING_RLE ||
             !asset_key_equal(&fetch->info.key, &fetch->key)) {
             fetch->active = false;
             return FETCH_MISSING;
         }
         fetch->have_info = true;
+        fetch->wire_length = fetch->info.length;
         return FETCH_PENDING;
     }
     const uint32_t remaining = fetch->info.length - fetch->offset;
@@ -124,7 +127,7 @@ enum FetchResult fetch_step(HostLink *link, AssetFetch *fetch) {
         fetch->active = false;
         return FETCH_FAILED;
     }
-    memcpy(fetch->data + fetch->offset, reply.payload, length);
+    memcpy(fetch->wire + fetch->offset, reply.payload, length);
     fetch->crc = wire_crc(fetch->crc, reply.payload, length);
     fetch->offset += length;
     if (fetch->offset < fetch->info.length) return FETCH_PENDING;
@@ -134,5 +137,14 @@ enum FetchResult fetch_step(HostLink *link, AssetFetch *fetch) {
                    fetch->key.id, ~fetch->crc, fetch->info.crc);
         return FETCH_FAILED;
     }
+    if (fetch->info.encoding == ASSET_ENCODING_RLE) {
+        if (rle_decode(fetch->wire, fetch->wire_length, fetch->data, ASSET_STAGING_BYTES) != fetch->info.raw_length) {
+            SYS_Report("PH4 ASSET RLE decode failed type=%04x id=%08x\n", fetch->key.type, fetch->key.id);
+            return FETCH_FAILED;
+        }
+    } else {
+        memcpy(fetch->data, fetch->wire, fetch->wire_length);
+    }
+    fetch->info.length = fetch->info.raw_length;  // callers see decoded data
     return FETCH_DONE;
 }

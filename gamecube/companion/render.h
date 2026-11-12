@@ -18,6 +18,12 @@ void render_rect(float x, float y, float w, float h, uint32_t rgba);
 void render_text(float x, float y, float scale, uint32_t rgba, const char *fmt, ...)
     __attribute__((format(printf, 5, 6)));
 void render_texture(GXTexObj *texture, float x, float y, float w, float h, uint32_t rgba);
+// Draws the texel rectangle (u, v, uw, vh) of a texture of size tw x th.
+void render_texture_part(GXTexObj *texture, unsigned tw, unsigned th, unsigned u, unsigned v, unsigned uw, unsigned vh,
+                         float x, float y, float w, float h, uint32_t rgba);
+// Restricts drawing to a screen rectangle (render_scissor_reset restores the full screen).
+void render_scissor(float x, float y, float w, float h);
+void render_scissor_reset(void);
 // Same, mirrored horizontally (e.g. the player's battler, which only has a front sprite).
 void render_texture_mirrored(GXTexObj *texture, float x, float y, float w, float h, uint32_t rgba);
 // Call after new texture data was written (flushes the texture cache once).

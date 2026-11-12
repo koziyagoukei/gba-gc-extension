@@ -7,7 +7,7 @@
 // chunked asset fetch and BYE. Game protocols build on these calls.
 
 #define HOST_BUILD_ID 0x48320001u  // "H2" companion host, revision 1
-#define ASSET_STAGING_BYTES 8192u
+#define ASSET_STAGING_BYTES 24576u  // largest decoded asset (battle backgrounds)
 // The game answers once per GBA frame; allow for an occasional long frame.
 #define HOST_REPLY_TIMEOUT_MS 500u
 
@@ -36,7 +36,9 @@ typedef struct {
     uint32_t offset, crc;
     uint64_t started;
     bool active, have_info;
-    uint8_t data[ASSET_STAGING_BYTES] __attribute__((aligned(32)));
+    uint8_t wire[ASSET_STAGING_BYTES] __attribute__((aligned(32)));  // as transferred (maybe RLE)
+    uint8_t data[ASSET_STAGING_BYTES] __attribute__((aligned(32)));  // decoded; info.length = decoded size
+    uint32_t wire_length;
 } AssetFetch;
 
 void fetch_start(AssetFetch *fetch, const AssetKey *key);

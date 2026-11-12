@@ -18,7 +18,7 @@ static void test_caps(void) {
 
 static void test_asset_info(void) {
     const AssetInfo in = {ASSET_OK, {ASSET_PKMN_FRONT, 25, PKMN_SPRITE_SHINY, 0x12345678u}, 64, 64,
-                          PIXEL_4BPP_TILED, PALETTE_BGR555_16, 1, 2080, 0xdeadbeefu};
+                          PIXEL_4BPP_TILED, PALETTE_BGR555_16, 1, ASSET_ENCODING_RAW, 2080, 0xdeadbeefu, 2080};
     uint8_t bytes[ASSET_INFO_BYTES];
     AssetInfo out;
     assert(asset_info_encode(&in, bytes) == ASSET_INFO_BYTES);
@@ -85,6 +85,23 @@ static void test_ui(void) {
            out.screen == SCREEN_PARTY && out.flags == UI_EXIT_REQUESTED);
 }
 
+static void test_rle(void) {
+    static uint8_t in[3000], enc[RLE_WORST_CASE(3000)], dec[3000];
+    for (unsigned i = 0; i < sizeof(in); ++i) in[i] = (uint8_t)(i < 1000 ? 0 : i < 1500 ? (i * 7) : i < 1503 ? 9 : (i / 50));
+    const uint32_t n = rle_encode(in, sizeof(in), enc, sizeof(enc));
+    assert(n > 0 && n < sizeof(in) / 2);
+    assert(rle_decode(enc, n, dec, sizeof(dec)) == sizeof(in) && memcmp(in, dec, sizeof(in)) == 0);
+    assert(rle_decode(enc, n, dec, sizeof(in) - 1) == 0);
+    for (unsigned i = 0; i < 300; ++i) in[i] = (uint8_t)(i * 37 + (i >> 3));  // incompressible
+    const uint32_t m = rle_encode(in, 300, enc, sizeof(enc));
+    assert(m <= RLE_WORST_CASE(300) && rle_decode(enc, m, dec, 300) == 300 && memcmp(in, dec, 300) == 0);
+    AssetInfo a = {ASSET_OK, {1, 2, 3, 4}, 8, 8, PIXEL_4BPP_TILED, PALETTE_NONE, 1, ASSET_ENCODING_RLE, 10, 5, 64}, b;
+    uint8_t bytes[ASSET_INFO_BYTES];
+    asset_info_encode(&a, bytes);
+    assert(asset_info_decode(bytes, ASSET_INFO_BYTES, &b) && b.encoding == ASSET_ENCODING_RLE && b.raw_length == 64);
+    assert(asset_info_decode(bytes, ASSET_INFO_BYTES_V2, &b) && b.encoding == ASSET_ENCODING_RAW && b.raw_length == 10);
+}
+
 static void test_mode_info(void) {
     const ModeInfo in = {GC_MODE_BATTLE, 1, 0x4247, 1, 777, 0xcafef00du, 0x01020304u, 0};
     uint8_t bytes[MODE_INFO_BYTES];
@@ -116,6 +133,7 @@ int main(void) {
     test_asset_info();
     test_record();
     test_ui();
+    test_rle();
     test_mode_info();
     test_new_frame_types();
     return 0;
