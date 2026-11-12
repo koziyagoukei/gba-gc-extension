@@ -7,7 +7,7 @@
 enum { T_NORMAL = 0, T_FIRE = 1, T_WATER = 2, T_GHOST = 3, NTYPES = 4 };
 
 static BattleMove hit(uint16_t power, uint8_t type, uint8_t category) {
-    return (BattleMove){power, type, category, 100, 0, BTARGET_SINGLE, 0};
+    return (BattleMove){.power = power, .type = type, .category = category, .accuracy = 100, .target = BTARGET_SINGLE};
 }
 
 static void make_entry(BattleEntry *e, uint8_t slot, uint16_t species, uint8_t level, uint16_t hp, uint16_t stat,
@@ -371,7 +371,7 @@ static void test_roster_wire(void) {
     assert(n && buffer[0] == BATTLE_REQUEST_VERSION_ROSTER);
     assert(battle_request_decode(buffer, n, &decoded) && decoded.player_count == 2);
     assert(decoded.version == BATTLE_REQUEST_VERSION_ROSTER);
-    buffer[0] = BATTLE_REQUEST_VERSION_STRUGGLE + 1;
+    buffer[0] = BATTLE_REQUEST_VERSION_DRAG + 1;
     assert(!battle_request_decode(buffer, n, &decoded));
 
     const BattleRosterState state = {
@@ -683,6 +683,98 @@ static void test_struggle(void) {
     assert(b.sides[0].battlers[0].hp == 200 && b.sides[0].battlers[1].hp < 200);
 }
 
+static void test_drag(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_multi(&r, BATTLE_FORMAT_DOUBLE);
+    enable_struggle(&r);
+    r.version = BATTLE_REQUEST_VERSION_DRAG;
+    add_reserve(&r, 1);
+    const BattleMove roar = {.target = BTARGET_SINGLE, .priority = -6, .effect = BME_FORCE_OUT};
+    r.player[0].mon.moves[0] = roar;
+    r.opponent[0].mon.moves[0].priority = -7;
+    assert(battle_init(&b, &r, 17) == BI_OK);
+    const Action turn[] = {move(0, 0, 0), move(1, 0, 0)};
+    b.sides[1].battlers[0].stat_stages[0] = 3;
+    battle_run_turn(&b, turn, 2, &log);
+    assert(event_count(&log, EV_MOVE_USED) == 1 && event_count(&log, EV_DRAG_OUT) == 1);
+    assert(log.events[1].kind == EV_DRAG_OUT && log.events[2].kind == EV_SEND_OUT);
+    assert(b.sides[1].active[0] == 2 && b.sides[1].battlers[0].pp[0] == 20);
+    assert(b.sides[1].battlers[0].stat_stages[0] == 0 && b.sides[0].battlers[0].pp[0] == 19);
+
+    r.player[0].mon.moves[0] = hit(40, T_NORMAL, BCAT_PHYSICAL);
+    r.player[0].mon.moves[0].effect = BME_FORCE_OUT_ON_HIT;
+    r.opponent[0].mon.types[0] = T_GHOST;
+    assert(battle_init(&b, &r, 17) == BI_OK);
+    battle_run_turn(&b, turn, 1, &log);
+    assert(!event_count(&log, EV_DRAG_OUT) && event_count(&log, EV_NO_EFFECT) == 1);
+    r.opponent[0].mon.types[0] = T_NORMAL;
+    assert(battle_init(&b, &r, 17) == BI_OK);
+    battle_run_turn(&b, turn, 1, &log);
+    assert(event_count(&log, EV_DAMAGE) == 1 && event_count(&log, EV_DRAG_OUT) == 1);
+
+    r.opponent[0].record.hp = 1;
+    assert(battle_init(&b, &r, 17) == BI_OK);
+    battle_run_turn(&b, turn, 1, &log);
+    assert(!event_count(&log, EV_DRAG_OUT) && battle_pending_replacement(&b, NULL));
+
+    r.opponent_count = 2;
+    r.player[0].mon.moves[0] = roar;
+    assert(battle_init(&b, &r, 17) == BI_OK);
+    battle_run_turn(&b, turn, 1, &log);
+    assert(event_count(&log, EV_NO_EFFECT) == 1 && b.sides[0].battlers[0].pp[0] == 19);
+
+    make_multi(&r, BATTLE_FORMAT_SINGLE);
+    enable_struggle(&r);
+    r.version = BATTLE_REQUEST_VERSION_DRAG;
+    add_reserve(&r, 1);
+    r.player[0].mon.moves[0] = roar;
+    assert(battle_init(&b, &r, 17) == BI_OK);
+    battle_run_turn(&b, turn, 1, &log);
+    assert(battle_active(&b, 1)->party_slot == r.opponent[1].record.slot);
+    assert(event_count(&log, EV_DRAG_OUT) == 1);
+
+    make_multi(&r, BATTLE_FORMAT_TRIPLE);
+    enable_struggle(&r);
+    r.version = BATTLE_REQUEST_VERSION_DRAG;
+    add_reserve(&r, 1);
+    r.player[0].mon.moves[0] = roar;
+    assert(battle_init(&b, &r, 17) == BI_OK);
+    const Action too_far = move(0, BPOS_LEFT, BPOS_RIGHT);
+    assert(!battle_validate_action(&b, &too_far));
+    const Action near = move(0, BPOS_LEFT, BPOS_CENTER);
+    battle_run_turn(&b, &near, 1, &log);
+    assert(b.sides[1].active[BPOS_CENTER] == 3 && event_count(&log, EV_DRAG_OUT) == 1);
+
+    make_multi(&r, BATTLE_FORMAT_ROTATION);
+    enable_struggle(&r);
+    r.version = BATTLE_REQUEST_VERSION_DRAG;
+    add_reserve(&r, 1);
+    r.player[1].mon.moves[0] = roar;
+    assert(battle_init(&b, &r, 17) == BI_OK);
+    Action rotations[] = {
+        move(0, BPOS_CENTER, BPOS_CENTER),
+        {.kind = ACT_SWITCH, .user = {1, BPOS_CENTER}, .reserve = 3},
+    };
+    rotations[0].rotation = BROT_LEFT;
+    battle_run_turn(&b, rotations, 2, &log);
+    assert(log.events[0].kind == EV_WITHDRAW && log.events[1].kind == EV_SEND_OUT && log.events[2].kind == EV_ROTATE);
+    assert(log.events[3].kind == EV_MOVE_USED && log.events[4].kind == EV_DRAG_OUT);
+    assert(b.sides[1].active[BPOS_CENTER] == 0 && b.sides[1].active[BPOS_LEFT] == 1);
+
+    BattleRequest decoded;
+    uint8_t buffer[2048];
+    const unsigned size = battle_request_encode(&r, buffer, sizeof(buffer));
+    assert(size && battle_request_decode(buffer, size, &decoded));
+    assert(decoded.player[1].mon.moves[0].effect == BME_FORCE_OUT);
+    const unsigned offset = BATTLE_REQUEST_HEADER + BATTLE_ENTRY_BYTES + PKMN_RECORD_BYTES + 4;
+    buffer[offset] = 0xff;
+    assert(!battle_request_decode(buffer, size, &decoded));
+    buffer[0] = BATTLE_REQUEST_VERSION_STRUGGLE;
+    assert(battle_request_decode(buffer, size, &decoded) && decoded.player[1].mon.moves[0].effect == BME_HIT);
+}
+
 int main(void) {
     test_request_roundtrip();
     test_messages();
@@ -700,6 +792,7 @@ int main(void) {
     test_switch_wire();
     test_struggle_wire();
     test_struggle();
+    test_drag();
     puts("battle tests passed");
     return 0;
 }

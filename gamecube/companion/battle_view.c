@@ -127,7 +127,7 @@ static bool send_multi_state(uint8_t phase) {
                                                   mon ? mon->hp : record ? record->hp : 0,
                                                   record ? record->max_hp : 0};
         }
-        size = b.mode.app_version == BATTLE_APP_VERSION_STRUGGLE
+        size = b.mode.app_version >= BATTLE_APP_VERSION_STRUGGLE
              ? battle_struggle_state_encode(&extended, bytes) : battle_roster_state_encode(&extended, bytes);
     } else {
         size = battle_multi_state_encode(state, bytes);
@@ -180,6 +180,7 @@ static bool poll_multi_action(BattleMultiAction *a) {
     if (!host_app_to(b.link, b.mode.app_id, opcode, NULL, 0, &d, &n, &status)) return false;
     if (status == APP_OK) {
         switch (b.mode.app_version) {
+        case BATTLE_APP_VERSION_DRAG:
         case BATTLE_APP_VERSION_STRUGGLE: return battle_struggle_action_decode(d, n, a);
         case BATTLE_APP_VERSION_SWITCH: return battle_switch_action_decode(d, n, a);
         case BATTLE_APP_VERSION_ROSTER: return battle_roster_action_decode(d, n, a);

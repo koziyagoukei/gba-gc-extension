@@ -102,9 +102,11 @@ void animation_play(BattleAnimation *a, const BattleLayout *layout, const EventL
             add(a, (AnimationStep){.kind = ANIM_HP, .target = e->target, .hp = e->hp_after});
             wait(a, 18);
             break;
+        case EV_DRAG_OUT:
         case EV_WITHDRAW:
             if (!battle_layout_anchor(layout, e->target)) break;
-            message(a, (SceneMessage){.kind = MSG_WITHDRAW, .subject = e->target}, 0);
+            message(a, (SceneMessage){.kind = e->kind == EV_DRAG_OUT ? MSG_DRAG_OUT : MSG_WITHDRAW,
+                                      .subject = e->target}, 0);
             add(a, (AnimationStep){.kind = ANIM_WITHDRAW, .target = e->target, .frames = 18});
             break;
         case EV_SEND_OUT:

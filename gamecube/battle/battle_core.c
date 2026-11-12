@@ -24,12 +24,15 @@ const char *battle_init_error_name(int error) {
 }
 
 bool battle_move_supported(const BattleRequest *r, const BattleMove *m) {
-    return m->unsupported == 0 && (m->category == BCAT_PHYSICAL || m->category == BCAT_SPECIAL) &&
-           m->power > 0 &&
-           (m->target & BTARGET_CLASS_MASK) >= BTARGET_SINGLE &&
-           (m->target & BTARGET_CLASS_MASK) <= BTARGET_SELF &&
-           m->type < r->type_count &&
-           m->accuracy <= 100;
+    if (m->unsupported || m->type >= r->type_count || m->accuracy > 100) return false;
+    const uint8_t target = m->target & BTARGET_CLASS_MASK;
+    if (target < BTARGET_SINGLE || target > BTARGET_SELF) return false;
+    if (m->effect != BME_HIT) {
+        if (r->version < BATTLE_REQUEST_VERSION_DRAG || r->battle_type != BTYPE_TRAINER || target != BTARGET_SINGLE ||
+            m->effect > BME_FORCE_OUT_ON_HIT) return false;
+        if (m->effect == BME_FORCE_OUT) return m->category == BCAT_STATUS && !m->power;
+    }
+    return m->power && (m->category == BCAT_PHYSICAL || m->category == BCAT_SPECIAL);
 }
 
 static void load_battler(Battler *out, const BattleEntry *e) {
@@ -186,10 +189,10 @@ int battle_init(Battle *b, const BattleRequest *r, uint32_t seed) {
     b->rng = seed ? seed : 0x9e3779b9u;
     const unsigned active = battle_formation_size(r->format);
     if (!active || r->active_per_side != active ||
-        r->version > BATTLE_REQUEST_VERSION_STRUGGLE)
+        r->version > BATTLE_REQUEST_VERSION_DRAG)
         return BI_FORMAT;
     if (!r->type_count || r->type_count > BATTLE_MAX_TYPES) return BI_BAD_TYPES;
-    if (r->version == BATTLE_REQUEST_VERSION_STRUGGLE &&
+    if (r->version >= BATTLE_REQUEST_VERSION_STRUGGLE &&
         (!r->struggle_power || r->struggle_accuracy > 100 ||
          (r->struggle_recoil != BSTRUGGLE_MAX_HP_FLOOR && r->struggle_recoil != BSTRUGGLE_MAX_HP_NEAREST)))
         return BI_FORMAT;
@@ -471,13 +474,29 @@ static bool acts_first(const TurnAction *a, const TurnAction *d) {
     return a->tie > d->tie;
 }
 
-static void execute_switch(Battle *b, Position user, uint8_t index, EventLog *log) {
+static void execute_switch(Battle *b, Position user, uint8_t index, EventKind reason, EventLog *log) {
     if (!(battle_switch_mask(b, user) & (1u << index))) return;
     Battler *outgoing = mutable_at(b, user);
     memset(outgoing->stat_stages, 0, sizeof(outgoing->stat_stages));
-    emit(log, (BattleEvent){.kind = EV_WITHDRAW, .target = user,
+    emit(log, (BattleEvent){.kind = reason, .target = user,
                             .battler = b->sides[user.side].active[user.slot]});
     send_out(b, user, index, log);
+}
+
+static bool drag_out(Battle *b, Position target, EventLog *log) {
+    const uint8_t mask = battle_switch_mask(b, target);
+    if (!mask) return false;
+    uint8_t candidates[BATTLE_MAX_PER_SIDE];
+    unsigned count = 0;
+    for (uint8_t i = 0; i < BATTLE_MAX_PER_SIDE; ++i)
+        if (mask & (1u << i)) candidates[count++] = i;
+    const unsigned choice = count > 1 ? next_random(b) % count : 0;
+    execute_switch(b, target, candidates[choice], EV_DRAG_OUT, log);
+    return true;
+}
+
+static bool missed(Battle *b, const BattleMove *move) {
+    return move->accuracy && next_random(b) % 100u >= move->accuracy;
 }
 
 static void apply_damage(Battle *b, BattleEvent ev, uint16_t damage, EventLog *log) {
@@ -495,7 +514,7 @@ static void apply_damage(Battle *b, BattleEvent ev, uint16_t damage, EventLog *l
 static bool hit(Battle *b, Position user, Position target, const BattleMove *m, uint16_t id,
                 bool spread, bool typeless, EventLog *log) {
     BattleEvent ev = {.user = user, .target = target, .move_id = id};
-    if (m->accuracy && next_random(b) % 100u >= m->accuracy) {
+    if (missed(b, m)) {
         ev.kind = EV_MISS;
         emit(log, ev);
         return false;
@@ -563,9 +582,24 @@ static void execute_move(Battle *b, const TurnAction *t, Position user, EventLog
         emit(log, (BattleEvent){.kind = EV_NO_EFFECT, .user = user, .target = first, .move_id = id});
         return;
     }
+    if (m->effect == BME_FORCE_OUT) {
+        BattleEvent event = {.user = user, .target = first, .move_id = id};
+        if (missed(b, m)) {
+            event.kind = EV_MISS;
+            emit(log, event);
+        } else if (!drag_out(b, first, log)) {
+            event.kind = EV_NO_EFFECT;
+            emit(log, event);
+        }
+        return;
+    }
     for (uint8_t side = 0; side < 2; ++side)
-        for (uint8_t slot = 0; slot < BC_MAX_ACTIVE; ++slot)
-            if (targets[side] & (1u << slot)) hit(b, user, (Position){side, slot}, m, id, count > 1, false, log);
+        for (uint8_t slot = 0; slot < BC_MAX_ACTIVE; ++slot) {
+            if (!(targets[side] & (1u << slot))) continue;
+            const Position target = {side, slot};
+            const bool landed = hit(b, user, target, m, id, count > 1, false, log);
+            if (landed && m->effect == BME_FORCE_OUT_ON_HIT) drag_out(b, target, log);
+        }
 }
 
 void battle_run_turn(Battle *b, const Action *in, unsigned count, EventLog *log) {
@@ -602,23 +636,24 @@ void battle_run_turn(Battle *b, const Action *in, unsigned count, EventLog *log)
         order[n++] = (TurnAction){*a, index, a->kind == ACT_MOVE ? x->moves[a->move_slot].priority : 0,
                                  x->speed, next_random(b)};
     }
-    if (rotation_battle(b))
-        for (unsigned i = 0; i < n; ++i)
-            rotate(b, order[i].action.user.side, order[i].action.rotation, log);
     for (unsigned i = 1; i < n; ++i) {
         const TurnAction a = order[i];
         unsigned j = i;
         for (; j > 0 && acts_first(&a, &order[j-1]); --j) order[j] = order[j-1];
         order[j] = a;
     }
-    for (unsigned i = 0; i < n; ++i) {
+    unsigned first = 0;
+    while (first < n && order[first].action.kind == ACT_SWITCH) {
+        const Action *action = &order[first++].action;
+        execute_switch(b, action->user, action->reserve, EV_WITHDRAW, log);
+    }
+    if (rotation_battle(b))
+        for (unsigned i = first; i < n; ++i)
+            rotate(b, order[i].action.user.side, order[i].action.rotation, log);
+    for (unsigned i = first; i < n; ++i) {
         const Position user = locate(b, order[i].action.user.side, order[i].battler);
         const Battler *actor = battle_at(b, user);
         if (!actor || actor->fainted) continue;
-        if (order[i].action.kind == ACT_SWITCH) {
-            execute_switch(b, user, order[i].action.reserve, log);
-            continue;
-        }
         if (order[i].action.kind == ACT_SHIFT) {
             if (battle_can_shift(b, user)) shift(b, user, log);
             continue;

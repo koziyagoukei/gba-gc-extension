@@ -48,7 +48,7 @@ typedef struct {
     uint8_t rotation, reserve;
 } Action;
 
-typedef enum { EV_MOVE_USED, EV_MISS, EV_DAMAGE, EV_NO_EFFECT, EV_FAINT, EV_FORFEIT, EV_NO_MOVES, EV_END, EV_SHIFT, EV_ROTATE, EV_SEND_OUT, EV_WITHDRAW, EV_RECOIL } EventKind;
+typedef enum { EV_MOVE_USED, EV_MISS, EV_DAMAGE, EV_NO_EFFECT, EV_FAINT, EV_FORFEIT, EV_NO_MOVES, EV_END, EV_SHIFT, EV_ROTATE, EV_SEND_OUT, EV_WITHDRAW, EV_RECOIL, EV_DRAG_OUT } EventKind;
 typedef struct {
     EventKind kind;
     Position user, target;

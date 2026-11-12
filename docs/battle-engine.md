@@ -163,7 +163,45 @@ batch and a 33.366 ms maximum presentation poll gap. The GC DOL is
 unchanged BSS. Frontier link use is 26,316,212 B ROM (+568 B), 231,980 B
 EWRAM and 28,532 B IWRAM.
 
-Drag/phazing and pivots remain pending. A player-selected pivot needs a
-resumable turn boundary so the queued actions can continue after the
-reserve choice. Stat stages, status, residual effects, abilities, items,
-field effects and gimmicks follow the lifecycle work.
+## Lifecycle, stage 4
+
+The Frontier exporter maps game move data to resolved trainer-battle
+effects. Roar and Whirlwind attempt a status drag. Dragon Tail and Circle
+Throw attempt it only after damage lands and the target survives.
+The target must have an eligible reserve. Selection uses the battle RNG
+and excludes fainted Pokémon and all current field occupants, including
+Rotation wings. The entrant inherits the field position. A move still
+queued for the outgoing battler is skipped, and later attacks can hit
+the entrant. Drag clears the outgoing stat stages and emits a separate
+event. Abilities and volatile blockers are covered by later stages.
+
+Request/APP V5 uses the four formerly reserved BattleMon bytes for the
+resolved effect of each move. Its state and action layouts match V4.
+The legacy requests still ignore those bytes. Unknown V5 effect IDs are
+rejected. These effects apply to single foe targets and trainer battles.
+
+Normal switching resolves before Rotation and regular moves. The BW
+reference distinguishes both stages in
+[BuildActionOrder](https://github.com/Project-Holon/aletheia/blob/main/src/game/ov093/btl_server_flow.c#L2197).
+The eligibility reference is
+[TryForceSwitchTarget / PickRandomBenchPoke](https://github.com/Project-Holon/aletheia/blob/main/src/game/ov093/btl_server_flow.c#L6174).
+
+Dolphin confirmed a Dragon Tail hit and a Roar in the same turn.
+Each dragged in a legal reserve at its target position. The first trial
+also confirmed a Dragon Tail miss with no forced switch. The successful
+battle won in three turns, accepted the result and returned to the field.
+The native matrix covered all four formats, queued-action cancellation,
+miss/immunity, a knockout leading to replacement, and no eligible reserve.
+ASan/UBSan, the Phase 1 transport stress run, Party Viewer reconnect,
+Single apply/readback and cancel, V4 Struggle, Triple Shift and Rotation
+all passed.
+
+The successful battle logged 15 µs peak core resolution, 11 events in the
+largest batch and a 50.05 ms maximum presentation poll gap. The GC DOL
+is 247,936 B (+1,280 B). GC text/data/BSS grew by 1,136 / 168 / 192 B.
+Frontier ROM link use is 26,316,684 B (+472 B), with RAM unchanged.
+
+Pivots remain pending. A player-selected pivot needs a resumable turn
+boundary so queued actions can continue after the reserve choice. Stat
+stages, status, residual effects, abilities, items, field effects and
+gimmicks follow the lifecycle work.
