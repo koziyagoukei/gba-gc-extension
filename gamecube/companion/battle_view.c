@@ -12,7 +12,7 @@
 #include "../presentation/assets.h"
 #include "../presentation/scene.h"
 
-#define MAX_PLAN (2 * (1 + 1 + 4))
+#define MAX_PLAN (2 * BATTLE_MAX_PER_SIDE * (1 + 1 + 4))
 #define WHITE RGBA(242, 249, 255, 255)
 #define DIM RGBA(165, 191, 208, 255)
 
@@ -31,6 +31,10 @@ static struct {
     unsigned plan_count, plan_index;
     bool fetching, state_sent;
     EventLog log;
+    Position players[BC_MAX_ACTIVE];
+    unsigned player_commands, choosing;
+    Action actions[BC_MAX_ACTIONS];
+    uint16_t token;
     uint8_t outcome;
     uint16_t result_status;
     uint64_t started, turn_started;
@@ -43,6 +47,7 @@ static AssetFetch fetch;
 static uint32_t us_since(uint64_t t) { return (uint32_t)ticks_to_microsecs(gettime() - t); }
 static uint32_t build_id(void) { return b.link->client.build_id; }
 static Battler *battler(uint8_t side) { return battle_active(&b.battle, side); }
+static bool multi(void) { return b.request.format != BATTLE_FORMAT_SINGLE; }
 
 static void set_bstate(enum BState s) {
     SYS_Report("PH3 BATTLE %s -> %s\n", bstate_names[b.state], bstate_names[s]);
@@ -74,7 +79,41 @@ static bool log_digest(const char *when) {
     return true;
 }
 
+static bool send_multi_state(uint8_t phase) {
+    BattleMultiState state = {
+        .phase = phase,
+        .turn = (uint8_t)(b.battle.turn + (phase == BPHASE_CHOOSE)),
+        .outcome = b.battle.outcome ? b.battle.outcome : b.outcome,
+        .token = b.token,
+    };
+    if (phase == BPHASE_CHOOSE) {
+        const Position user = b.players[b.choosing];
+        state.actor = user.slot;
+        state.flags = battle_can_shift(&b.battle, user) ? BATTLE_MULTI_SHIFT : 0;
+    }
+    for (uint8_t side = 0; side < 2; ++side)
+        for (uint8_t slot = 0; slot < BC_MAX_ACTIVE; ++slot) {
+            const Position pos = {side, slot};
+            const Battler *x = battle_at(&b.battle, pos);
+            BattleFieldMon *m = &state.field[side][slot];
+            m->party_slot = x ? x->party_slot : BATTLE_SLOT_NONE;
+            if (!x) continue;
+            m->hp = x->hp;
+            m->max_hp = x->max_hp;
+            if (side != 0) continue;
+            memcpy(state.pp[slot], x->pp, sizeof(state.pp[slot]));
+            for (unsigned move = 0; move < 4; ++move)
+                state.targets[slot][move] = battle_command_targets(&b.battle, pos, move);
+        }
+    uint8_t bytes[BATTLE_MULTI_STATE_BYTES];
+    uint16_t status;
+    battle_multi_state_encode(&state, bytes);
+    return host_app_to(b.link, b.mode.app_id, BATTLE_OP_STATE_MULTI, bytes, sizeof(bytes), NULL, NULL, &status) &&
+           status == APP_OK;
+}
+
 static bool send_state(uint8_t phase) {
+    if (multi()) return send_multi_state(phase);
     BattleState s = {0};
     uint8_t bytes[BATTLE_STATE_BYTES];
     uint16_t status;
@@ -108,12 +147,22 @@ static bool poll_action(BattleAction *a) {
     return true;
 }
 
-// Dolphin fails the first SI write after a pause in JoyBus traffic, so every
-// frame that does not otherwise talk to the GBA polls it.
-static bool keepalive(BattleAction *out) {
+static bool poll_multi_action(BattleMultiAction *a) {
+    const uint8_t *d;
+    unsigned n;
+    uint16_t status;
+    if (!host_app_to(b.link, b.mode.app_id, BATTLE_OP_ACTION_MULTI, NULL, 0, &d, &n, &status)) return false;
+    if (status == APP_OK && battle_multi_action_decode(d, n, a)) return true;
+    SYS_Report("MULTI ACTION poll: status=%u length=%u\n", status, n);
+    return false;
+}
+
+// Keep SI traffic flowing during each presentation frame.
+static bool keepalive(bool *exit) {
     BattleAction a;
-    if (!poll_action(&a)) return false;
-    if (out) *out = a;
+    BattleMultiAction m;
+    if (multi() ? !poll_multi_action(&m) : !poll_action(&a)) return false;
+    if (exit) *exit = ((multi() ? m.flags : a.flags) & BACTION_FLAG_EXIT) != 0;
     return true;
 }
 
@@ -128,11 +177,15 @@ static void plan_add(AssetKey key) {
 static void build_plan(void) {
     b.plan_count = b.plan_index = 0;
     for (unsigned side = 0; side < 2; ++side) {
-        const PokemonRecord *record = &(side ? b.request.opponent : b.request.player)[0].record;
-        plan_add(battle_sprite_key(record, (Position){side, 0}));
-        plan_add(pkmn_nickname_label(record));
-        for (unsigned m = 0; m < 4; ++m)
-            if (record->moves[m]) plan_add(battle_move_label_key(record->moves[m]));
+        const BattleEntry *entries = side ? b.request.opponent : b.request.player;
+        const unsigned count = side ? b.request.opponent_count : b.request.player_count;
+        for (unsigned i = 0; i < count; ++i) {
+            const PokemonRecord *record = &entries[i].record;
+            plan_add(battle_sprite_key(record, (Position){side, i}));
+            plan_add(pkmn_nickname_label(record));
+            for (unsigned m = 0; m < 4; ++m)
+                if (record->moves[m]) plan_add(battle_move_label_key(record->moves[m]));
+        }
     }
 }
 
@@ -197,26 +250,48 @@ static void log_entry(const char *side, const BattleEntry *e) {
 static BattleViewStatus step_result(void) {
     BattleResult r = {0};
     uint8_t bytes[RESULT_MAX_PAYLOAD];
-    const Battler *p = battler(0), *o = battler(1);
     r.outcome = b.outcome;
     r.turns = b.battle.turn;
-    r.player_count = 1;
-    r.opponent_count = 1;
+    r.player_count = b.request.player_count;
+    r.opponent_count = b.request.opponent_count;
     r.battle_id = b.request.battle_id;
-    r.player[0].slot = p->party_slot;
-    r.player[0].flags = p->fainted ? BATTLE_RESULT_FAINTED : 0;
-    r.player[0].hp = p->hp;
-    r.player[0].status = p->status;
-    memcpy(r.player[0].pp, p->pp, 4);
-    r.opponent_hp[0] = o->hp;
+    for (unsigned i = 0; i < r.player_count; ++i) {
+        const PokemonRecord *entry = &b.request.player[i].record;
+        const Battler *x = b.init_error == BI_OK ? &b.battle.sides[0].battlers[i] : NULL;
+        r.player[i].slot = entry->slot;
+        r.player[i].hp = x ? x->hp : entry->hp;
+        r.player[i].flags = r.player[i].hp ? 0 : BATTLE_RESULT_FAINTED;
+        r.player[i].status = x ? x->status : entry->status;
+        memcpy(r.player[i].pp, x ? x->pp : entry->pp, 4);
+    }
+    for (unsigned i = 0; i < r.opponent_count; ++i)
+        r.opponent_hp[i] = b.init_error == BI_OK ? b.battle.sides[1].battlers[i].hp : b.request.opponent[i].record.hp;
     const unsigned n = battle_result_encode(&r, bytes);
     if (!send_state(BPHASE_ENDED)) return BV_LOST;
     if (!host_result(b.link, GC_MODE_BATTLE, BATTLE_RESULT_VERSION, r.battle_id, bytes, n, &b.result_status))
         return BV_LOST;
-    SYS_Report("PH3 RESULT outcome=%u turns=%u player_hp=%u/%u opponent_hp=%u/%u pp=%u,%u,%u,%u battle=%08x status=%u total_us=%u\n",
-               r.outcome, r.turns, p->hp, p->max_hp, o->hp, o->max_hp, p->pp[0], p->pp[1], p->pp[2], p->pp[3],
-               r.battle_id, b.result_status, us_since(b.started));
+    SYS_Report("PH3 RESULT outcome=%u turns=%u player_hp=%u/%u opponent_hp=%u/%u pp=%u,%u,%u,%u battle=%08x status=%u total_us=%u format=%u\n",
+               r.outcome, r.turns, r.player[0].hp, b.request.player[0].record.max_hp, r.opponent_hp[0],
+               b.request.opponent[0].record.max_hp, r.player[0].pp[0], r.player[0].pp[1], r.player[0].pp[2], r.player[0].pp[3],
+               r.battle_id, b.result_status, us_since(b.started), b.request.format);
+    if (multi())
+        for (unsigned i = 0; i < r.player_count; ++i)
+            SYS_Report("MULTI RESULT entry=%u party=%u hp=%u foe_hp=%u pp=%u,%u,%u,%u\n", i, r.player[i].slot,
+                       r.player[i].hp, r.opponent_hp[i], r.player[i].pp[0], r.player[i].pp[1], r.player[i].pp[2], r.player[i].pp[3]);
     set_bstate(B_WAIT_EXIT);
+    return BV_RUNNING;
+}
+
+static BattleViewStatus play_turn(unsigned turn) {
+    for (unsigned i = 0; i < b.log.count; ++i) {
+        const BattleEvent *e = &b.log.events[i];
+        SYS_Report("PH3 EVENT turn=%u kind=%u user=%u target=%u move=%u amount=%u hp_after=%u eff=%u outcome=%u pos=%u:%u rotation=%u\n",
+                   turn, e->kind, e->user.side, e->target.side, e->move_id, e->amount, e->hp_after, e->effectiveness,
+                   e->outcome, e->user.slot, e->target.slot, e->rotation);
+    }
+    if (!send_state(BPHASE_WAIT)) return BV_LOST;
+    battle_scene_play(&b.log);
+    set_bstate(B_PLAY);
     return BV_RUNNING;
 }
 
@@ -233,10 +308,10 @@ static BattleViewStatus step_choose(void) {
     const uint8_t turn = (uint8_t)(b.battle.turn + 1);
     if ((a.flags & BACTION_FLAG_EXIT) || (a.action == BACTION_FORFEIT && a.turn == turn)) {
         SYS_Report("PH3 ACTION turn=%u forfeit\n", turn);
-        Action f = {ACT_FORFEIT, {0, 0}, 0, {{1, 0}}};
+        Action f = {.kind = ACT_FORFEIT, .user = {0, 0}};
         battle_run_turn(&b.battle, &f, 1, &b.log);
     } else if (a.action == BACTION_MOVE && a.turn == turn) {
-        Action acts[2] = {{ACT_MOVE, {0, 0}, a.move_slot, {{1, 0}}}, {0}};
+        Action acts[2] = {{.kind = ACT_MOVE, .user = {0, 0}, .move_slot = a.move_slot, .target = {{1, 0}}}, {0}};
         if (!battle_validate_action(&b.battle, &acts[0])) {
             SYS_Report("PH3 ACTION turn=%u slot=%u REJECTED (unsupported or no PP)\n", turn, a.move_slot);
             b.state_sent = false;
@@ -250,16 +325,70 @@ static BattleViewStatus step_choose(void) {
     } else {
         return BV_RUNNING;
     }
-    for (unsigned i = 0; i < b.log.count; ++i) {
-        const BattleEvent *e = &b.log.events[i];
-        SYS_Report("PH3 EVENT turn=%u kind=%u user=%u target=%u move=%u amount=%u hp_after=%u eff=%u outcome=%u\n",
-                   turn, e->kind, e->user.side, e->target.side, e->move_id, e->amount, e->hp_after, e->effectiveness,
-                   e->outcome);
+    return play_turn(turn);
+}
+
+static bool player_can_act(Position user) {
+    if (battle_can_shift(&b.battle, user)) return true;
+    const bool rotation = b.request.format == BATTLE_FORMAT_ROTATION;
+    for (uint8_t slot = 0; slot < b.battle.sides[0].active_count; ++slot) {
+        if (!rotation && slot != user.slot) continue;
+        for (unsigned move = 0; move < 4; ++move)
+            if (battle_command_targets(&b.battle, (Position){0, slot}, move)) return true;
     }
-    if (!send_state(BPHASE_WAIT)) return BV_LOST;
-    battle_scene_play(&b.log);
-    set_bstate(B_PLAY);
-    return BV_RUNNING;
+    return false;
+}
+
+static BattleViewStatus step_multi_choose(void) {
+    const uint8_t turn = (uint8_t)(b.battle.turn + 1);
+    if (!b.player_commands) {
+        b.player_commands = battle_collect_actors(&b.battle, 0, b.players);
+        b.choosing = 0;
+        b.turn_started = gettime();
+    }
+    const Position user = b.players[b.choosing];
+    if (!b.state_sent) {
+        if (!player_can_act(user)) {
+            const Action none = {.user = user};
+            battle_run_turn(&b.battle, &none, 1, &b.log);
+            return play_turn(turn);
+        }
+        if (++b.token == 0) ++b.token;
+        if (!send_state(BPHASE_CHOOSE)) return BV_LOST;
+        b.state_sent = true;
+        battle_scene_choose(turn, user);
+        SYS_Report("MULTI PROMPT turn=%u actor=%u token=%u\n", turn, user.slot, b.token);
+    }
+    BattleMultiAction a;
+    if (!poll_multi_action(&a)) return BV_LOST;
+    if ((a.flags & BACTION_FLAG_EXIT) ||
+        (a.token == b.token && a.actor == user.slot && a.action == BACTION_FORFEIT)) {
+        const Action forfeit = {.kind = ACT_FORFEIT, .user = user};
+        battle_run_turn(&b.battle, &forfeit, 1, &b.log);
+        return play_turn(turn);
+    }
+    if (a.token != b.token || a.actor != user.slot || a.action == BACTION_NONE) return BV_RUNNING;
+    const Action act = {
+        .kind = a.action == BACTION_SHIFT ? ACT_SHIFT : ACT_MOVE,
+        .user = user, .move_slot = a.move_slot, .target = {{1, a.target}}, .rotation = a.rotation,
+    };
+    if (!battle_validate_action(&b.battle, &act)) {
+        SYS_Report("MULTI ACTION turn=%u actor=%u target=%u rejected\n", turn, user.slot, a.target);
+        b.state_sent = false;
+        return BV_RUNNING;
+    }
+    SYS_Report("MULTI ACTION turn=%u actor=%u kind=%u move_slot=%u target=%u rotation=%u\n", turn, user.slot,
+               act.kind, act.move_slot, a.target, act.rotation);
+    b.actions[b.choosing++] = act;
+    b.state_sent = false;
+    if (b.choosing < b.player_commands) return BV_RUNNING;
+    Position opponents[BC_MAX_ACTIVE];
+    const unsigned count = battle_collect_actors(&b.battle, 1, opponents);
+    for (unsigned i = 0; i < count; ++i)
+        battle_choose_at(&b.battle, opponents[i], &b.actions[b.player_commands + i]);
+    battle_run_turn(&b.battle, b.actions, b.player_commands + count, &b.log);
+    b.player_commands = 0;
+    return play_turn(turn);
 }
 
 BattleViewStatus battle_view_update(bool start_pressed, const char **message) {
@@ -291,8 +420,8 @@ BattleViewStatus battle_view_update(bool start_pressed, const char **message) {
                    b.request.format, b.request.rules, b.request.trainer_id, b.request.trainer_class,
                    b.request.environment, b.request.result_policy, b.request.type_count, b.request.battle_id,
                    fetch.info.length, fetch.wire_length, b.request_us);
-        log_entry("PLAYER", &b.request.player[0]);
-        log_entry("OPPONENT", &b.request.opponent[0]);
+        for (unsigned i = 0; i < b.request.player_count; ++i) log_entry("PLAYER", &b.request.player[i]);
+        for (unsigned i = 0; i < b.request.opponent_count; ++i) log_entry("OPPONENT", &b.request.opponent[i]);
         build_plan();
         b.status = "Receiving battle sprites and labels";
         if (!set_phase(PHASE_ASSETS, 0, b.plan_count)) return BV_LOST;
@@ -335,7 +464,7 @@ BattleViewStatus battle_view_update(bool start_pressed, const char **message) {
             set_bstate(B_CHOOSE);
         }
         return BV_RUNNING;
-    case B_CHOOSE: return step_choose();
+    case B_CHOOSE: return multi() ? step_multi_choose() : step_choose();
     case B_PLAY:
         if (!keepalive(NULL)) return BV_LOST;
         if (battle_scene_tick()) {
@@ -350,9 +479,9 @@ BattleViewStatus battle_view_update(bool start_pressed, const char **message) {
         return BV_RUNNING;
     case B_RESULT: return step_result();
     case B_WAIT_EXIT: {
-        BattleAction a;
-        if (!keepalive(&a)) return BV_LOST;
-        if (a.flags & BACTION_FLAG_EXIT) {
+        bool exit;
+        if (!keepalive(&exit)) return BV_LOST;
+        if (exit) {
             log_digest("end");
             *message = host_bye(b.link, BYE_CLIENT_EXIT) ? "Battle finished" : "Battle finished (BYE lost)";
             SYS_Report("PH3 BYE after battle\n");

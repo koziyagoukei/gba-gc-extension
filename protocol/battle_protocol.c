@@ -155,6 +155,83 @@ bool battle_action_decode(const uint8_t *p, unsigned length, BattleAction *a) {
     return true;
 }
 
+unsigned battle_multi_state_encode(const BattleMultiState *s, uint8_t *p) {
+    p[0] = s->phase;
+    p[1] = s->turn;
+    p[2] = s->outcome;
+    p[3] = s->actor;
+    p[4] = s->flags;
+    msg_put16(p+5, s->token);
+    uint8_t *q = p + 7;
+    for (unsigned side = 0; side < 2; ++side)
+        for (unsigned i = 0; i < BATTLE_FIELD_SLOTS; ++i, q += 5) {
+            const BattleFieldMon *m = &s->field[side][i];
+            q[0] = m->party_slot;
+            msg_put16(q+1, m->hp);
+            msg_put16(q+3, m->max_hp);
+        }
+    for (unsigned i = 0; i < BATTLE_FIELD_SLOTS; ++i, q += 8)
+        for (unsigned m = 0; m < 4; ++m) {
+            q[m] = s->pp[i][m];
+            q[4+m] = s->targets[i][m];
+        }
+    return BATTLE_MULTI_STATE_BYTES;
+}
+
+bool battle_multi_state_decode(const uint8_t *p, unsigned n, BattleMultiState *s) {
+    if (n != BATTLE_MULTI_STATE_BYTES || p[0] < BPHASE_WAIT || p[0] > BPHASE_ENDED ||
+        p[2] > OUTCOME_UNSUPPORTED || p[3] >= BATTLE_FIELD_SLOTS ||
+        (p[4] & ~BATTLE_MULTI_SHIFT) || (p[0] == BPHASE_CHOOSE && !msg_get16(p+5)))
+        return false;
+    s->phase = p[0];
+    s->turn = p[1];
+    s->outcome = p[2];
+    s->actor = p[3];
+    s->flags = p[4];
+    s->token = msg_get16(p+5);
+    const uint8_t *q = p + 7;
+    for (unsigned side = 0; side < 2; ++side)
+        for (unsigned i = 0; i < BATTLE_FIELD_SLOTS; ++i, q += 5) {
+            BattleFieldMon *m = &s->field[side][i];
+            m->party_slot = q[0];
+            m->hp = msg_get16(q+1);
+            m->max_hp = msg_get16(q+3);
+            if (m->hp > m->max_hp) return false;
+        }
+    for (unsigned i = 0; i < BATTLE_FIELD_SLOTS; ++i, q += 8)
+        for (unsigned m = 0; m < 4; ++m) {
+            if (q[4+m] & ~(BATTLE_TARGET_AUTO | 7u)) return false;
+            s->pp[i][m] = q[m];
+            s->targets[i][m] = q[4+m];
+        }
+    return true;
+}
+
+unsigned battle_multi_action_encode(const BattleMultiAction *a, uint8_t *p) {
+    msg_put16(p, a->token);
+    p[2] = a->actor;
+    p[3] = a->action;
+    p[4] = a->move_slot;
+    p[5] = a->target;
+    p[6] = a->rotation;
+    p[7] = a->flags;
+    return BATTLE_MULTI_ACTION_BYTES;
+}
+
+bool battle_multi_action_decode(const uint8_t *p, unsigned n, BattleMultiAction *a) {
+    if (n != BATTLE_MULTI_ACTION_BYTES || p[2] >= BATTLE_FIELD_SLOTS || p[3] > BACTION_SHIFT ||
+        p[4] >= 4 || p[5] >= BATTLE_FIELD_SLOTS || p[6] > BROT_RIGHT || (p[7] & ~BACTION_FLAG_EXIT))
+        return false;
+    a->token = msg_get16(p);
+    a->actor = p[2];
+    a->action = p[3];
+    a->move_slot = p[4];
+    a->target = p[5];
+    a->rotation = p[6];
+    a->flags = p[7];
+    return true;
+}
+
 unsigned battle_result_encode(const BattleResult *r, uint8_t *p) {
     p[0] = r->outcome;
     p[1] = r->turns;

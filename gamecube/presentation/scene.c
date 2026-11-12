@@ -29,9 +29,8 @@ bool battle_scene_begin(uint32_t build, const Battle *battle) {
 }
 
 static const Battler *battler_at(Position p) {
-    const Side *side = &scene.battle->sides[p.side];
-    if (p.slot >= side->active_count || side->active[p.slot] >= side->count) return NULL;
-    return &side->battlers[side->active[p.slot]];
+    if (!battle_layout_anchor(scene.layout, p)) return NULL;
+    return &scene.battle->sides[p.side].battlers[scene.animation.actor[p.side][p.slot].battler];
 }
 
 void battle_scene_show_target(Position pos) {
@@ -95,11 +94,13 @@ static void draw_hud(Position pos, const BattlerAnchor *a, const ActorFrame *f, 
     if (!f->visible || !b) return;
     const bool targeted = scene.show_target && scene.target.side == pos.side && scene.target.slot == pos.slot;
     const bool selecting = scene.choosing && scene.command_user.side == pos.side && scene.command_user.slot == pos.slot;
+    const bool compact = scene.layout->active_per_side > 1;
+    const bool front = scene.layout->format == BATTLE_FORMAT_ROTATION && pos.slot == BPOS_CENTER;
     ui_panel(a->hud.x, a->hud.y, a->hud.w, a->hud.h,
-             targeted ? UI_ROSE : selecting ? UI_EDGE : UI_SKY,
+             targeted ? UI_ROSE : selecting ? UI_EDGE : front ? UI_MINT : UI_SKY,
              selecting ? RGBA(223, 249, 226, 255) : UI_CREAM);
     CacheEntry *name = battle_label(scene.build, &b->entry->record);
-    if (name) draw_label(name, a->name.x, a->name.y, 160, 22);
+    if (name) draw_label(name, a->name.x, a->name.y, compact ? 112 : 160, compact ? 16 : 22);
     else render_text(a->name.x, a->name.y, 1, UI_INK, "Species %u", b->entry->record.species);
     render_text(a->hud.x + a->hud.w - 67, a->name.y + 3, 1, UI_MUTED, "Lv.%u", b->level);
     art(ART_HP_FRAME, a->hp_bar, UI_EDGE);
@@ -116,8 +117,14 @@ static void draw_hud(Position pos, const BattlerAnchor *a, const ActorFrame *f, 
         art(ART_STATUS, (ScreenRect){a->status.x, a->status.y, 12, 12}, UI_GOLD);
         render_text(a->status.x + 13, a->status.y - 2, 0.8f, UI_INK, "STS");
     }
-    art(ART_PARTY, (ScreenRect){a->party.x, a->party.y, 12, 12}, UI_MUTED);
-    render_text(a->party.x + 15, a->party.y - 2, 0.8f, UI_MUTED, "P%u", b->party_slot + 1);
+    if (compact) {
+        static const char *const positions[] = {"L", "C", "R"};
+        const char *label = front ? "FRONT" : scene.layout->active_per_side == 2 && pos.slot == 1 ? "R" : positions[pos.slot];
+        render_text(a->hud.x + a->hud.w - (front ? 48 : 20), a->hp_text.y, 0.85f, UI_INK, "%s", label);
+    } else {
+        art(ART_PARTY, (ScreenRect){a->party.x, a->party.y, 12, 12}, UI_MUTED);
+        render_text(a->party.x + 15, a->party.y - 2, 0.8f, UI_MUTED, "P%u", b->party_slot + 1);
+    }
 }
 
 static void draw_target(void) {
@@ -139,7 +146,9 @@ static const char *message_text(const SceneMessage *msg) {
     case MSG_FAINT: return "Fainted!";
     case MSG_CANCEL: return "The battle was cancelled.";
     case MSG_NO_MOVES: return "No supported move remains.";
-    case MSG_RESULT: return msg->outcome == OUTCOME_WIN ? "You won!" : "You lost...";
+    case MSG_SHIFT: return "Shifted to the center!";
+    case MSG_ROTATE: return "Rotated to the front!";
+    case MSG_RESULT: return msg->outcome == OUTCOME_WIN ? "You won!" : msg->outcome == OUTCOME_LOSE ? "You lost..." : "Draw.";
     case MSG_NONE: return "";
     }
     return "";
@@ -154,7 +163,8 @@ static void draw_message(const BattleLayout *layout) {
     const SceneMessage *msg = &scene.animation.message;
     const float x = layout->message.x + 14, y = layout->message.y + 8;
     render_text(x, y, 1.25f, UI_INK, "%s", message_text(msg));
-    if (msg->kind == MSG_ENTER || msg->kind == MSG_MOVE || msg->kind == MSG_FAINT) {
+    if (msg->kind == MSG_ENTER || msg->kind == MSG_MOVE || msg->kind == MSG_FAINT ||
+        msg->kind == MSG_SHIFT || msg->kind == MSG_ROTATE) {
         const Battler *b = battler_at(msg->subject);
         CacheEntry *name = b ? battle_label(scene.build, &b->entry->record) : NULL;
         if (name) draw_label(name, x, y + 27, 190, 23);

@@ -29,7 +29,44 @@ static const BattleLayout single = {
     },
 };
 
-static const BattleLayout *const layouts[] = { &single };
+// Compact HUD cards sit below the corresponding position; the center of
+// a Rotation lineup stands forward of the wings.
+#define CARD(x, feet_y, size, card_y) { \
+    .feet = {x, feet_y}, .sprite_size = size, \
+    .platform = {x - size * 0.65f, feet_y - 12, size * 1.3f, 20}, \
+    .hud = {x - 95, card_y, 190, 49}, .hp_bar = {x - 87, card_y + 20, 174, 8}, \
+    .name = {x - 87, card_y + 2}, .hp_text = {x - 87, card_y + 31}, \
+    .status = {x + 26, card_y + 32}, .party = {x + 61, card_y + 32}, \
+    .cursor = {x, feet_y - size - 8}, \
+    .attack_origin = {x, feet_y - size / 2}, .hit_center = {x, feet_y - size / 2}, \
+}
+#define MULTI_CANVAS \
+    .viewport = {0, 0, 640, 480}, .field = {0, 0, 640, 354}, \
+    .command = {24, 362, 592, 26}, .message = {24, 394, 592, 66}, .field_center = {320, 208}
+
+static const BattleLayout double_layout = {
+    .format = BATTLE_FORMAT_DOUBLE, .active_per_side = 2, MULTI_CANVAS,
+    .anchors = {
+        {CARD(176, 301, 99, 304), CARD(422, 301, 99, 304)},
+        {CARD(218, 139, 86, 142), CARD(464, 139, 86, 142)},
+    },
+};
+static const BattleLayout triple = {
+    .format = BATTLE_FORMAT_TRIPLE, .active_per_side = 3, MULTI_CANVAS,
+    .anchors = {
+        {CARD(104, 301, 94, 304), CARD(310, 301, 99, 304), CARD(516, 301, 94, 304)},
+        {CARD(124, 139, 82, 142), CARD(330, 139, 86, 142), CARD(536, 139, 82, 142)},
+    },
+};
+static const BattleLayout rotation = {
+    .format = BATTLE_FORMAT_ROTATION, .active_per_side = 3, MULTI_CANVAS,
+    .anchors = {
+        {CARD(104, 272, 82, 282), CARD(310, 301, 108, 304), CARD(516, 272, 82, 282)},
+        {CARD(124, 127, 70, 131), CARD(330, 151, 94, 154), CARD(536, 127, 70, 131)},
+    },
+};
+
+static const BattleLayout *const layouts[] = { &single, &double_layout, &triple, &rotation };
 
 const BattleLayout *battle_layout_find(enum BattleFormat format) {
     for (unsigned i = 0; i < sizeof(layouts) / sizeof(*layouts); ++i)

@@ -122,11 +122,11 @@ static void test_core(void) {
     spread.target = BTARGET_ALL_FOES;
     assert(battle_move_supported(&r, &spread));
     r.format = BATTLE_FORMAT_DOUBLE;
-    assert(!battle_move_supported(&r, &spread));
+    assert(battle_move_supported(&r, &spread));
     r.format = BATTLE_FORMAT_SINGLE;
-    Action bad = {ACT_MOVE, {0, 0}, 1, {{1, 0}}};
+    Action bad = {.kind = ACT_MOVE, .move_slot = 1, .target = {{1, 0}}};
     assert(!battle_validate_action(&b, &bad));
-    Action acts[2] = {{ACT_MOVE, {0, 0}, 0, {{1, 0}}}, {ACT_NONE, {1, 0}, 0, {{0, 0}}}};
+    Action acts[2] = {{.kind = ACT_MOVE, .target = {{1, 0}}}, {0}};
     battle_choose_ai(&b, 1, &acts[1]);
     assert(acts[1].kind == ACT_MOVE && acts[1].move_slot == 0);
     battle_run_turn(&b, acts, 2, &log);
@@ -150,7 +150,7 @@ static void test_core(void) {
     r.player[0].mon.moves[0].type = T_NORMAL;
     assert(battle_init(&b, &r, 1) == BI_OK);
     assert(battle_damage(&b, battle_active(&b, 0), &battle_active(&b, 0)->moves[0], battle_active(&b, 1), 100, &eff) == 0 && eff == 0);
-    Action forfeit[1] = {{ACT_FORFEIT, {0, 0}, 0, {{1, 0}}}};
+    Action forfeit[1] = {{.kind = ACT_FORFEIT}};
     battle_run_turn(&b, forfeit, 1, &log);
     assert(b.outcome == OUTCOME_CANCELLED);
 
@@ -166,10 +166,196 @@ static void test_core(void) {
     assert(battle_init(&b, &r, 1) == BI_PARTY_SIZE);
 }
 
+static void make_multi(BattleRequest *r, uint8_t format) {
+    make_request(r);
+    r->format = format;
+    r->player_count = r->opponent_count = r->active_per_side = battle_formation_size(format);
+    for (unsigned side = 0; side < 2; ++side) {
+        BattleEntry *entries = side ? r->opponent : r->player;
+        for (uint8_t i = 0; i < r->active_per_side; ++i) {
+            make_entry(&entries[i], 0x80 + 3 * side + i, 4 + i, 50, 200, 60, 60 + 20*i + 10*side, T_NORMAL);
+            set_move(&entries[i], 0, 33, hit(40, T_NORMAL, BCAT_PHYSICAL), 20);
+            entries[i].mon.moves[0].accuracy = 0;
+        }
+    }
+}
+
+static Action move(uint8_t side, uint8_t source, uint8_t target) {
+    return (Action){.kind = ACT_MOVE, .user = {side, source}, .target = {{1 - side, target}}};
+}
+
+static unsigned event_count(const EventLog *log, EventKind kind) {
+    unsigned count = 0;
+    for (unsigned i = 0; i < log->count; ++i)
+        count += log->events[i].kind == kind;
+    return count;
+}
+
+static void test_double(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_multi(&r, BATTLE_FORMAT_DOUBLE);
+    r.player[0].mon.moves[0].priority = 1;
+    assert(battle_init(&b, &r, 73) == BI_OK);
+    Action actions[] = {move(1, 0, 1), move(0, 0, 1), move(0, 1, 1), move(1, 1, 0)};
+    Action invalid = move(0, 0, 2);
+    assert(!battle_validate_action(&b, &invalid));
+    invalid.target.pos = (Position){0, 1};
+    assert(!battle_validate_action(&b, &invalid));
+    battle_run_turn(&b, actions, 4, &log);
+    Position expected[] = {{0, 0}, {1, 1}, {0, 1}, {1, 0}};
+    unsigned used = 0;
+    for (unsigned i = 0; i < log.count; ++i)
+        if (log.events[i].kind == EV_MOVE_USED) {
+            assert(used < 4);
+            assert(log.events[i].user.side == expected[used].side && log.events[i].user.slot == expected[used].slot);
+            ++used;
+        }
+    assert(used == 4);
+    for (unsigned i = 0; i < 4; ++i) assert(battle_at(&b, actions[i].user)->pp[0] == 19);
+
+    r.player[0].mon.moves[0].target = BTARGET_ALL_FOES;
+    r.opponent[1].record.hp = 1;
+    assert(battle_init(&b, &r, 73) == BI_OK);
+    battle_run_turn(&b, actions, 4, &log);
+    assert(event_count(&log, EV_MOVE_USED) == 3 && event_count(&log, EV_FAINT) == 1);
+    assert(log.events[1].kind == EV_DAMAGE && log.events[1].target.slot == 0);
+    assert(log.events[2].kind == EV_DAMAGE && log.events[2].target.slot == 1);
+    assert(battle_at(&b, (Position){1, 1})->pp[0] == 20);
+    assert(battle_at(&b, (Position){0, 0})->pp[0] == 19 && battle_at(&b, (Position){0, 1})->pp[0] == 19);
+
+    // A side wins/loses only when its entire field is down.
+    r.opponent[0].record.hp = 1;
+    assert(battle_init(&b, &r, 73) == BI_OK);
+    battle_run_turn(&b, actions, 4, &log);
+    assert(b.outcome == OUTCOME_WIN && event_count(&log, EV_FAINT) == 2);
+    r.player[0].record.hp = r.player[1].record.hp = 1;
+    r.opponent[1].mon.moves[0].priority = 2;
+    r.opponent[1].mon.moves[0].target = BTARGET_ALL_FOES;
+    assert(battle_init(&b, &r, 73) == BI_OK);
+    battle_run_turn(&b, actions, 4, &log);
+    assert(b.outcome == OUTCOME_LOSE && event_count(&log, EV_MOVE_USED) == 1);
+
+    make_multi(&r, BATTLE_FORMAT_DOUBLE);
+    r.player[0].mon.moves[0].target = BTARGET_ALL_ADJACENT;
+    assert(battle_init(&b, &r, 73) == BI_OK);
+    assert(battle_target_mask(&b, (Position){0, 0}, &r.player[0].mon.moves[0], 0) == 2);
+    r.player[0].mon.moves[0].target = BTARGET_SELF;
+    assert(battle_target_mask(&b, (Position){0, 0}, &r.player[0].mon.moves[0], 0) == 1);
+
+    make_multi(&r, BATTLE_FORMAT_DOUBLE);
+    r.player[0].record.speed = r.player[1].record.speed;
+    bool first[2] = {false, false};
+    const Action ties[] = {move(0, 0, 0), move(0, 1, 0)};
+    for (unsigned seed = 1; seed < 32; ++seed) {
+        assert(battle_init(&b, &r, seed * 0x9e3779b9u) == BI_OK);
+        battle_run_turn(&b, ties, 2, &log);
+        first[log.events[0].user.slot] = true;
+    }
+    assert(first[0] && first[1]);
+}
+
+static void test_triple(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_multi(&r, BATTLE_FORMAT_TRIPLE);
+    r.player[0].mon.moves[0].target |= BTARGET_IGNORE_DISTANCE;
+    assert(battle_init(&b, &r, 17) == BI_OK);
+    const bool neighbors[3][3] = {{true, true, false}, {true, true, true}, {false, true, true}};
+    for (uint8_t a = 0; a < 3; ++a)
+        for (uint8_t d = 0; d < 3; ++d) {
+            assert(battle_at(&b, (Position){0, a}) && battle_at(&b, (Position){1, d}));
+            assert(battle_adjacent(&b, (Position){0, a}, (Position){1, d}) == neighbors[a][d]);
+            assert(battle_adjacent(&b, (Position){0, a}, (Position){0, d}) == (a != d && neighbors[a][d]));
+            const Action near = move(1, a, d);
+            assert(battle_validate_action(&b, &near) == neighbors[a][d]);
+        }
+    const Action distant = move(0, BPOS_LEFT, BPOS_RIGHT);
+    assert(battle_validate_action(&b, &distant));
+
+    const Action six[] = {distant, move(0, 1, 1), move(0, 2, 1), move(1, 0, 1), move(1, 1, 1), move(1, 2, 2)};
+    battle_run_turn(&b, six, 6, &log);
+    assert(event_count(&log, EV_MOVE_USED) == 6);
+
+    for (uint8_t edge = BPOS_LEFT; edge <= BPOS_RIGHT; edge += 2) {
+        assert(battle_init(&b, &r, 17) == BI_OK);
+        const Action actions[] = {{.kind = ACT_SHIFT, .user = {0, edge}},
+                                  move(0, BPOS_CENTER, (uint8_t)(2 - edge))};
+        const uint8_t slot = battle_at(&b, (Position){0, edge})->party_slot;
+        assert(battle_validate_action(&b, &actions[0]));
+        battle_run_turn(&b, actions, 2, &log);
+        assert(log.events[0].kind == EV_SHIFT && log.events[0].target.slot == BPOS_CENTER);
+        assert(battle_at(&b, (Position){0, BPOS_CENTER})->party_slot == slot);
+        assert(log.events[1].kind == EV_MOVE_USED && log.events[1].user.slot == edge);
+        assert(log.events[1].target.slot != 2 - edge); // Rechecked distance after the swap.
+    }
+}
+
+static void test_rotation(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_multi(&r, BATTLE_FORMAT_ROTATION);
+    r.player[0].record.speed = 140;
+    r.player[1].record.speed = 10;
+    r.player[0].record.status = 16;
+    assert(battle_init(&b, &r, 88) == BI_OK);
+    b.sides[0].battlers[0].stat_stages[2] = -2;
+    b.sides[0].battlers[0].hp = 171;
+    Position actors[3];
+    assert(battle_collect_actors(&b, 0, actors) == 1 && actors[0].slot == BPOS_CENTER);
+    Action actions[] = {move(0, BPOS_CENTER, BPOS_CENTER), move(1, BPOS_CENTER, BPOS_CENTER)};
+    Action wing = move(0, BPOS_LEFT, BPOS_CENTER);
+    assert(!battle_validate_action(&b, &wing));
+    battle_run_turn(&b, actions, 2, &log);
+    assert(log.events[0].kind == EV_MOVE_USED && log.events[0].user.side == 1);
+
+    actions[0].rotation = BROT_LEFT;
+    assert(battle_validate_action(&b, &actions[0]));
+    const uint16_t old_hp = b.sides[0].battlers[1].hp;
+    battle_run_turn(&b, actions, 2, &log);
+    assert(log.events[0].kind == EV_ROTATE && log.events[1].kind == EV_MOVE_USED && log.events[1].user.side == 0);
+    assert(battle_active(&b, 0) == &b.sides[0].battlers[0] && battle_active(&b, 0)->status == 16);
+    assert(battle_active(&b, 0)->stat_stages[2] == -2 && b.sides[0].battlers[1].hp == old_hp);
+    actions[0].rotation = BROT_RIGHT;
+    battle_run_turn(&b, actions, 2, &log);
+    assert(battle_active(&b, 0) == &b.sides[0].battlers[1]);
+    b.sides[0].battlers[0].hp = 0;
+    b.sides[0].battlers[0].fainted = true;
+    actions[0].rotation = BROT_LEFT;
+    assert(!battle_validate_action(&b, &actions[0]));
+    assert(!battle_command_targets(&b, (Position){0, BPOS_LEFT}, 0));
+}
+
+static void test_multi_wire(void) {
+    uint8_t bytes[WIRE_PAYLOAD];
+    BattleMultiState state = {.phase = BPHASE_CHOOSE, .turn = 6, .actor = 2, .flags = BATTLE_MULTI_SHIFT, .token = 513};
+    BattleMultiState decoded;
+    state.field[1][2] = (BattleFieldMon){0x85, 45, 90};
+    state.pp[2][1] = 7;
+    state.targets[2][1] = 6;
+    assert(battle_multi_state_encode(&state, bytes) == BATTLE_MULTI_STATE_BYTES);
+    assert(battle_multi_state_decode(bytes, BATTLE_MULTI_STATE_BYTES, &decoded));
+    assert(decoded.token == 513 && decoded.field[1][2].hp == 45 && decoded.targets[2][1] == 6);
+    assert(!battle_multi_state_decode(bytes, BATTLE_MULTI_STATE_BYTES - 1, &decoded));
+    BattleMultiAction action = {513, 2, BACTION_MOVE, 1, 2, BROT_RIGHT, 0}, reply;
+    assert(battle_multi_action_encode(&action, bytes) == BATTLE_MULTI_ACTION_BYTES);
+    assert(battle_multi_action_decode(bytes, BATTLE_MULTI_ACTION_BYTES, &reply));
+    assert(reply.token == 513 && reply.actor == 2 && reply.rotation == BROT_RIGHT);
+    bytes[5] = 3;
+    assert(!battle_multi_action_decode(bytes, BATTLE_MULTI_ACTION_BYTES, &reply));
+}
+
 int main(void) {
     test_request_roundtrip();
     test_messages();
     test_core();
+    test_multi_wire();
+    test_double();
+    test_triple();
+    test_rotation();
     puts("battle tests passed");
     return 0;
 }

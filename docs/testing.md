@@ -43,6 +43,15 @@ For the SDK-free animation regression:
 
 ```sh
 cc -std=c11 -Wall -Wextra -Werror -Iprotocol -Igamecube/battle \
-  gamecube/presentation/layout.c gamecube/presentation/animation.c \
-  gamecube/presentation/presentation_test.c -o build/presentation-test
+  protocol/wire.c protocol/message.c protocol/pkmn_protocol.c protocol/battle_protocol.c \
+  gamecube/battle/battle_core.c gamecube/presentation/layout.c \
+  gamecube/presentation/animation.c gamecube/presentation/presentation_test.c -o build/presentation-test
 ```
+
+
+## Multi-format battle checks
+
+Use a Frontier non-release ROM with the vendored battle protocol and a copy of a
+save. In the GBA Utilities debug menu, choose **GC Double (test)**, **GC Triple
+(test)** or **GC Rotation (test)**. The mode allocates test teams for both sides
+and uses display-only results. See [multi-format mechanics and test cases](multiformat.md).

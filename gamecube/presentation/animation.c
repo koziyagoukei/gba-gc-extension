@@ -9,6 +9,7 @@ void animation_init(BattleAnimation *a, const Battle *battle) {
         const Side *s = &battle->sides[side];
         for (unsigned slot = 0; slot < s->active_count && slot < BC_MAX_ACTIVE; ++slot) {
             const Battler *b = &s->battlers[s->active[slot]];
+            a->actor[side][slot].battler = s->active[slot];
             a->actor[side][slot].hp = b->hp;
             a->actor[side][slot].max_hp = b->max_hp;
         }
@@ -36,20 +37,22 @@ static void reset_steps(BattleAnimation *a) {
 void animation_intro(BattleAnimation *a, const BattleLayout *layout) {
     reset_steps(a);
     add(a, (AnimationStep){.kind = ANIM_FADE, .frames = 20});
-    message(a, (SceneMessage){.kind = MSG_INTRO}, 80);
+    const bool single = layout->active_per_side == 1;
+    message(a, (SceneMessage){.kind = MSG_INTRO}, single ? 80 : 38);
     for (int side = 1; side >= 0; --side)
         for (unsigned slot = 0; slot < layout->active_per_side; ++slot) {
             const Position pos = {side, slot};
             if (!a->actor[side][slot].max_hp) continue;
             message(a, (SceneMessage){.kind = MSG_ENTER, .subject = pos}, 0);
             add(a, (AnimationStep){.kind = ANIM_ENTER, .target = pos, .frames = 18});
-            wait(a, 40);
+            wait(a, single ? 40 : 6);
         }
 }
 
 void animation_play(BattleAnimation *a, const BattleLayout *layout, const EventLog *log) {
     reset_steps(a);
     a->message = (SceneMessage){0};
+    const bool single = layout->active_per_side == 1;
     for (unsigned i = 0; i < log->count && i < BC_MAX_EVENTS; ++i) {
         const BattleEvent *e = &log->events[i];
         if (e->kind <= EV_FAINT && !battle_layout_anchor(layout, e->target)) continue;
@@ -57,18 +60,18 @@ void animation_play(BattleAnimation *a, const BattleLayout *layout, const EventL
         case EV_MOVE_USED:
             if (!battle_layout_anchor(layout, e->user)) break;
             message(a, (SceneMessage){MSG_MOVE, e->user, e->move_id, 0}, 0);
-            add(a, (AnimationStep){.kind = ANIM_ATTACK, .source = e->user, .target = e->target, .frames = 16});
-            wait(a, 16);
+            add(a, (AnimationStep){.kind = ANIM_ATTACK, .source = e->user, .target = e->target, .frames = single ? 16 : 10});
+            wait(a, single ? 16 : 4);
             break;
         case EV_MISS:
             message(a, (SceneMessage){.kind = MSG_MISS, .subject = e->target}, 50);
             break;
         case EV_DAMAGE:
-            add(a, (AnimationStep){.kind = ANIM_HIT, .target = e->target, .frames = 28});
+            add(a, (AnimationStep){.kind = ANIM_HIT, .target = e->target, .frames = single ? 28 : 16});
             add(a, (AnimationStep){.kind = ANIM_HP, .target = e->target, .hp = e->hp_after});
             if (e->effectiveness > 4) message(a, (SceneMessage){.kind = MSG_STRONG}, 50);
             else if (e->effectiveness < 4) message(a, (SceneMessage){.kind = MSG_WEAK}, 50);
-            else wait(a, 12);
+            else wait(a, single ? 12 : 4);
             break;
         case EV_NO_EFFECT:
             message(a, (SceneMessage){.kind = MSG_IMMUNE, .subject = e->target}, 50);
@@ -83,8 +86,16 @@ void animation_play(BattleAnimation *a, const BattleLayout *layout, const EventL
         case EV_NO_MOVES:
             message(a, (SceneMessage){.kind = MSG_NO_MOVES}, 30);
             break;
+        case EV_SHIFT:
+            add(a, (AnimationStep){.kind = ANIM_SHIFT, .source = e->user, .target = e->target});
+            message(a, (SceneMessage){.kind = MSG_SHIFT, .subject = e->target}, 22);
+            break;
+        case EV_ROTATE:
+            add(a, (AnimationStep){.kind = ANIM_ROTATE, .target = e->target, .rotation = e->rotation});
+            message(a, (SceneMessage){.kind = MSG_ROTATE, .subject = e->target}, 22);
+            break;
         case EV_END:
-            if (e->outcome == OUTCOME_WIN || e->outcome == OUTCOME_LOSE)
+            if (e->outcome == OUTCOME_WIN || e->outcome == OUTCOME_LOSE || e->outcome == OUTCOME_DRAW)
                 message(a, (SceneMessage){.kind = MSG_RESULT, .outcome = e->outcome}, 30);
             break;
         }
@@ -120,7 +131,7 @@ static bool advance(BattleAnimation *a, const BattleLayout *layout, const Animat
         a->effect = battle_layout_anchor(layout, s->target)->hit_center;
         break;
     case ANIM_HP: {
-        const float step = actor->max_hp / 48.0f;
+        const float step = actor->max_hp / (layout->active_per_side == 1 ? 48.0f : 22.0f);
         actor->hp -= step < 1 ? 1 : step;
         if (actor->hp > s->hp) return false;
         actor->hp = s->hp;
@@ -130,6 +141,21 @@ static bool advance(BattleAnimation *a, const BattleLayout *layout, const Animat
         actor->drop = battle_layout_anchor(layout, s->target)->sprite_size * t;
         if (t >= 1) actor->visible = false;
         break;
+    case ANIM_SHIFT: {
+        ActorFrame *source = &a->actor[s->source.side][s->source.slot];
+        const ActorFrame old = *actor;
+        *actor = *source;
+        *source = old;
+        return true;
+    }
+    case ANIM_ROTATE: {
+        ActorFrame *side = a->actor[s->target.side];
+        ActorFrame old[BC_MAX_ACTIVE];
+        memcpy(old, side, sizeof(old));
+        for (uint8_t slot = 0; slot < BC_MAX_ACTIVE; ++slot)
+            side[slot] = old[battle_rotation_origin(s->rotation, slot)];
+        return true;
+    }
     }
     return f + 1 >= s->frames;
 }

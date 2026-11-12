@@ -13,8 +13,8 @@ static uint32_t next_random(Battle *b) {
 const char *battle_init_error_name(int error) {
     switch (error) {
     case BI_OK: return "ok";
-    case BI_FORMAT: return "only SINGLE battles are implemented";
-    case BI_PARTY_SIZE: return "only one Pokemon per side is implemented";
+    case BI_FORMAT: return "invalid format or active count";
+    case BI_PARTY_SIZE: return "test format requires an exact starting lineup and display-only multi results";
     case BI_NO_PLAYER_MOVES: return "player has no supported move";
     case BI_NO_OPPONENT_MOVES: return "opponent has no supported move";
     case BI_BAD_TYPES: return "type data out of range";
@@ -25,8 +25,9 @@ const char *battle_init_error_name(int error) {
 
 bool battle_move_supported(const BattleRequest *r, const BattleMove *m) {
     return m->unsupported == 0 && (m->category == BCAT_PHYSICAL || m->category == BCAT_SPECIAL) &&
-           m->power > 0 && m->priority == 0 &&
-           (m->target == BTARGET_SINGLE || (m->target == BTARGET_ALL_FOES && r->format == BATTLE_FORMAT_SINGLE)) &&
+           m->power > 0 &&
+           (m->target & BTARGET_CLASS_MASK) >= BTARGET_SINGLE &&
+           (m->target & BTARGET_CLASS_MASK) <= BTARGET_SELF &&
            m->type < r->type_count &&
            m->accuracy <= 100;
 }
@@ -57,9 +58,104 @@ static void load_battler(Battler *out, const BattleEntry *e) {
     out->fainted = r->hp == 0;
 }
 
+unsigned battle_formation_size(uint8_t format) {
+    switch (format) {
+    case BATTLE_FORMAT_SINGLE: return 1;
+    case BATTLE_FORMAT_DOUBLE: return 2;
+    case BATTLE_FORMAT_TRIPLE:
+    case BATTLE_FORMAT_ROTATION: return 3;
+    default: return 0;
+    }
+}
+
+const Battler *battle_at(const Battle *b, Position p) {
+    if (p.side > 1 || p.slot >= b->sides[p.side].active_count) return NULL;
+    const Side *s = &b->sides[p.side];
+    return &s->battlers[s->active[p.slot]];
+}
+
+static Battler *mutable_at(Battle *b, Position p) {
+    Side *s = &b->sides[p.side];
+    return &s->battlers[s->active[p.slot]];
+}
+
+static bool rotation_battle(const Battle *b) {
+    return b->request->format == BATTLE_FORMAT_ROTATION;
+}
+
 Battler *battle_active(Battle *b, uint8_t side) {
-    Side *s = &b->sides[side];
-    return &s->battlers[s->active[0]];
+    return mutable_at(b, (Position){side, rotation_battle(b) ? BPOS_CENTER : 0});
+}
+
+uint8_t battle_rotation_slot(uint8_t rotation) {
+    switch (rotation) {
+    case BROT_KEEP: return BPOS_CENTER;
+    case BROT_LEFT: return BPOS_LEFT;
+    case BROT_RIGHT: return BPOS_RIGHT;
+    default: return BATTLE_SLOT_NONE;
+    }
+}
+
+uint8_t battle_rotation_origin(uint8_t rotation, uint8_t destination) {
+    static const uint8_t origins[3][3] = {
+        {BPOS_LEFT, BPOS_CENTER, BPOS_RIGHT},
+        {BPOS_RIGHT, BPOS_LEFT, BPOS_CENTER},
+        {BPOS_CENTER, BPOS_RIGHT, BPOS_LEFT},
+    };
+    return origins[rotation][destination];
+}
+
+bool battle_adjacent(const Battle *b, Position a, Position d) {
+    static const uint8_t triple_neighbors[] = {0x3, 0x7, 0x6};
+    if (!battle_at(b, a) || !battle_at(b, d) || (a.side == d.side && a.slot == d.slot)) return false;
+    if (b->request->format == BATTLE_FORMAT_TRIPLE) return triple_neighbors[a.slot] & (1u << d.slot);
+    if (rotation_battle(b)) return a.slot == BPOS_CENTER && d.slot == BPOS_CENTER;
+    return true;
+}
+
+bool battle_can_shift(const Battle *b, Position p) {
+    const Battler *x = battle_at(b, p);
+    return b->request->format == BATTLE_FORMAT_TRIPLE && p.slot != BPOS_CENTER && x && !x->fainted;
+}
+
+uint8_t battle_target_mask(const Battle *b, Position user, const BattleMove *m, uint8_t side) {
+    if (side > 1 || !battle_at(b, user)) return 0;
+    const uint8_t target = m->target & BTARGET_CLASS_MASK;
+    if (target == BTARGET_SELF) return side == user.side ? 1u << user.slot : 0;
+    if (side == user.side && target != BTARGET_ALL_ADJACENT) return 0;
+    uint8_t mask = 0;
+    for (uint8_t slot = 0; slot < b->sides[side].active_count; ++slot) {
+        const Position p = {side, slot};
+        if ((p.side == user.side && p.slot == user.slot) || battle_at(b, p)->fainted) continue;
+        if (rotation_battle(b) && slot != BPOS_CENTER) continue;
+        if ((m->target & BTARGET_IGNORE_DISTANCE) || battle_adjacent(b, user, p))
+            mask |= 1u << slot;
+    }
+    return mask;
+}
+
+uint8_t battle_command_targets(const Battle *b, Position user, unsigned slot) {
+    const Battler *x = battle_at(b, user);
+    if (!x || x->fainted || slot >= 4 || !(battle_usable_moves(b, x) & (1u << slot))) return 0;
+    const BattleMove *m = &x->moves[slot];
+    const uint8_t target = m->target & BTARGET_CLASS_MASK;
+    if (rotation_battle(b))
+        return target == BTARGET_SELF ? BATTLE_TARGET_AUTO :
+               (1u << BPOS_CENTER) | (target == BTARGET_SINGLE ? 0 : BATTLE_TARGET_AUTO);
+    const uint8_t foes = battle_target_mask(b, user, m, 1 - user.side);
+    if (target == BTARGET_SINGLE) return foes;
+    return (foes || battle_target_mask(b, user, m, user.side)) ? foes | BATTLE_TARGET_AUTO : 0;
+}
+
+unsigned battle_collect_actors(const Battle *b, uint8_t side, Position *out) {
+    if (rotation_battle(b)) {
+        out[0] = (Position){side, BPOS_CENTER};
+        return 1;
+    }
+    unsigned count = 0;
+    for (uint8_t slot = 0; slot < b->sides[side].active_count; ++slot)
+        if (!battle_at(b, (Position){side, slot})->fainted) out[count++] = (Position){side, slot};
+    return count;
 }
 
 uint8_t battle_usable_moves(const Battle *b, const Battler *x) {
@@ -73,8 +169,11 @@ int battle_init(Battle *b, const BattleRequest *r, uint32_t seed) {
     memset(b, 0, sizeof(*b));
     b->request = r;
     b->rng = seed ? seed : 0x9e3779b9u;
-    if (r->format != BATTLE_FORMAT_SINGLE || r->active_per_side != 1) return BI_FORMAT;
-    if (r->player_count != 1 || r->opponent_count != 1) return BI_PARTY_SIZE;
+    const unsigned active = battle_formation_size(r->format);
+    if (!active || r->active_per_side != active) return BI_FORMAT;
+    if (!r->type_count || r->type_count > BATTLE_MAX_TYPES) return BI_BAD_TYPES;
+    if (r->player_count != active || r->opponent_count != active ||
+        (active > 1 && r->result_policy != RESULT_POLICY_DISPLAY_ONLY)) return BI_PARTY_SIZE;
     for (unsigned side = 0; side < 2; ++side) {
         Side *s = &b->sides[side];
         const BattleEntry *entries = side ? r->opponent : r->player;
@@ -82,37 +181,71 @@ int battle_init(Battle *b, const BattleRequest *r, uint32_t seed) {
         for (unsigned i = 0; i < s->count; ++i) {
             load_battler(&s->battlers[i], &entries[i]);
             const Battler *x = &s->battlers[i];
-            if (x->types[0] >= r->type_count || (x->type_count == 2 && x->types[1] >= r->type_count)) return BI_BAD_TYPES;
+            if (x->type_count < 1 || x->type_count > 2 || x->types[0] >= r->type_count ||
+                (x->type_count == 2 && x->types[1] >= r->type_count)) return BI_BAD_TYPES;
+            for (unsigned j = 0; j < i; ++j)
+                if (s->battlers[j].party_slot == x->party_slot) return BI_PARTY_SIZE;
+            if (x->fainted) return BI_FAINTED_LEAD;
+            if (!battle_usable_moves(b, x)) return side ? BI_NO_OPPONENT_MOVES : BI_NO_PLAYER_MOVES;
+            s->active[i] = i;
         }
-        s->active_count = 1;
-        s->active[0] = 0;
-        if (s->battlers[0].fainted) return BI_FAINTED_LEAD;
-        if (!battle_usable_moves(b, &s->battlers[0])) return side ? BI_NO_OPPONENT_MOVES : BI_NO_PLAYER_MOVES;
+        s->active_count = active;
     }
     return BI_OK;
 }
 
 bool battle_validate_action(const Battle *b, const Action *a) {
     if (a->kind == ACT_FORFEIT) return a->user.side == 0;
-    if (a->kind != ACT_MOVE || a->user.side > 1 || a->user.slot != 0 || a->move_slot > 3) return false;
-    const Side *s = &b->sides[a->user.side];
-    const Battler *x = &s->battlers[s->active[0]];
-    return !x->fainted && (battle_usable_moves(b, x) & (1u << a->move_slot)) &&
-           a->target.pos.side == (uint8_t)(1 - a->user.side) && a->target.pos.slot == 0;
+    if (a->kind == ACT_SHIFT) return a->rotation == BROT_KEEP && battle_can_shift(b, a->user);
+    if (a->kind != ACT_MOVE || !battle_at(b, a->user) || a->move_slot >= 4) return false;
+    Position candidate = a->user;
+    if (rotation_battle(b)) {
+        if (a->user.slot != BPOS_CENTER) return false;
+        candidate.slot = battle_rotation_slot(a->rotation);
+    } else if (a->rotation != BROT_KEEP) {
+        return false;
+    }
+    const uint8_t mask = battle_command_targets(b, candidate, a->move_slot);
+    if (!mask) return false;
+    if (mask & BATTLE_TARGET_AUTO) return true;
+    return a->target.pos.side == 1 - a->user.side && a->target.pos.slot < BC_MAX_ACTIVE &&
+           (mask & (1u << a->target.pos.slot));
+}
+
+static uint8_t first_target(uint8_t mask) {
+    for (uint8_t slot = 0; slot < BC_MAX_ACTIVE; ++slot)
+        if (mask & (1u << slot)) return slot;
+    return 0;
+}
+
+void battle_choose_at(Battle *b, Position user, Action *out) {
+    Action choices[4 * BC_MAX_ACTIVE];
+    unsigned n = 0;
+    const unsigned rotations = rotation_battle(b) ? 3 : 1;
+    for (uint8_t rotation = 0; rotation < rotations; ++rotation) {
+        const Position candidate = {user.side, rotation_battle(b) ? battle_rotation_slot(rotation) : user.slot};
+        for (unsigned m = 0; m < 4; ++m) {
+            const uint8_t mask = battle_command_targets(b, candidate, m);
+            if (!mask) continue;
+            choices[n++] = (Action){.kind = ACT_MOVE, .user = user, .move_slot = m,
+                .target = {{1 - user.side, first_target(mask)}}, .rotation = rotation};
+        }
+    }
+    *out = n ? choices[next_random(b) % n] : (Action){.user = user};
+    if (n && b->request->format != BATTLE_FORMAT_SINGLE) {
+        const Position candidate = {user.side, rotation_battle(b) ? battle_rotation_slot(out->rotation) : user.slot};
+        const uint8_t mask = battle_command_targets(b, candidate, out->move_slot) & 7u;
+        uint8_t targets[BC_MAX_ACTIVE];
+        unsigned count = 0;
+        for (uint8_t slot = 0; slot < BC_MAX_ACTIVE; ++slot)
+            if (mask & (1u << slot)) targets[count++] = slot;
+        if (count > 1) out->target.pos.slot = targets[next_random(b) % count];
+    }
+    if (!n && battle_can_shift(b, user)) out->kind = ACT_SHIFT;
 }
 
 void battle_choose_ai(Battle *b, uint8_t side, Action *out) {
-    const Battler *x = battle_active(b, side);
-    const uint8_t mask = battle_usable_moves(b, x);
-    unsigned choices[4], n = 0;
-    for (unsigned i = 0; i < 4; ++i)
-        if (mask & (1u << i)) choices[n++] = i;
-    memset(out, 0, sizeof(*out));
-    out->user = (Position){side, 0};
-    out->target.pos = (Position){(uint8_t)(1 - side), 0};
-    if (!n) { out->kind = ACT_NONE; return; }
-    out->kind = ACT_MOVE;
-    out->move_slot = (uint8_t)choices[next_random(b) % n];
+    battle_choose_at(b, (Position){side, rotation_battle(b) ? BPOS_CENTER : 0}, out);
 }
 
 static uint8_t effectiveness(const Battle *b, uint8_t move_type, const Battler *d) {
@@ -153,69 +286,156 @@ static void finish(Battle *b, uint8_t outcome, EventLog *log) {
     emit(log, (BattleEvent){.kind = EV_END, .outcome = outcome});
 }
 
+typedef struct {
+    Action action;
+    uint8_t battler;
+    int priority;
+    uint16_t speed;
+    uint32_t tie;
+} TurnAction;
+
+static Position locate(const Battle *b, uint8_t side, uint8_t battler) {
+    const Side *s = &b->sides[side];
+    for (uint8_t slot = 0; slot < s->active_count; ++slot)
+        if (s->active[slot] == battler) return (Position){side, slot};
+    return (Position){side, BATTLE_SLOT_NONE};
+}
+
+static void rotate(Battle *b, uint8_t side, uint8_t rotation, EventLog *log) {
+    if (rotation == BROT_KEEP) return;
+    uint8_t *slots = b->sides[side].active;
+    uint8_t old[BC_MAX_ACTIVE];
+    memcpy(old, slots, sizeof(old));
+    for (uint8_t slot = 0; slot < BC_MAX_ACTIVE; ++slot)
+        slots[slot] = old[battle_rotation_origin(rotation, slot)];
+    emit(log, (BattleEvent){.kind = EV_ROTATE, .user = {side, battle_rotation_slot(rotation)},
+                            .target = {side, BPOS_CENTER}, .rotation = rotation});
+}
+
+static void shift(Battle *b, Position user, EventLog *log) {
+    uint8_t *slots = b->sides[user.side].active;
+    const uint8_t old = slots[user.slot];
+    slots[user.slot] = slots[BPOS_CENTER];
+    slots[BPOS_CENTER] = old;
+    emit(log, (BattleEvent){.kind = EV_SHIFT, .user = user, .target = {user.side, BPOS_CENTER}});
+}
+
+static bool acts_first(const TurnAction *a, const TurnAction *d) {
+    if (a->action.kind != d->action.kind) return a->action.kind == ACT_SHIFT;
+    if (a->priority != d->priority) return a->priority > d->priority;
+    if (a->speed != d->speed) return a->speed > d->speed;
+    return a->tie > d->tie;
+}
+
+static void hit(Battle *b, Position user, Position target, const BattleMove *m, uint16_t id,
+                bool spread, EventLog *log) {
+    BattleEvent ev = {.user = user, .target = target, .move_id = id};
+    if (m->accuracy && next_random(b) % 100u >= m->accuracy) {
+        ev.kind = EV_MISS;
+        emit(log, ev);
+        return;
+    }
+    Battler *d = mutable_at(b, target);
+    uint8_t eff;
+    uint16_t damage = battle_damage(b, battle_at(b, user), m, d, 85u + next_random(b) % 16u, &eff);
+    if (!eff) {
+        ev.kind = EV_NO_EFFECT;
+        emit(log, ev);
+        return;
+    }
+    if (spread) {
+        damage = damage * 3u / 4u;
+        if (!damage) damage = 1;
+    }
+    d->hp = damage >= d->hp ? 0 : (uint16_t)(d->hp - damage);
+    ev.kind = EV_DAMAGE;
+    ev.amount = damage;
+    ev.hp_after = d->hp;
+    ev.effectiveness = eff;
+    emit(log, ev);
+    if (!d->hp) {
+        d->fainted = true;
+        emit(log, (BattleEvent){.kind = EV_FAINT, .target = target});
+    }
+}
+
+static void execute_move(Battle *b, const TurnAction *t, Position user, EventLog *log) {
+    Battler *a = mutable_at(b, user);
+    const unsigned move = t->action.move_slot;
+    const BattleMove *m = &a->moves[move];
+    const uint16_t id = a->move_ids[move];
+    const uint8_t foe = 1 - user.side;
+    uint8_t targets[2] = {battle_target_mask(b, user, m, 0), battle_target_mask(b, user, m, 1)};
+    if ((m->target & BTARGET_CLASS_MASK) == BTARGET_SINGLE) {
+        const uint8_t selected = 1u << t->action.target.pos.slot;
+        if (targets[foe]) targets[foe] &= targets[foe] & selected ? selected : 1u << first_target(targets[foe]);
+    }
+    unsigned count = 0;
+    Position first = {foe, t->action.target.pos.slot};
+    for (uint8_t side = 0; side < 2; ++side)
+        for (uint8_t slot = 0; slot < BC_MAX_ACTIVE; ++slot)
+            if (targets[side] & (1u << slot))
+                if (count++ == 0) first = (Position){side, slot};
+    --a->pp[move];
+    emit(log, (BattleEvent){.kind = EV_MOVE_USED, .user = user, .target = first, .move_id = id});
+    if (!count) {
+        emit(log, (BattleEvent){.kind = EV_NO_EFFECT, .user = user, .target = first, .move_id = id});
+        return;
+    }
+    for (uint8_t side = 0; side < 2; ++side)
+        for (uint8_t slot = 0; slot < BC_MAX_ACTIVE; ++slot)
+            if (targets[side] & (1u << slot)) hit(b, user, (Position){side, slot}, m, id, count > 1, log);
+}
+
 void battle_run_turn(Battle *b, const Action *in, unsigned count, EventLog *log) {
-    Action order[2 * BC_MAX_ACTIVE];
-    uint32_t tiebreak[2 * BC_MAX_ACTIVE];
+    TurnAction order[BC_MAX_ACTIONS];
+    uint8_t seen[2] = {0};
     unsigned n = 0;
     log->count = 0;
     if (b->outcome != OUTCOME_NONE) return;
-    for (unsigned i = 0; i < count && n < 2 * BC_MAX_ACTIVE; ++i) {
-        if (in[i].kind == ACT_FORFEIT && battle_validate_action(b, &in[i])) {
-            emit(log, (BattleEvent){.kind = EV_FORFEIT, .user = in[i].user});
+    for (unsigned i = 0; i < count && n < BC_MAX_ACTIONS; ++i) {
+        const Action *a = &in[i];
+        if (a->kind == ACT_FORFEIT && battle_validate_action(b, a)) {
+            emit(log, (BattleEvent){.kind = EV_FORFEIT, .user = a->user});
             finish(b, OUTCOME_CANCELLED, log);
             return;
         }
-        if (in[i].kind == ACT_NONE) {
-            // A side without any usable move cannot continue; Struggle is not implemented.
-            emit(log, (BattleEvent){.kind = EV_NO_MOVES, .user = in[i].user});
+        if (a->kind == ACT_NONE && battle_at(b, a->user)) {
+            emit(log, (BattleEvent){.kind = EV_NO_MOVES, .user = a->user});
             finish(b, OUTCOME_UNSUPPORTED, log);
             return;
         }
-        if (!battle_validate_action(b, &in[i])) continue;
-        order[n] = in[i];
-        tiebreak[n++] = next_random(b);
+        if (!battle_validate_action(b, a) || (seen[a->user.side] & (1u << a->user.slot))) continue;
+        seen[a->user.side] |= 1u << a->user.slot;
+        const uint8_t slot = rotation_battle(b) ? battle_rotation_slot(a->rotation) : a->user.slot;
+        const uint8_t index = b->sides[a->user.side].active[slot];
+        const Battler *x = &b->sides[a->user.side].battlers[index];
+        order[n++] = (TurnAction){*a, index, a->kind == ACT_MOVE ? x->moves[a->move_slot].priority : 0,
+                                 x->speed, next_random(b)};
     }
-    // Priority, then speed, then a random tiebreak (all supported moves have priority 0).
-    for (unsigned i = 1; i < n; ++i)
-        for (unsigned j = i; j > 0; --j) {
-            const Battler *x = battle_active(b, order[j].user.side), *y = battle_active(b, order[j-1].user.side);
-            const int px = battle_active(b, order[j].user.side)->moves[order[j].move_slot].priority;
-            const int py = battle_active(b, order[j-1].user.side)->moves[order[j-1].move_slot].priority;
-            const bool first = px != py ? px > py : x->speed != y->speed ? x->speed > y->speed : tiebreak[j] > tiebreak[j-1];
-            if (!first) break;
-            Action t = order[j]; order[j] = order[j-1]; order[j-1] = t;
-            uint32_t r = tiebreak[j]; tiebreak[j] = tiebreak[j-1]; tiebreak[j-1] = r;
-        }
+    if (rotation_battle(b))
+        for (unsigned i = 0; i < n; ++i)
+            rotate(b, order[i].action.user.side, order[i].action.rotation, log);
+    for (unsigned i = 1; i < n; ++i) {
+        const TurnAction a = order[i];
+        unsigned j = i;
+        for (; j > 0 && acts_first(&a, &order[j-1]); --j) order[j] = order[j-1];
+        order[j] = a;
+    }
     for (unsigned i = 0; i < n; ++i) {
-        Battler *a = battle_active(b, order[i].user.side);
-        Battler *d = battle_active(b, order[i].target.pos.side);
-        if (a->fainted) continue;
-        const BattleMove *m = &a->moves[order[i].move_slot];
-        const uint16_t move_id = a->move_ids[order[i].move_slot];
-        a->pp[order[i].move_slot]--;
-        emit(log, (BattleEvent){.kind = EV_MOVE_USED, .user = order[i].user, .target = order[i].target.pos, .move_id = move_id});
-        if (m->accuracy && next_random(b) % 100u >= m->accuracy) {
-            emit(log, (BattleEvent){.kind = EV_MISS, .user = order[i].user, .target = order[i].target.pos, .move_id = move_id});
+        const Position user = locate(b, order[i].action.user.side, order[i].battler);
+        if (battle_at(b, user)->fainted) continue;
+        if (order[i].action.kind == ACT_SHIFT) {
+            if (battle_can_shift(b, user)) shift(b, user, log);
             continue;
         }
-        uint8_t eff;
-        const uint16_t dmg = battle_damage(b, a, m, d, 85u + next_random(b) % 16u, &eff);
-        if (!eff) {
-            emit(log, (BattleEvent){.kind = EV_NO_EFFECT, .user = order[i].user, .target = order[i].target.pos, .move_id = move_id});
-            continue;
-        }
-        d->hp = dmg >= d->hp ? 0 : (uint16_t)(d->hp - dmg);
-        emit(log, (BattleEvent){.kind = EV_DAMAGE, .user = order[i].user, .target = order[i].target.pos, .move_id = move_id,
-                                .amount = dmg, .hp_after = d->hp, .effectiveness = eff});
-        if (d->hp == 0) {
-            d->fainted = true;
-            emit(log, (BattleEvent){.kind = EV_FAINT, .target = order[i].target.pos});
-            if (side_defeated(b, order[i].target.pos.side)) {
-                b->turn++;
-                finish(b, order[i].target.pos.side == 1 ? OUTCOME_WIN : OUTCOME_LOSE, log);
-                return;
-            }
+        execute_move(b, &order[i], user, log);
+        const bool player_lost = side_defeated(b, 0), foe_lost = side_defeated(b, 1);
+        if (player_lost || foe_lost) {
+            ++b->turn;
+            finish(b, player_lost && foe_lost ? OUTCOME_DRAW : foe_lost ? OUTCOME_WIN : OUTCOME_LOSE, log);
+            return;
         }
     }
-    b->turn++;
+    ++b->turn;
 }

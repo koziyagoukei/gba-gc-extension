@@ -1,5 +1,9 @@
 # Native GC battle presentation
 
+This document records the Single presentation milestone. The current Double,
+Triple and Rotation layouts and their formation events are described in
+[multi-format battles](multiformat.md).
+
 The companion owns all TV coordinates, UI textures and animation timing. The GBA owns the party and action input. The GC core owns HP, PP, validation, turn order, damage and outcomes. The core emits ordered events without GX types or coordinates.
 
 | Module | Responsibility |

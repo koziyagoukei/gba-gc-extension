@@ -5,7 +5,7 @@
 
 typedef enum {
     MSG_NONE, MSG_INTRO, MSG_ENTER, MSG_CHOOSE, MSG_MOVE, MSG_MISS,
-    MSG_IMMUNE, MSG_STRONG, MSG_WEAK, MSG_FAINT, MSG_CANCEL, MSG_NO_MOVES, MSG_RESULT,
+    MSG_IMMUNE, MSG_STRONG, MSG_WEAK, MSG_FAINT, MSG_CANCEL, MSG_NO_MOVES, MSG_RESULT, MSG_SHIFT, MSG_ROTATE,
 } MessageKind;
 
 typedef struct {
@@ -17,23 +17,25 @@ typedef struct {
 
 typedef struct {
     bool visible, blink;
+    uint8_t battler;
     float scale, drop;
     ScreenPoint offset;
     float hp;
     uint16_t max_hp;
 } ActorFrame;
 
-typedef enum { ANIM_MESSAGE, ANIM_WAIT, ANIM_FADE, ANIM_ENTER, ANIM_ATTACK, ANIM_HIT, ANIM_HP, ANIM_FAINT } AnimationKind;
+typedef enum { ANIM_MESSAGE, ANIM_WAIT, ANIM_FADE, ANIM_ENTER, ANIM_ATTACK, ANIM_HIT, ANIM_HP, ANIM_FAINT, ANIM_SHIFT, ANIM_ROTATE } AnimationKind;
 
 typedef struct {
     AnimationKind kind;
     Position source, target;
     uint16_t frames, hp;
+    uint8_t rotation;
     SceneMessage message;
 } AnimationStep;
 
 // The longest sequence for one core event uses three steps.
-#define ANIMATION_STEPS (3 * BC_MAX_EVENTS + 10)
+#define ANIMATION_STEPS (3 * BC_MAX_EVENTS + 18)
 
 typedef struct {
     ActorFrame actor[2][BC_MAX_ACTIVE];

@@ -35,3 +35,5 @@ Outputs:
 - `docs/` — architecture, protocol, testing and results.
 
 Only original code, original test content and licensed dependencies belong in this repository. Supply any required BIOS privately. ROMs, saves, BIOS, official Nintendo/Pokémon assets, emulator packages and generated executables are excluded. Pokémon graphics reach the GameCube only at run time from the user's own ROM. Only a minimal SINGLE battle core exists; no Double/Triple/Rotation, EXP/EV/rewards, online transport or matchmaking is implemented.
+
+The [multi-format battle PoC](docs/multiformat.md) documents the Double, Triple and Rotation test rules and controls.
