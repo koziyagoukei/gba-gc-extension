@@ -15,7 +15,7 @@
 
 #define BC_MAX_ACTIVE BATTLE_FIELD_SLOTS
 #define BC_MAX_ACTIONS (2 * BC_MAX_ACTIVE)
-#define BC_MAX_EVENTS (BC_MAX_ACTIONS * (1 + 2 * (BC_MAX_ACTIONS - 1)) + 3)
+#define BC_MAX_EVENTS (BC_MAX_ACTIONS * (1 + 2 * (BC_MAX_ACTIONS - 1)) + 3 + 2 * BC_MAX_ACTIONS)
 
 typedef struct { uint8_t side, slot; } Position;   // side 0 = player, 1 = opponent; slot = active position
 typedef struct { Position pos; } Target;
@@ -25,7 +25,8 @@ typedef struct {
     uint8_t party_slot, level, type_count, types[2];
     uint16_t hp, max_hp, attack, defense, sp_attack, sp_defense, speed;
     uint32_t status;
-    int8_t stat_stages[7]; // retained across formation changes; effects are deferred
+    uint8_t sleep_start;
+    int8_t stat_stages[BSTAT_COUNT]; // field lifetime; kept across Shift and Rotation
     BattleMove moves[4];
     uint16_t move_ids[4];
     uint8_t pp[4], max_pp[4];
@@ -48,7 +49,7 @@ typedef struct {
     uint8_t rotation, reserve;
 } Action;
 
-typedef enum { EV_MOVE_USED, EV_MISS, EV_DAMAGE, EV_NO_EFFECT, EV_FAINT, EV_FORFEIT, EV_NO_MOVES, EV_END, EV_SHIFT, EV_ROTATE, EV_SEND_OUT, EV_WITHDRAW, EV_RECOIL, EV_DRAG_OUT } EventKind;
+typedef enum { EV_MOVE_USED, EV_MISS, EV_DAMAGE, EV_NO_EFFECT, EV_FAINT, EV_FORFEIT, EV_NO_MOVES, EV_END, EV_SHIFT, EV_ROTATE, EV_SEND_OUT, EV_WITHDRAW, EV_RECOIL, EV_DRAG_OUT, EV_STAGE, EV_STATUS, EV_CURE, EV_STATUS_BLOCK, EV_RESIDUAL } EventKind;
 typedef struct {
     EventKind kind;
     Position user, target;
@@ -58,20 +59,22 @@ typedef struct {
     uint8_t outcome;         // EV_END
     uint8_t rotation;        // EV_ROTATE
     uint8_t battler;         // EV_SEND_OUT: roster index; amount=max HP, hp_after=current HP
+    uint8_t condition;       // status events and send-out
+    uint8_t stat;            // EV_STAGE
+    int8_t stage;            // EV_STAGE: new stage
 } BattleEvent;
 
 typedef struct { BattleEvent events[BC_MAX_EVENTS]; unsigned count; } EventLog;
 
 enum BattleInitError {
-    BI_OK = 0, BI_FORMAT, BI_PARTY_SIZE, BI_NO_PLAYER_MOVES, BI_NO_OPPONENT_MOVES, BI_BAD_TYPES, BI_FAINTED_LEAD,
+    BI_OK = 0, BI_FORMAT, BI_PARTY_SIZE, BI_NO_PLAYER_MOVES, BI_NO_OPPONENT_MOVES, BI_BAD_TYPES, BI_FAINTED_LEAD, BI_CONDITIONS,
 };
 
 typedef struct {
     Action action;
     uint8_t battler;
     int priority;
-    uint16_t speed;
-    uint32_t tie;
+    uint32_t speed, tie;
 } TurnAction;
 
 typedef struct {

@@ -36,7 +36,7 @@ static const BattleLayout single = {
     .platform = {x - size * 0.65f, feet_y - 12, size * 1.3f, 20}, \
     .hud = {x - 95, card_y, 190, 49}, .hp_bar = {x - 87, card_y + 20, 174, 8}, \
     .name = {x - 87, card_y + 2}, .hp_text = {x - 87, card_y + 31}, \
-    .status = {x + 26, card_y + 32}, .party = {x + 61, card_y + 32}, \
+    .status = {x + 1, card_y + 32}, .party = {x + 61, card_y + 32}, \
     .cursor = {x, feet_y - size - 8}, \
     .attack_origin = {x, feet_y - size / 2}, .hit_center = {x, feet_y - size / 2}, \
 }

@@ -14,6 +14,8 @@ void animation_init(BattleAnimation *a, const Battle *battle) {
             if (!b) continue;
             frame->hp = b->hp;
             frame->max_hp = b->max_hp;
+            if (battle->request->version >= BATTLE_REQUEST_VERSION_CONDITIONS)
+                frame->condition = BATTLE_CONDITION_KIND(b->status);
         }
     }
 }
@@ -61,8 +63,10 @@ void animation_play(BattleAnimation *a, const BattleLayout *layout, const EventL
         switch (e->kind) {
         case EV_MOVE_USED:
             if (!battle_layout_anchor(layout, e->user)) break;
-            message(a, (SceneMessage){MSG_MOVE, e->user, e->move_id, 0}, 0);
-            add(a, (AnimationStep){.kind = ANIM_ATTACK, .source = e->user, .target = e->target, .frames = single ? 16 : 10});
+            message(a, (SceneMessage){.kind = MSG_MOVE, .subject = e->user, .move = e->move_id}, 0);
+            if (battle_layout_anchor(layout, e->target))
+                add(a, (AnimationStep){.kind = ANIM_ATTACK, .source = e->user, .target = e->target,
+                                       .frames = single ? 16 : 10});
             wait(a, single ? 16 : 4);
             break;
         case EV_MISS:
@@ -113,8 +117,29 @@ void animation_play(BattleAnimation *a, const BattleLayout *layout, const EventL
             if (!battle_layout_anchor(layout, e->target) || e->battler >= BATTLE_MAX_PER_SIDE) break;
             message(a, (SceneMessage){.kind = MSG_ENTER, .subject = e->target}, 0);
             add(a, (AnimationStep){.kind = ANIM_ENTER, .target = e->target, .frames = 18,
-                                   .entrant = e->battler + 1, .hp = e->hp_after, .max_hp = e->amount});
+                                   .entrant = e->battler + 1, .hp = e->hp_after, .max_hp = e->amount,
+                                   .condition = e->condition});
             wait(a, 22);
+            break;
+        case EV_STAGE:
+            message(a, (SceneMessage){.kind = MSG_STAGE, .subject = e->target, .stat = e->stat,
+                                      .stage = e->stage}, 30);
+            break;
+        case EV_STATUS:
+        case EV_CURE:
+            add(a, (AnimationStep){.kind = ANIM_CONDITION, .target = e->target,
+                                   .condition = e->kind == EV_CURE ? BST_NONE : e->condition});
+            message(a, (SceneMessage){.kind = e->kind == EV_CURE ? MSG_CURE : MSG_STATUS,
+                                      .subject = e->target, .condition = e->condition}, 32);
+            break;
+        case EV_STATUS_BLOCK:
+            message(a, (SceneMessage){.kind = MSG_STATUS_BLOCK, .subject = e->target,
+                                      .condition = e->condition}, 32);
+            break;
+        case EV_RESIDUAL:
+            message(a, (SceneMessage){.kind = MSG_RESIDUAL, .subject = e->target, .condition = e->condition}, 0);
+            add(a, (AnimationStep){.kind = ANIM_HP, .target = e->target, .hp = e->hp_after});
+            wait(a, 18);
             break;
         case EV_END:
             if (e->outcome == OUTCOME_WIN || e->outcome == OUTCOME_LOSE || e->outcome == OUTCOME_DRAW)
@@ -130,10 +155,12 @@ static bool advance(BattleAnimation *a, const BattleLayout *layout, const Animat
     switch (s->kind) {
     case ANIM_MESSAGE: a->message = s->message; return true;
     case ANIM_WAIT: break;
+    case ANIM_CONDITION: actor->condition = s->condition; return true;
     case ANIM_FADE: a->fade = 1 - t; break;
     case ANIM_ENTER:
         if (!f && s->entrant)
-            *actor = (ActorFrame){.battler = s->entrant - 1, .hp = s->hp, .max_hp = s->max_hp};
+            *actor = (ActorFrame){.battler = s->entrant - 1, .hp = s->hp, .max_hp = s->max_hp,
+                                  .condition = s->condition};
         actor->visible = true;
         actor->scale = t * (2 - t);
         break;

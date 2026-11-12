@@ -256,3 +256,87 @@ outcome. The current GBA entry points are debug fixtures. Non-damaging
 pivot variants, switch-blocking abilities and volatile effects, and
 persistent results for the new formats depend on later milestones.
 Next come stat stages, major status and the end-of-turn phase.
+
+
+## Milestone 2 — stages, major status and the end of turn
+
+The GBA supplies resolved condition rules with Battle Request V7. The
+Frontier build exports its paralysis speed and interruption divisors,
+burn residual divisor, sleep duration range, thaw probability, type
+IDs and rule flags. Its default profile uses half speed and a 1-in-4
+paralysis check, burn at 1/16 max HP, 1–3 blocked sleep actions and a
+20% chance to thaw. Frostbite uses a capability in the rules. The
+Frontier producer rejects rules it cannot represent, including Sleep
+Clause and the Champions sleep/freeze profile. The GC owns all rolls.
+
+| State | Identity and lifetime |
+| --- | --- |
+| HP, PP and major status | Pokémon in a roster entry. HP, PP and the status kind persist through switch, Shift and Rotation. |
+| Toxic counter | Pokémon in a roster entry. Starts at zero, advances during eligible poison ticks and resets on normal withdrawal. Shift and Rotation preserve it. |
+| Sleep counter | Pokémon in a roster entry. Counts down on eligible actions. Frontier preserves it on normal withdrawal. |
+| Stat stages | Field lifetime of the battler. Normal switch, forced switch, pivot and faint clear the stages. Shift and Rotation carry stages with the same battler. |
+| Position and front | Formation state. The field position selects a roster index. Rotation makes only the new FRONT eligible for actions and residuals. Wings retain their state. |
+| Volatile, side and field effects | Future mechanics will own their state at their corresponding scope. |
+
+All seven stages use signed values capped at −6 and +6. Stats use
+`(2 + stage) / 2` for a nonnegative stage and `2 / (2 − stage)` for a
+negative one. Accuracy uses the difference between accuracy and evasion
+stages capped to the same range and a ratio with base 3. Stages affect
+physical and special damage, hit checks and speed. The V7 dynamic
+speed rule updates order among pending actions after speed changes.
+Priority and the original seeded tie values still determine order.
+Rotation uses the selected Pokémon's speed and priority.
+
+Primary condition effects support eligible single-stat moves, poison,
+toxic, burn, paralysis, sleep and Refresh. Freeze and optional frostbite
+can enter via normalized roster state. Frozen Pokémon can thaw on their
+action or when struck by a supported fire attack with the rule enabled.
+Major statuses cannot stack. Type immunity is evaluated using the IDs
+provided by the game. Powder moves, ability/item immunities, complex
+thawing moves, secondary effects and compound stage effects need later
+mechanics. The producer marks unsupported moves unavailable. Status
+interruption precedes PP consumption.
+
+The turn resumes any pending pivot before it reaches the residual
+phase. The residual phase snapshots the eligible field Pokémon by
+effective speed, with ties in field order, then applies poison and toxic,
+burn, and frostbite as distinct groups. Poison uses 1/8 max HP. Toxic
+uses the floored 1/16 max HP unit, with minimum 1, multiplied by its
+counter up to 15. The burn divisor also applies to frostbite. A hit
+that ends the battle finishes it during actions. At the end of a
+residual phase, all residual faints in that batch are resolved before
+outcome and replacement, allowing a draw if both sides run out.
+Vacant positions are filled through the existing replacement path.
+
+The references for the Frontier profile are `include/config/battle.h`,
+`src/battle_move_resolution.c` (sleep, freeze and paralysis),
+`src/battle_stat_change.c`, and `src/battle_end_turn.c`
+(`HandleEndTurnOrder`, `HandleEndTurnPoison`, `HandleEndTurnBurn`
+and `HandleEndTurnFrostbite`). The Rotation action order follows the
+selected Pokémon as in [BW BuildActionOrder](https://github.com/Project-Holon/aletheia/blob/main/src/game/ov093/btl_server_flow.c#L2095).
+The GC rules are implemented independently.
+
+### V7 wire changes
+
+Request V7 appends 12 bytes after the type chart. In order: rule
+flags, poison/steel/fire/electric/ice type IDs, paralysis speed divisor,
+paralysis block divisor, burn residual divisor, minimum/maximum sleep
+counter and thaw percent. The existing four resolved effect bytes
+carry the single-stat and primary condition IDs documented in
+`battle_protocol.h`. In the Pokémon record, the low byte of status
+is the normalized condition kind and the next byte is its counter.
+Upper bytes are reserved and zero. V1–V6 retain their previous layouts
+and status semantics.
+
+APP V7 adds 48 bytes to the 93-byte roster state. Each position in
+side/slot order contains the major status ID and seven signed stage
+bytes (Atk, Def, SpA, SpD, Spe, Acc, Eva). It keeps the V6 action and
+token layout. The V1 result envelope carries the normalized V7 status
+for diagnostics. V7 requests use display-only results. The V1 Single
+HP/PP application path continues to use the existing validation.
+
+The TV plays status, cure, blocked action, residual HP and stage events
+on the presentation timeline. The GBA shows a condition badge per
+position and the selected Pokémon's nonzero stages. The GC polls
+during all presentation steps. The GBA's four V7 debug fixtures use
+temporary export slots for both parties.

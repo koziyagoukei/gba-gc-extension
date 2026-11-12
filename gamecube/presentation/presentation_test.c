@@ -23,7 +23,8 @@ int main(void) {
     assert(rotation->anchors[0][BPOS_CENTER].feet.y > rotation->anchors[0][BPOS_LEFT].feet.y);
     assert(!battle_layout_anchor(double_layout, (Position){0, 2}));
 
-    Battle b = {0};
+    const BattleRequest request = {.version = BATTLE_REQUEST_VERSION_CONDITIONS};
+    Battle b = {.request = &request};
     for (unsigned side = 0; side < 2; ++side) {
         b.sides[side].count = b.sides[side].active_count = 1;
         b.sides[side].battlers[0].hp = b.sides[side].battlers[0].max_hp = 60;
@@ -83,5 +84,17 @@ int main(void) {
     finish(&anim, triple);
     assert(anim.actor[0][BPOS_LEFT].visible && anim.actor[0][BPOS_LEFT].battler == 3);
     assert(anim.actor[0][BPOS_LEFT].hp == 65 && anim.actor[0][BPOS_LEFT].max_hp == 90);
+    const EventLog condition = {{
+        {.kind = EV_STATUS, .target = {0, BPOS_LEFT}, .condition = BST_BURN},
+        {.kind = EV_RESIDUAL, .target = {0, BPOS_LEFT}, .condition = BST_BURN, .hp_after = 60},
+    }, 2};
+    animation_play(&anim, triple, &condition);
+    assert(anim.actor[0][BPOS_LEFT].condition == BST_NONE && anim.actor[0][BPOS_LEFT].hp == 65);
+    finish(&anim, triple);
+    assert(anim.actor[0][BPOS_LEFT].condition == BST_BURN && anim.actor[0][BPOS_LEFT].hp == 60);
+    const EventLog cure = {{ {.kind = EV_CURE, .target = {0, BPOS_LEFT}, .condition = BST_BURN} }, 1};
+    animation_play(&anim, triple, &cure);
+    finish(&anim, triple);
+    assert(anim.actor[0][BPOS_LEFT].condition == BST_NONE);
     puts("presentation-test OK");
 }

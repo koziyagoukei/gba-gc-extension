@@ -6,6 +6,7 @@
 typedef enum {
     MSG_NONE, MSG_INTRO, MSG_ENTER, MSG_CHOOSE, MSG_MOVE, MSG_MISS,
     MSG_IMMUNE, MSG_STRONG, MSG_WEAK, MSG_FAINT, MSG_CANCEL, MSG_NO_MOVES, MSG_RESULT, MSG_SHIFT, MSG_ROTATE, MSG_WITHDRAW, MSG_RECOIL, MSG_DRAG_OUT, MSG_RESERVE,
+    MSG_STAGE, MSG_STATUS, MSG_CURE, MSG_STATUS_BLOCK, MSG_RESIDUAL,
 } MessageKind;
 
 typedef struct {
@@ -13,24 +14,27 @@ typedef struct {
     Position subject;
     uint16_t move;
     uint8_t outcome;
+    uint8_t condition, stat;
+    int8_t stage;
 } SceneMessage;
 
 typedef struct {
     bool visible, blink;
-    uint8_t battler;
+    uint8_t battler, condition;
     float scale, drop;
     ScreenPoint offset;
     float hp;
     uint16_t max_hp;
 } ActorFrame;
 
-typedef enum { ANIM_MESSAGE, ANIM_WAIT, ANIM_FADE, ANIM_ENTER, ANIM_ATTACK, ANIM_HIT, ANIM_HP, ANIM_FAINT, ANIM_SHIFT, ANIM_ROTATE, ANIM_WITHDRAW } AnimationKind;
+typedef enum { ANIM_MESSAGE, ANIM_WAIT, ANIM_FADE, ANIM_ENTER, ANIM_ATTACK, ANIM_HIT, ANIM_HP, ANIM_FAINT, ANIM_SHIFT, ANIM_ROTATE, ANIM_WITHDRAW, ANIM_CONDITION } AnimationKind;
 
 typedef struct {
     AnimationKind kind;
     Position source, target;
     uint16_t frames, hp, max_hp;
     uint8_t rotation, entrant; // one-based roster index for a send-out
+    uint8_t condition;
     SceneMessage message;
 } AnimationStep;
 

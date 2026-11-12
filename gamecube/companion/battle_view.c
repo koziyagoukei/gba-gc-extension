@@ -110,13 +110,15 @@ static bool send_multi_state(uint8_t phase) {
             if (!x) continue;
             m->hp = x->hp;
             m->max_hp = x->max_hp;
+            extended.status[side][slot] = BATTLE_CONDITION_KIND(x->status);
+            memcpy(extended.stages[side][slot], x->stat_stages, sizeof(x->stat_stages));
             if (side != 0) continue;
             memcpy(state->pp[slot], x->pp, sizeof(state->pp[slot]));
             if (battle_can_struggle(&b.battle, pos)) extended.struggle_mask |= 1u << slot;
             for (unsigned move = 0; move < 4; ++move)
                 state->targets[slot][move] = battle_command_targets(&b.battle, pos, move);
         }
-    uint8_t bytes[BATTLE_STRUGGLE_STATE_BYTES];
+    uint8_t bytes[BATTLE_CONDITION_STATE_BYTES];
     uint16_t status;
     unsigned size;
     const uint16_t opcode = roster() ? BATTLE_OP_STATE_ROSTER : BATTLE_OP_STATE_MULTI;
@@ -128,8 +130,12 @@ static bool send_multi_state(uint8_t phase) {
                                                   mon ? mon->hp : record ? record->hp : 0,
                                                   record ? record->max_hp : 0};
         }
-        size = b.mode.app_version >= BATTLE_APP_VERSION_STRUGGLE
-             ? battle_struggle_state_encode(&extended, bytes) : battle_roster_state_encode(&extended, bytes);
+        if (b.mode.app_version == BATTLE_APP_VERSION_CONDITIONS)
+            size = battle_condition_state_encode(&extended, bytes);
+        else if (b.mode.app_version >= BATTLE_APP_VERSION_STRUGGLE)
+            size = battle_struggle_state_encode(&extended, bytes);
+        else
+            size = battle_roster_state_encode(&extended, bytes);
     } else {
         size = battle_multi_state_encode(state, bytes);
     }
@@ -181,6 +187,7 @@ static bool poll_multi_action(BattleMultiAction *a) {
     if (!host_app_to(b.link, b.mode.app_id, opcode, NULL, 0, &d, &n, &status)) return false;
     if (status == APP_OK) {
         switch (b.mode.app_version) {
+        case BATTLE_APP_VERSION_CONDITIONS:
         case BATTLE_APP_VERSION_PIVOT: return battle_pivot_action_decode(d, n, a);
         case BATTLE_APP_VERSION_DRAG:
         case BATTLE_APP_VERSION_STRUGGLE: return battle_struggle_action_decode(d, n, a);
@@ -332,9 +339,9 @@ static BattleViewStatus play_turn(unsigned turn) {
     b.last_play_poll = 0;
     for (unsigned i = 0; i < b.log.count; ++i) {
         const BattleEvent *e = &b.log.events[i];
-        SYS_Report("PH3 EVENT turn=%u kind=%u user=%u target=%u move=%u amount=%u hp_after=%u eff=%u outcome=%u pos=%u:%u rotation=%u battler=%u\n",
+        SYS_Report("PH3 EVENT turn=%u kind=%u user=%u target=%u move=%u amount=%u hp_after=%u eff=%u outcome=%u pos=%u:%u rotation=%u battler=%u condition=%u stat=%u stage=%d\n",
                    turn, e->kind, e->user.side, e->target.side, e->move_id, e->amount, e->hp_after, e->effectiveness,
-                   e->outcome, e->user.slot, e->target.slot, e->rotation, e->battler);
+                   e->outcome, e->user.slot, e->target.slot, e->rotation, e->battler, e->condition, e->stat, e->stage);
     }
     if (!send_state(BPHASE_WAIT)) return BV_LOST;
     battle_scene_play(&b.log);

@@ -371,7 +371,7 @@ static void test_roster_wire(void) {
     assert(n && buffer[0] == BATTLE_REQUEST_VERSION_ROSTER);
     assert(battle_request_decode(buffer, n, &decoded) && decoded.player_count == 2);
     assert(decoded.version == BATTLE_REQUEST_VERSION_ROSTER);
-    buffer[0] = BATTLE_REQUEST_VERSION_PIVOT + 1;
+    buffer[0] = BATTLE_REQUEST_VERSION_CONDITIONS + 1;
     assert(!battle_request_decode(buffer, n, &decoded));
 
     const BattleRosterState state = {
@@ -888,6 +888,326 @@ static void test_pivot_wire(void) {
     assert(!battle_struggle_action_decode(bytes, n, &ack));
 }
 
+static void make_conditions(BattleRequest *r, uint8_t format) {
+    make_multi(r, format);
+    enable_struggle(r);
+    r->version = BATTLE_REQUEST_VERSION_CONDITIONS;
+    r->conditions = (BattleConditionRules){
+        .flags = BCR_ELECTRIC_IMMUNE | BCR_POISON_TOXIC_ALWAYS_HITS | BCR_THAW_ON_FIRE_HIT | BCR_DYNAMIC_SPEED,
+        .poison_type = T_GHOST, .steel_type = T_GHOST, .fire_type = T_FIRE, .electric_type = T_WATER,
+        .ice_type = T_WATER, .paralysis_speed_divisor = 2, .paralysis_block_divisor = 4,
+        .burn_residual_divisor = 16, .sleep_min = 2, .sleep_max = 4, .thaw_percent = 20,
+    };
+}
+
+static BattleMove condition_move(uint8_t effect, uint8_t target) {
+    return (BattleMove){.effect = effect, .target = target, .category = BCAT_STATUS};
+}
+
+static void test_condition_wire(void) {
+    BattleRequest r, decoded;
+    make_conditions(&r, BATTLE_FORMAT_DOUBLE);
+    set_move(&r.player[0], 1, 31, condition_move(BATTLE_STAGE_EFFECT(BSTAT_EVA, 2), BTARGET_SELF), 12);
+    r.opponent[0].record.status = BATTLE_CONDITION(BST_TOXIC, 7);
+    uint8_t bytes[2048];
+    unsigned n = battle_request_encode(&r, bytes, sizeof(bytes));
+    assert(n == BATTLE_REQUEST_HEADER + 4 * BATTLE_ENTRY_BYTES + NTYPES * NTYPES + BATTLE_CONDITION_RULE_BYTES);
+    assert(battle_request_decode(bytes, n, &decoded) && decoded.conditions.sleep_max == 4);
+    assert(decoded.opponent[0].record.status == BATTLE_CONDITION(BST_TOXIC, 7));
+    assert(decoded.player[0].mon.moves[1].effect == BATTLE_STAGE_EFFECT(BSTAT_EVA, 2));
+    bytes[n - 1] = 101;
+    assert(!battle_request_decode(bytes, n, &decoded));
+    bytes[n - 1] = 20;
+    bytes[BATTLE_REQUEST_HEADER + PKMN_RECORD_BYTES + 5] = 0xff;
+    assert(!battle_request_decode(bytes, n, &decoded));
+    Battle b;
+    r.opponent[0].record.status = BATTLE_CONDITION(BST_TOXIC, 16);
+    assert(battle_init(&b, &r, 1) == BI_CONDITIONS);
+
+    const BattleRosterState state = {
+        .field_state = {.phase = BPHASE_CHOOSE, .token = 18},
+        .status = {[1][1] = BST_BURN},
+        .stages = {[0][0][BSTAT_ACC] = -6, [1][1][BSTAT_DEF] = 6},
+    };
+    BattleRosterState reply;
+    n = battle_condition_state_encode(&state, bytes);
+    assert(n == BATTLE_CONDITION_STATE_BYTES && n + APP_REQUEST_HEADER <= WIRE_PAYLOAD);
+    assert(battle_condition_state_decode(bytes, n, &reply));
+    assert(reply.field_state.token == 18 && reply.status[1][1] == BST_BURN);
+    assert(reply.stages[0][0][BSTAT_ACC] == -6 && reply.stages[1][1][BSTAT_DEF] == 6);
+    assert(!battle_condition_state_decode(bytes, n - 1, &reply));
+    bytes[n - 1] = 7;
+    assert(!battle_condition_state_decode(bytes, n, &reply));
+}
+
+static void test_stat_stages(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    const Action player = move(0, 0, 0), foe = move(1, 0, 0);
+    make_conditions(&r, BATTLE_FORMAT_SINGLE);
+    set_move(&r.player[0], 0, 31, condition_move(BATTLE_STAGE_EFFECT(BSTAT_ATK, 2), BTARGET_SELF), 20);
+    set_move(&r.opponent[0], 0, 32, condition_move(BATTLE_STAGE_EFFECT(BSTAT_DEF, -2), BTARGET_SINGLE), 20);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    Battler *p = battle_active(&b, 0), *o = battle_active(&b, 1);
+    for (unsigned i = 0; i < 4; ++i) {
+        const Action actions[] = {player, foe};
+        battle_run_turn(&b, actions, 2, &log);
+        assert(event_count(&log, EV_STAGE) == (i == 3 ? 0 : 2));
+    }
+    assert(p->stat_stages[BSTAT_ATK] == 6 && p->stat_stages[BSTAT_DEF] == -6);
+
+    uint8_t eff;
+    const BattleMove physical = hit(40, T_NORMAL, BCAT_PHYSICAL), special = hit(40, T_NORMAL, BCAT_SPECIAL);
+    p->stat_stages[BSTAT_ATK] = 2;
+    assert(battle_damage(&b, p, &physical, o, 100, &eff) == 55 && eff == 4);
+    o->stat_stages[BSTAT_DEF] = 2;
+    assert(battle_damage(&b, p, &physical, o, 100, &eff) == 28);
+    p->stat_stages[BSTAT_SPA] = 2;
+    o->stat_stages[BSTAT_SPD] = 2;
+    assert(battle_damage(&b, p, &special, o, 100, &eff) == 28);
+    o->stat_stages[BSTAT_SPD] = 0;
+    assert(battle_damage(&b, p, &special, o, 100, &eff) == 55);
+    p->status = BST_BURN;
+    assert(battle_damage(&b, p, &physical, o, 100, &eff) == 14);
+    assert(battle_damage(&b, p, &special, o, 100, &eff) == 55);
+
+    make_conditions(&r, BATTLE_FORMAT_SINGLE);
+    r.player[0].mon.moves[0].accuracy = 100;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_active(&b, 0)->stat_stages[BSTAT_ACC] = -3;
+    battle_active(&b, 1)->stat_stages[BSTAT_EVA] = 3;
+    battle_run_turn(&b, &player, 1, &log);
+    assert(event_count(&log, EV_MISS) == 1);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_active(&b, 0)->stat_stages[BSTAT_ACC] = 3;
+    battle_active(&b, 1)->stat_stages[BSTAT_EVA] = 3;
+    battle_run_turn(&b, &player, 1, &log);
+    assert(event_count(&log, EV_DAMAGE) == 1);
+
+    // The fast ally slows down the next actor. Dynamic speed recalculates
+    // within the same priority bracket before the next move.
+    make_conditions(&r, BATTLE_FORMAT_DOUBLE);
+    r.player[0].record.speed = 100;
+    r.opponent[0].record.speed = 90;
+    r.player[1].record.speed = 60;
+    set_move(&r.player[0], 0, 31, condition_move(BATTLE_STAGE_EFFECT(BSTAT_SPE, -2), BTARGET_SINGLE), 20);
+    const Action double_actions[] = {player, foe, move(0, 1, 0)};
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, double_actions, 3, &log);
+    assert(log.events[1].kind == EV_STAGE && log.events[1].stat == BSTAT_SPE);
+    assert(log.events[2].kind == EV_MOVE_USED && log.events[2].user.side == 0 && log.events[2].user.slot == 1);
+    r.conditions.flags &= ~BCR_DYNAMIC_SPEED;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, double_actions, 3, &log);
+    assert(log.events[2].kind == EV_MOVE_USED && log.events[2].user.side == 1);
+}
+
+static void test_major_status(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    const Action player = move(0, 0, 0), foe = move(1, 0, 0);
+    const Action both[] = {player, foe};
+    make_conditions(&r, BATTLE_FORMAT_SINGLE);
+    r.player[0].record.status = BST_PARALYSIS;
+    r.player[0].record.speed = 100;
+    r.opponent[0].record.speed = 80;
+    assert(battle_init(&b, &r, 4) == BI_OK);
+    battle_run_turn(&b, both, 2, &log);
+    assert(log.events[0].kind == EV_MOVE_USED && log.events[0].user.side == 1);
+    assert(event_count(&log, EV_STATUS_BLOCK) == 1 && battle_active(&b, 0)->pp[0] == 20);
+
+    r.player[0].record.status = BATTLE_CONDITION(BST_SLEEP, 2);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, &player, 1, &log);
+    assert(event_count(&log, EV_STATUS_BLOCK) == 1 && battle_active(&b, 0)->pp[0] == 20);
+    battle_run_turn(&b, &player, 1, &log);
+    assert(log.events[0].kind == EV_CURE && battle_active(&b, 0)->pp[0] == 19);
+
+    r.player[0].record.status = BST_FREEZE;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, &player, 1, &log);
+    assert(event_count(&log, EV_STATUS_BLOCK) == 1 && battle_active(&b, 0)->status == BST_FREEZE);
+    assert(battle_init(&b, &r, 3) == BI_OK);
+    battle_run_turn(&b, &player, 1, &log);
+    assert(log.events[0].kind == EV_CURE && battle_active(&b, 0)->status == BST_NONE);
+    r.opponent[0].mon.moves[0].type = T_FIRE;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, &foe, 1, &log);
+    assert(log.events[2].kind == EV_CURE && battle_active(&b, 0)->status == BST_NONE);
+
+    r.player[0].record.status = BST_NONE;
+    set_move(&r.player[0], 0, 31, condition_move(BATTLE_STATUS_EFFECT(BST_TOXIC), BTARGET_SINGLE), 20);
+    assert(battle_init(&b, &r, 4) == BI_OK);
+    battle_run_turn(&b, &player, 1, &log);
+    assert(log.events[1].kind == EV_STATUS && log.events[2].amount == 12);
+    assert(battle_active(&b, 1)->status == BATTLE_CONDITION(BST_TOXIC, 1));
+    battle_run_turn(&b, &player, 1, &log);
+    assert(log.events[1].kind == EV_NO_EFFECT && log.events[2].amount == 24);
+    battle_active(&b, 1)->status = BATTLE_CONDITION(BST_TOXIC, 15);
+    battle_run_turn(&b, &player, 1, &log);
+    assert(log.events[2].amount == 180 && log.events[3].kind == EV_FAINT && b.outcome == OUTCOME_WIN);
+
+    r.opponent[0].mon.types[0] = T_GHOST;
+    assert(battle_init(&b, &r, 4) == BI_OK);
+    battle_run_turn(&b, &player, 1, &log);
+    assert(log.events[1].kind == EV_NO_EFFECT && !battle_active(&b, 1)->status);
+    set_move(&r.player[0], 0, 31, condition_move(BME_REFRESH, BTARGET_SELF), 20);
+    r.player[0].record.status = BST_BURN;
+    assert(battle_init(&b, &r, 4) == BI_OK);
+    battle_run_turn(&b, &player, 1, &log);
+    assert(log.events[1].kind == EV_CURE && !event_count(&log, EV_RESIDUAL));
+}
+
+static void test_condition_application(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    const Action player = move(0, 0, 0), foe = move(1, 0, 0);
+    make_conditions(&r, BATTLE_FORMAT_SINGLE);
+    set_move(&r.player[0], 0, 31, condition_move(BATTLE_STATUS_EFFECT(BST_SLEEP), BTARGET_SINGLE), 20);
+    assert(battle_init(&b, &r, 4) == BI_OK);
+    battle_run_turn(&b, &player, 1, &log);
+    assert(log.events[1].kind == EV_STATUS && log.events[1].condition == BST_SLEEP);
+    assert(BATTLE_CONDITION_COUNTER(battle_active(&b, 1)->status) >= r.conditions.sleep_min);
+    battle_run_turn(&b, &foe, 1, &log);
+    assert(event_count(&log, EV_STATUS_BLOCK) == 1);
+
+    set_move(&r.player[0], 0, 31, condition_move(BME_ELECTRIC_PARALYSIS, BTARGET_SINGLE), 20);
+    r.player[0].mon.moves[0].type = T_WATER;
+    r.opponent[0].mon.types[0] = T_WATER;
+    assert(battle_init(&b, &r, 4) == BI_OK);
+    battle_run_turn(&b, &player, 1, &log);
+    assert(log.events[1].kind == EV_NO_EFFECT);
+    r.opponent[0].mon.types[0] = T_NORMAL;
+    r.type_chart[T_WATER * NTYPES + T_NORMAL] = 0;
+    assert(battle_init(&b, &r, 4) == BI_OK);
+    battle_run_turn(&b, &player, 1, &log);
+    assert(log.events[1].kind == EV_NO_EFFECT);
+    r.type_chart[T_WATER * NTYPES + T_NORMAL] = 4;
+    assert(battle_init(&b, &r, 4) == BI_OK);
+    battle_run_turn(&b, &player, 1, &log);
+    assert(log.events[1].kind == EV_STATUS && battle_active(&b, 1)->status == BST_PARALYSIS);
+
+    r.player[0].record.status = BST_FROSTBITE;
+    assert(battle_init(&b, &r, 4) == BI_CONDITIONS);
+    r.conditions.flags |= BCR_FROSTBITE;
+    assert(battle_init(&b, &r, 4) == BI_OK);
+    uint8_t eff;
+    const BattleMove special = hit(40, T_NORMAL, BCAT_SPECIAL);
+    assert(battle_damage(&b, battle_active(&b, 0), &special, battle_active(&b, 1), 100, &eff) == 14);
+    battle_run_turn(&b, NULL, 0, &log);
+    assert(log.events[0].kind == EV_RESIDUAL && log.events[0].condition == BST_FROSTBITE && log.events[0].amount == 12);
+}
+
+static void test_pivot_then_residual(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_conditions(&r, BATTLE_FORMAT_DOUBLE);
+    add_reserve(&r, 0);
+    r.player[0].mon.moves[0].effect = BME_PIVOT;
+    r.player[0].record.status = BST_TOXIC;
+    r.player[1].record.status = BST_POISON;
+    r.player[1].record.speed = 10;
+    assert(battle_init(&b, &r, 4) == BI_OK);
+    const Action actions[] = {move(0, 0, 0), move(0, 1, 0)};
+    battle_run_turn(&b, actions, 2, &log);
+    assert(battle_pending_pivot(&b, NULL) && !b.turn && !event_count(&log, EV_RESIDUAL));
+    assert(battle_resume_pivot(&b, 2, &log));
+    assert(b.turn == 1 && !battle_pending_pivot(&b, NULL) && event_count(&log, EV_RESIDUAL) == 1);
+    assert(log.events[log.count - 1].target.slot == 1 && b.sides[0].battlers[0].status == BST_TOXIC);
+}
+
+static void test_residual_lifecycle(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_conditions(&r, BATTLE_FORMAT_DOUBLE);
+    add_reserve(&r, 0);
+    set_move(&r.player[0], 0, 31, condition_move(BATTLE_STAGE_EFFECT(BSTAT_ATK, -1), BTARGET_ALL_FOES), 20);
+    r.opponent[0].record.status = BST_POISON;
+    r.opponent[1].record.status = BST_BURN;
+    r.player[0].record.status = BST_BURN;
+    r.player[1].record.status = BST_POISON;
+    r.player[0].record.hp = r.player[1].record.hp = 1;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    const Action player = move(0, 0, 0);
+    battle_run_turn(&b, &player, 1, &log);
+    assert(event_count(&log, EV_STAGE) == 2 && event_count(&log, EV_RESIDUAL) == 4);
+    assert(log.events[3].condition == BST_POISON && log.events[3].target.side == 0 && log.events[3].target.slot == 1);
+    assert(log.events[4].kind == EV_FAINT);
+    assert(log.events[5].condition == BST_POISON && log.events[5].amount == 25);
+    assert(log.events[6].condition == BST_BURN && log.events[6].target.side == 1 && log.events[6].amount == 12);
+    assert(log.events[7].condition == BST_BURN && log.events[8].kind == EV_FAINT);
+    Position pos;
+    assert(battle_pending_replacement(&b, &pos) && pos.side == 0 && pos.slot == 0);
+    assert(battle_replace(&b, pos, 2, &log));
+    assert(!battle_pending_replacement(&b, NULL) && !battle_at(&b, (Position){0, 1}));
+    assert(!battle_replace(&b, (Position){0, 1}, 2, &log) && battle_validate_action(&b, &player));
+
+    make_conditions(&r, BATTLE_FORMAT_TRIPLE);
+    add_reserve(&r, 0);
+    for (unsigned i = 0; i < 3; ++i) {
+        r.player[i].record.status = BST_POISON;
+        r.opponent[i].record.status = BST_BURN;
+    }
+    r.player[BPOS_RIGHT].record.hp = 1;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, NULL, 0, &log);
+    assert(event_count(&log, EV_RESIDUAL) == 6);
+    assert(battle_pending_replacement(&b, &pos) && pos.slot == BPOS_RIGHT);
+    assert(battle_replace(&b, pos, 3, &log));
+
+    make_conditions(&r, BATTLE_FORMAT_SINGLE);
+    r.player[0].record.status = BST_BURN;
+    r.opponent[0].record.status = BST_POISON;
+    r.player[0].record.hp = r.opponent[0].record.hp = 1;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, NULL, 0, &log);
+    assert(b.outcome == OUTCOME_DRAW && log.events[4].kind == EV_END && !battle_pending_replacement(&b, NULL));
+}
+
+static void test_switch_rotation_conditions(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_conditions(&r, BATTLE_FORMAT_SINGLE);
+    add_reserve(&r, 0);
+    r.player[0].record.status = BATTLE_CONDITION(BST_TOXIC, 5);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    Battler *original = battle_active(&b, 0);
+    original->stat_stages[BSTAT_ATK] = 4;
+    Action swap = {.kind = ACT_SWITCH, .user = {0, 0}, .reserve = 1};
+    battle_run_turn(&b, &swap, 1, &log);
+    assert(original->status == BST_TOXIC && original->stat_stages[BSTAT_ATK] == 0);
+    assert(original->hp == 200 && !event_count(&log, EV_RESIDUAL));
+
+    make_conditions(&r, BATTLE_FORMAT_ROTATION);
+    r.player[0].record.status = BATTLE_CONDITION(BST_TOXIC, 3);
+    r.player[1].record.status = BST_BURN;
+    r.player[1].record.speed = 30;
+    r.opponent[0].record.speed = 100;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    original = battle_active(&b, 0);
+    original->stat_stages[BSTAT_SPE] = 4;
+    Battler *wing = &b.sides[0].battlers[1];
+    wing->stat_stages[BSTAT_SPE] = 6;
+    Action rotate = move(0, BPOS_CENTER, BPOS_CENTER);
+    rotate.rotation = BROT_LEFT;
+    const Action both[] = {rotate, move(1, BPOS_CENTER, BPOS_CENTER)};
+    battle_run_turn(&b, both, 2, &log);
+    assert(battle_active(&b, 0) == wing && wing->stat_stages[BSTAT_SPE] == 6);
+    assert(log.events[0].kind == EV_ROTATE && log.events[1].kind == EV_MOVE_USED && log.events[1].user.side == 0);
+    assert(wing->status == BST_BURN && event_count(&log, EV_RESIDUAL) == 1);
+    assert(original->hp == 200 && original->status == BATTLE_CONDITION(BST_TOXIC, 3));
+    assert(original->stat_stages[BSTAT_SPE] == 4);
+    set_fainted(&b, 0, 2);
+    rotate.rotation = BROT_LEFT;
+    assert(!battle_validate_action(&b, &rotate));
+}
+
 int main(void) {
     test_request_roundtrip();
     test_messages();
@@ -908,6 +1228,13 @@ int main(void) {
     test_drag();
     test_pivot();
     test_pivot_wire();
+    test_condition_wire();
+    test_stat_stages();
+    test_major_status();
+    test_condition_application();
+    test_residual_lifecycle();
+    test_pivot_then_residual();
+    test_switch_rotation_conditions();
     puts("battle tests passed");
     return 0;
 }

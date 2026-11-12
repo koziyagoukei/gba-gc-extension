@@ -97,6 +97,11 @@ static void draw_label(CacheEntry *label, float x, float y, float max_w, float m
     render_texture(&label->texture, x, y, label->width * scale, label->height * scale, UI_INK);
 }
 
+static const char *condition_label(uint8_t condition) {
+    static const char *const labels[] = {"", "PSN", "TOX", "BRN", "PAR", "SLP", "FRZ", "FRB"};
+    return condition < sizeof(labels) / sizeof(*labels) ? labels[condition] : "";
+}
+
 static void draw_hud(Position pos, const BattlerAnchor *a, const ActorFrame *f, const Battler *b) {
     if (!f->visible || !b) return;
     const bool targeted = scene.show_target && scene.target.side == pos.side && scene.target.slot == pos.slot;
@@ -120,9 +125,10 @@ static void draw_hud(Position pos, const BattlerAnchor *a, const ActorFrame *f, 
                     ratio > 0.5f ? UI_MINT : ratio > 0.2f ? UI_GOLD : RGBA(248, 112, 112, 255));
     }
     render_text(a->hp_text.x, a->hp_text.y, 1, UI_INK, "HP %u/%u", hp, b->max_hp);
-    if (b->status) {
+    const bool legacy_status = scene.battle->request->version < BATTLE_REQUEST_VERSION_CONDITIONS && b->status;
+    if (f->condition || legacy_status) {
         art(ART_STATUS, (ScreenRect){a->status.x, a->status.y, 12, 12}, UI_GOLD);
-        render_text(a->status.x + 13, a->status.y - 2, 0.8f, UI_INK, "STS");
+        render_text(a->status.x + 13, a->status.y - 2, 0.8f, UI_INK, "%s", legacy_status ? "STS" : condition_label(f->condition));
     }
     if (compact) {
         static const char *const positions[] = {"L", "C", "R"};
@@ -160,6 +166,11 @@ static const char *message_text(const SceneMessage *msg) {
     case MSG_SHIFT: return "Shifted to the center!";
     case MSG_ROTATE: return "Rotated to the front!";
     case MSG_RESULT: return msg->outcome == OUTCOME_WIN ? "You won!" : msg->outcome == OUTCOME_LOSE ? "You lost..." : "Draw.";
+    case MSG_STAGE: return "Stat stage changed.";
+    case MSG_STATUS: return "Status applied.";
+    case MSG_CURE: return "Status cleared.";
+    case MSG_STATUS_BLOCK: return "Unable to move!";
+    case MSG_RESIDUAL: return "Status damage!";
     case MSG_NONE: return "";
     }
     return "";
@@ -175,11 +186,18 @@ static void draw_message(const BattleLayout *layout) {
     const float x = layout->message.x + 14, y = layout->message.y + 8;
     render_text(x, y, 1.25f, UI_INK, "%s", message_text(msg));
     if (msg->kind == MSG_ENTER || msg->kind == MSG_MOVE || msg->kind == MSG_FAINT ||
-        msg->kind == MSG_SHIFT || msg->kind == MSG_ROTATE || msg->kind == MSG_WITHDRAW || msg->kind == MSG_DRAG_OUT) {
+        msg->kind == MSG_SHIFT || msg->kind == MSG_ROTATE || msg->kind == MSG_WITHDRAW || msg->kind == MSG_DRAG_OUT ||
+        (msg->kind >= MSG_STAGE && msg->kind <= MSG_RESIDUAL)) {
         const Battler *b = battler_at(msg->subject);
         CacheEntry *name = b ? battle_label(scene.build, &b->entry->record) : NULL;
         if (name) draw_label(name, x, y + 27, 190, 23);
         else render_text(x, y + 28, 1, UI_MUTED, "%s", msg->subject.side ? "Opponent" : "Player");
+        if (msg->kind == MSG_STAGE && msg->stat < BSTAT_COUNT) {
+            static const char *const stats[] = {"ATK", "DEF", "SP. ATK", "SP. DEF", "SPEED", "ACCURACY", "EVASION"};
+            render_text(x + 210, y + 28, 1, UI_MUTED, "%s %s%d", stats[msg->stat], msg->stage > 0 ? "+" : "", msg->stage);
+        }
+        if (msg->condition)
+            render_text(x + 210, y + 28, 1, UI_MUTED, "%s", condition_label(msg->condition));
         if (msg->kind == MSG_MOVE) {
             CacheEntry *move = battle_move_label(scene.build, msg->move);
             if (msg->move == BATTLE_MOVE_STRUGGLE)
