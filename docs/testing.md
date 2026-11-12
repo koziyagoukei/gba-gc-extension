@@ -33,3 +33,16 @@ Machine-readable `PH2 ...` lines go to the OSReport log:
 - `UI` for every GBA input change
 - `DIGEST start/end` with match bits
 - `BYE`
+
+
+## Native GC presentation check
+
+Use the unchanged Frontier test ROM and a copy of its save. Start `build/companion.dol` with Integrated GBA on port 2. On the field, use R+START → Utilities → the existing GC Extension / GC Battle debug entries. Check Link Plaza, party selection and the selected slot on TV, Single target highlighting, HP drain/faint, WIN/LOSE and cancellation. After exit check field input and the save copy's hash. See [measured results](presentation.md#regression).
+
+For the SDK-free animation regression:
+
+```sh
+cc -std=c11 -Wall -Wextra -Werror -Iprotocol -Igamecube/battle \
+  gamecube/presentation/layout.c gamecube/presentation/animation.c \
+  gamecube/presentation/presentation_test.c -o build/presentation-test
+```

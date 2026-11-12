@@ -14,6 +14,7 @@ typedef struct {
     uint32_t build_id;
     AssetKey key;
     uint16_t width, height;
+    uint8_t frame_bottom;    // exclusive visible bottom in a 64x64 sprite's first frame
     uint32_t source_bytes;   // bytes received over the link (pixels + palette)
     uint32_t texture_bytes;  // bytes of the RGB5A3 texture in the arena
     unsigned visible;        // non-transparent pixels

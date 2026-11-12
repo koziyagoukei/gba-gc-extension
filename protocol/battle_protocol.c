@@ -26,9 +26,6 @@ static void mon_encode(const BattleMon *m, uint8_t *p) {
     p[1] = m->type_count;
     p[2] = m->types[0];
     p[3] = m->types[1];
-    p[4] = (uint8_t)m->front_y;
-    p[5] = (uint8_t)m->back_y;
-    p[6] = m->elevation;
     for (unsigned i = 0; i < 4; ++i) move_encode(&m->moves[i], p + 8 + 8*i);
 }
 
@@ -37,9 +34,8 @@ static bool mon_decode(const uint8_t *p, BattleMon *m) {
     m->type_count = p[1];
     m->types[0] = p[2];
     m->types[1] = p[3];
-    m->front_y = (int8_t)p[4];
-    m->back_y = (int8_t)p[5];
-    m->elevation = p[6];
+    m->front_y = m->back_y = 0;
+    m->elevation = 0;
     for (unsigned i = 0; i < 4; ++i) move_decode(p + 8 + 8*i, &m->moves[i]);
     return true;
 }

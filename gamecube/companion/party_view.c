@@ -11,6 +11,7 @@
 #include "raw_link.h"
 #include "../joybus.h"
 #include "render.h"
+#include "../presentation/assets.h"
 
 #define MAX_PARTY 6
 #define MAX_PLAN (MAX_PARTY * 9)
@@ -312,18 +313,19 @@ void party_view_update(bool start_pressed, bool a_pressed, bool z_pressed) {
 
 // ------------------------------------------------------------------ drawing
 
-#define WHITE RGBA(255, 255, 255, 255)
-#define DIM RGBA(150, 160, 185, 255)
-#define ACCENT RGBA(255, 214, 90, 255)
-#define PANEL RGBA(30, 40, 64, 255)
-#define HILITE RGBA(70, 96, 160, 255)
+#define WHITE UI_WHITE
+#define DIM UI_MUTED
+#define ACCENT UI_INK
+#define PANEL UI_CREAM
+#define BORDER UI_EDGE
+#define HILITE UI_MINT
 
 static const CacheEntry *asset(const AssetKey *key) { return cache_find(build_id(), key); }
 
 static float draw_label(const AssetKey *key, float x, float y, float scale, const char *fallback) {
     const CacheEntry *e = asset(key);
     if (e) {
-        render_texture((GXTexObj *)&e->texture, x, y, e->width * scale, e->height * scale, WHITE);
+        render_texture((GXTexObj *)&e->texture, x, y, e->width * scale, e->height * scale, UI_INK);
         return e->width * scale;
     }
     render_text(x, y, scale, DIM, "%s", fallback);
@@ -345,7 +347,8 @@ static void status_text(uint32_t status, char *out) {
 static void draw_detail(const PokemonRecord *r) {
     const float px = 256, py = 64;
     char status[16];
-    render_rect(px, py, 368, 388, PANEL);
+    ui_panel(px, py, 368, 388, BORDER, PANEL);
+    render_texture(ui_art(ART_STAGE), px + 14, py + 167, 178, 30, WHITE);
     const CacheEntry *sprite = asset(&r->sprite);
     if (sprite) render_texture((GXTexObj *)&sprite->texture, px + 8, py + 8, 192, 192, WHITE);
     else render_text(px + 48, py + 96, 1, DIM, "loading sprite");
@@ -353,16 +356,16 @@ static void draw_detail(const PokemonRecord *r) {
     draw_label(&key, px + 208, py + 12, 2, "?");
     if (r->flags & PKMN_FLAG_EGG) {
         // The game does not reveal an egg's contents; neither does the TV.
-        render_text(px + 208, py + 60, 1.5f, WHITE, "EGG");
+        render_text(px + 208, py + 60, 1.5f, UI_INK, "EGG");
         return;
     }
     key = label(LABEL_SPECIES, r->species);
     draw_label(&key, px + 208, py + 52, 1.5f, "?");
     render_text(px + 208, py + 84, 1, DIM, "No.%04u  form %u", r->national_dex, r->form);
-    render_text(px + 208, py + 104, 1.5f, WHITE, "Lv.%u %c%s", r->level,
+    render_text(px + 208, py + 104, 1.5f, UI_INK, "Lv.%u %c%s", r->level,
                 r->gender == 0 ? 0x0b : r->gender == 1 ? 0x0c : ' ', r->flags & PKMN_FLAG_SHINY ? " SHINY" : "");
     status_text(r->status, status);
-    render_text(px + 208, py + 136, 1, WHITE, "HP %u/%u  %s", r->hp, r->max_hp, status);
+    render_text(px + 208, py + 136, 1, UI_INK, "HP %u/%u  %s", r->hp, r->max_hp, status);
     const float bar = r->max_hp ? 144.0f * r->hp / r->max_hp : 0;
     render_rect(px + 208, py + 156, 144, 6, RGBA(20, 24, 36, 255));
     render_rect(px + 208, py + 156, bar, 6, r->hp * 5 > r->max_hp ? RGBA(90, 220, 110, 255) : RGBA(240, 80, 70, 255));
@@ -374,7 +377,7 @@ static void draw_detail(const PokemonRecord *r) {
         if (!r->moves[m]) { render_text(px + 16, y + 4, 1, DIM, "-"); continue; }
         key = label(LABEL_MOVE, r->moves[m]);
         draw_label(&key, px + 16, y, 1.5f, "move");
-        render_text(px + 248, y + 4, 1, WHITE, "PP %2u/%2u", r->pp[m], r->max_pp[m]);
+        render_text(px + 248, y + 4, 1, UI_INK, "PP %2u/%2u", r->pp[m], r->max_pp[m]);
     }
     render_text(px + 16, py + 344, 1, DIM, "ABILITY");
     key = label(LABEL_ABILITY, r->ability);
@@ -384,7 +387,7 @@ static void draw_detail(const PokemonRecord *r) {
         key = label(LABEL_ITEM, r->held_item);
         draw_label(&key, px + 80, py + 362, 1.5f, "?");
     } else {
-        render_text(px + 80, py + 366, 1, WHITE, "none");
+        render_text(px + 80, py + 366, 1, UI_INK, "none");
     }
 }
 
@@ -392,35 +395,46 @@ static void draw_party(void) {
     for (unsigned slot = 0; slot < v.count; ++slot) {
         const float y = 64 + slot * 64;
         const PokemonRecord *r = &v.records[slot];
-        render_rect(16, y, 228, 60, slot == v.ui.cursor ? HILITE : PANEL);
+        const bool selected = slot == v.ui.cursor;
+        ui_panel(16, y, 228, 60, selected ? UI_ROSE : BORDER, selected ? HILITE : PANEL);
         if (!v.have_record[slot]) continue;
         const CacheEntry *sprite = asset(&r->sprite);
         if (sprite) render_texture((GXTexObj *)&sprite->texture, 18, y - 1, 64, 64, WHITE);
         AssetKey key = pkmn_nickname_label(r);
         draw_label(&key, 86, y + 6, 1.5f, "...");
         if (r->flags & PKMN_FLAG_EGG) render_text(86, y + 36, 1, DIM, "EGG");
-        else render_text(86, y + 36, 1, slot == v.ui.cursor ? WHITE : DIM, "Lv.%u  %u/%u", r->level, r->hp, r->max_hp);
-        if (slot == v.ui.confirmed) render_text(212, y + 6, 1, ACCENT, "SEL");
+        else render_text(86, y + 36, 1, slot == v.ui.cursor ? UI_INK : DIM, "Lv.%u  %u/%u", r->level, r->hp, r->max_hp);
+        if (slot == v.ui.confirmed) render_texture(ui_art(ART_LINK_CREST), 216, y + 7, 18, 18, WHITE);
     }
 }
 
 void party_view_draw(void) {
     if (v.state == V_BATTLE) { battle_view_draw(); return; }
     render_begin();
-    render_rect(0, 0, 640, 44, RGBA(22, 28, 48, 255));
-    render_text(16, 10, 1.5f, WHITE, "GBA-GC EXTENSION");
-    render_text(300, 14, 1, DIM, "%s", state_names[v.state]);
-    if (v.state >= V_PARTY && v.state <= V_ACTIVE)
-        render_text(400, 14, 1, DIM, "%.4s build %08x", (const char *)v.link.client.tag, v.link.client.build_id);
+    render_texture_part(ui_art(ART_WALLPAPER), 16, 16, 0, 0, 160, 120, 0, 0, 640, 480, WHITE);
+    render_rect(0, 0, 640, 44, UI_MINT);
+    render_rect(0, 43, 640, 2, BORDER);
+    render_texture(ui_art(ART_LINK_CREST), 12, 7, 30, 30, WHITE);
+    const bool party_screen = v.state == V_PARTY || v.state == V_ASSETS || v.state == V_ACTIVE;
+    render_text(52, 10, 1.5f, UI_INK, "%s", party_screen ? "PARTY ROSTER" : "LINK PLAZA");
+    render_text(288, 14, 1, DIM, "%s", state_names[v.state]);
+    if (party_screen)
+        render_text(404, 14, 1, DIM, "%.4s build %08x", (const char *)v.link.client.tag, v.link.client.build_id);
     const bool have_party = v.count && (v.state == V_ACTIVE || v.state == V_ASSETS || v.have_record[0]);
     if (have_party) {
         draw_party();
         unsigned slot = v.ui.cursor < v.count ? v.ui.cursor : 0;
         if (v.have_record[slot]) draw_detail(&v.records[slot]);
+    } else {
+        ui_panel(104, 81, 432, 205, BORDER, PANEL);
+        render_texture(ui_art(ART_MEADOW), 112, 89, 416, 189, WHITE);
+        render_texture(ui_art(ART_LINK_CREST), 264, 121, 112, 112, WHITE);
+        ui_panel(180, 240, 280, 27, UI_EDGE, UI_CREAM);
+        render_text(216, 245, 1, UI_INK, "GAME BOY ADVANCE LINK");
     }
     if (v.state != V_ACTIVE) {
-        const float y = have_party ? 440 : 220;
-        render_rect(0, y - 8, 640, 36, RGBA(10, 12, 20, 230));
+        const float y = have_party ? 440 : 322;
+        ui_panel(16, y - 8, 608, 33, BORDER, UI_CREAM);
         if (v.state == V_ASSETS)
             render_text(24, y, 1, ACCENT, "%s  %u/%u", v.message, v.plan_index, v.plan_count);
         else if (v.state == V_PARTY)

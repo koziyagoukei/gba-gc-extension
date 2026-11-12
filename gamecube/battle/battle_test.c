@@ -66,12 +66,19 @@ static void test_request_roundtrip(void) {
     const uint32_t size = battle_request_encode(&in, bytes, sizeof(bytes));
     assert(size == BATTLE_REQUEST_HEADER + 2 * BATTLE_ENTRY_BYTES + NTYPES * NTYPES);
     assert(battle_request_encode(&in, bytes, size - 1) == 0);
+    const unsigned reserved = BATTLE_REQUEST_HEADER + PKMN_RECORD_BYTES + 4;
+    for (unsigned i = 0; i < 4; ++i) assert(bytes[reserved + i] == 0);
+    // Old frontier ROMs still populate the V1 sprite-placement bytes.
+    bytes[reserved] = 0xfd;
+    bytes[reserved + 1] = 12;
+    bytes[reserved + 2] = 9;
     assert(battle_request_decode(bytes, size, &out));
     assert(out.format == BATTLE_FORMAT_SINGLE && out.trainer_id == 42 && out.battle_id == 0x1234);
     assert(out.player[0].record.species == 7 && out.opponent[0].record.slot == 0x80);
     assert(out.player[0].mon.moves[1].unsupported == UNSUP_SECONDARY && out.player[0].mon.moves[0].power == 40);
     assert(out.type_chart[T_WATER * NTYPES + T_FIRE] == 8);
-    assert(out.environment == 7 && out.player[0].mon.front_y == -3 && out.player[0].mon.back_y == 12 && out.player[0].mon.elevation == 9);
+    assert(out.environment == 7);
+    assert(!out.player[0].mon.front_y && !out.player[0].mon.back_y && !out.player[0].mon.elevation);
     assert(!battle_request_decode(bytes, size - 1, &out));
     bytes[0] = 9;
     assert(!battle_request_decode(bytes, size, &out));

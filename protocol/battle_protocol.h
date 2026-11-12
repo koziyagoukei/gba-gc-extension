@@ -59,13 +59,13 @@ typedef struct {
 
 // BattleMonV1, 40 bytes, appended to each PokemonRecordV1 in the request.
 //   0 u8 version (1)  1 u8 type count  2 u8 types[2]
-//   4 s8 front pic y offset  5 s8 back pic y offset  6 u8 elevation (opponent)  7 u8 reserved
+//   4..7 reserved (legacy sprite placement metadata is ignored)
 //   8 BattleMove[4]
-// The picture offsets place sprites exactly where the game would.
 #define BATTLE_MON_VERSION 1
 #define BATTLE_MON_BYTES 40
 typedef struct {
     uint8_t type_count, types[2];
+    // Source compatibility for legacy producers; not encoded or used by GC.
     int8_t front_y, back_y;
     uint8_t elevation;
     BattleMove moves[4];
@@ -101,8 +101,8 @@ uint32_t battle_request_size(const BattleRequest *request);
 uint32_t battle_request_encode(const BattleRequest *request, uint8_t *out, uint32_t capacity);
 bool battle_request_decode(const uint8_t *in, uint32_t length, BattleRequest *request);
 
-// Battle presentation assets served by the client from its own battle
-// graphics, so the host draws the game's real UI (types 0x02xx).
+// Legacy UI asset IDs (0x02xx) for older client/host pairs. The native GC
+// presentation does not request these. Keep IDs reserved for compatibility.
 enum {
     ASSET_BATTLE_BG = 0x0201,         // id = environment; PIXEL_4BPP_TILEMAP 30x20 (240x160), opaque
     ASSET_BATTLE_TEXTBOX = 0x0202,    // id 0; PIXEL_4BPP_TILEMAP 30x6, screen rows 14-19

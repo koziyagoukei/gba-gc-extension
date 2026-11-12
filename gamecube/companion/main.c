@@ -5,9 +5,11 @@
 #include "../joybus.h"
 #include "party_view.h"
 #include "render.h"
+#include "../presentation/assets.h"
 
 int main(void) {
     render_init();
+    ui_art_init();
     PAD_Init();
     joy_init(); // keep SI polling off the GBA channel after PAD_Init
     joy_set_interval(COMPANION_INTERVAL);

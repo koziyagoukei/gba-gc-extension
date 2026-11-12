@@ -1,5 +1,6 @@
 #include "cache.h"
 #include "render.h"
+#include "pkmn_protocol.h"
 #include <ogc/cache.h>
 
 static uint8_t arena[CACHE_ARENA_BYTES] __attribute__((aligned(32)));
@@ -45,6 +46,17 @@ static bool convert_tilemap(const uint8_t *d, uint32_t length, unsigned width, u
     return true;
 }
 
+static uint8_t sprite_bottom(const uint16_t *texels, unsigned width) {
+    for (unsigned row = 64; row > 0; --row) {
+        const unsigned y = row - 1;
+        for (unsigned x = 0; x < 64; ++x) {
+            const unsigned tile = y / 4 * (width / 4) + x / 4;
+            if (texels[tile * 16 + (y % 4) * 4 + x % 4]) return (uint8_t)row;
+        }
+    }
+    return 0;
+}
+
 CacheEntry *cache_insert(uint32_t build_id, const AssetInfo *info, const uint8_t *data) {
     const uint32_t palette = asset_palette_bytes(info->palette_format);
     const uint32_t pixels = (uint32_t)info->width * info->height / 2;
@@ -68,6 +80,9 @@ CacheEntry *cache_insert(uint32_t build_id, const AssetInfo *info, const uint8_t
     } else {
         e->visible = convert_4bpp_rgb5a3(data, data + pixels, info->width, info->height, texels);
     }
+    if (info->key.type == ASSET_PKMN_FRONT && info->pixel_format == PIXEL_4BPP_TILED &&
+        info->width >= 64 && info->height >= 64)
+        e->frame_bottom = sprite_bottom(texels, info->width);
     DCFlushRange(texels, bytes);
     GX_InitTexObj(&e->texture, texels, info->width, info->height, GX_TF_RGB5A3, GX_CLAMP, GX_CLAMP, GX_FALSE);
     GX_InitTexObjFilterMode(&e->texture, GX_NEAR, GX_NEAR);

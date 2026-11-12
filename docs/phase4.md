@@ -1,5 +1,7 @@
 # Phase 4: GBA-style battle presentation
 
+> Historical design. The current companion uses the [native GC presentation](presentation.md) with original GC UI art and layout. The asset-transfer formats below remain supported.
+
 The GameCube battle screen now uses the GBA game's own battle graphics and text. The scene is laid out in GBA screen coordinates (240×160) and scaled to the TV (×8/3, letterboxed).
 
 ## What the GBA sends
