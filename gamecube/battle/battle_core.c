@@ -186,9 +186,13 @@ int battle_init(Battle *b, const BattleRequest *r, uint32_t seed) {
     b->rng = seed ? seed : 0x9e3779b9u;
     const unsigned active = battle_formation_size(r->format);
     if (!active || r->active_per_side != active ||
-        r->version > BATTLE_REQUEST_VERSION_SWITCH)
+        r->version > BATTLE_REQUEST_VERSION_STRUGGLE)
         return BI_FORMAT;
     if (!r->type_count || r->type_count > BATTLE_MAX_TYPES) return BI_BAD_TYPES;
+    if (r->version == BATTLE_REQUEST_VERSION_STRUGGLE &&
+        (!r->struggle_power || r->struggle_accuracy > 100 ||
+         (r->struggle_recoil != BSTRUGGLE_MAX_HP_FLOOR && r->struggle_recoil != BSTRUGGLE_MAX_HP_NEAREST)))
+        return BI_FORMAT;
     const bool roster = roster_battle(b);
     if (!r->player_count || !r->opponent_count || r->player_count > BATTLE_MAX_PER_SIDE ||
         r->opponent_count > BATTLE_MAX_PER_SIDE ||
@@ -227,13 +231,26 @@ int battle_init(Battle *b, const BattleRequest *r, uint32_t seed) {
     return BI_OK;
 }
 
+static const BattleMove struggle_target = {.target = BTARGET_SINGLE};
+
+bool battle_can_struggle(const Battle *b, Position user) {
+    if (b->request->version < BATTLE_REQUEST_VERSION_STRUGGLE) return false;
+    const Battler *mon = battle_at(b, user);
+    if (!mon || mon->fainted) return false;
+    // A move with PP which this engine cannot model is still a move.
+    for (unsigned slot = 0; slot < 4; ++slot)
+        if (mon->move_ids[slot] && mon->pp[slot]) return false;
+    return rotation_battle(b) || battle_target_mask(b, user, &struggle_target, 1 - user.side) != 0;
+}
+
 bool battle_validate_action(const Battle *b, const Action *a) {
     if (a->kind == ACT_FORFEIT) return a->user.side == 0;
     if (a->kind == ACT_SHIFT) return a->rotation == BROT_KEEP && battle_can_shift(b, a->user);
     if (a->kind == ACT_SWITCH)
         return a->rotation == BROT_KEEP && a->reserve < BATTLE_MAX_PER_SIDE &&
                (battle_switch_mask(b, a->user) & (1u << a->reserve));
-    if (a->kind != ACT_MOVE || !field_position(b, a->user) || a->move_slot >= 4) return false;
+    if ((a->kind != ACT_MOVE && a->kind != ACT_STRUGGLE) || !field_position(b, a->user) || a->move_slot >= 4)
+        return false;
     Position candidate = a->user;
     if (rotation_battle(b)) {
         if (a->user.slot != BPOS_CENTER) return false;
@@ -241,6 +258,7 @@ bool battle_validate_action(const Battle *b, const Action *a) {
     } else if (a->rotation != BROT_KEEP) {
         return false;
     }
+    if (a->kind == ACT_STRUGGLE) return battle_can_struggle(b, candidate);
     const uint8_t mask = battle_command_targets(b, candidate, a->move_slot);
     if (!mask) return false;
     if (mask & BATTLE_TARGET_AUTO) return true;
@@ -260,6 +278,10 @@ void battle_choose_at(Battle *b, Position user, Action *out) {
     const unsigned rotations = rotation_battle(b) ? 3 : 1;
     for (uint8_t rotation = 0; rotation < rotations; ++rotation) {
         const Position candidate = {user.side, rotation_battle(b) ? battle_rotation_slot(rotation) : user.slot};
+        if (battle_can_struggle(b, candidate)) {
+            choices[n++] = (Action){.kind = ACT_STRUGGLE, .user = user, .rotation = rotation};
+            continue;
+        }
         for (unsigned m = 0; m < 4; ++m) {
             const uint8_t mask = battle_command_targets(b, candidate, m);
             if (!mask) continue;
@@ -268,7 +290,7 @@ void battle_choose_at(Battle *b, Position user, Action *out) {
         }
     }
     *out = n ? choices[next_random(b) % n] : (Action){.user = user};
-    if (n && b->request->format != BATTLE_FORMAT_SINGLE) {
+    if (n && out->kind == ACT_MOVE && b->request->format != BATTLE_FORMAT_SINGLE) {
         const Position candidate = {user.side, rotation_battle(b) ? battle_rotation_slot(out->rotation) : user.slot};
         const uint8_t mask = battle_command_targets(b, candidate, out->move_slot) & 7u;
         uint8_t targets[BC_MAX_ACTIVE];
@@ -291,19 +313,25 @@ static uint8_t effectiveness(const Battle *b, uint8_t move_type, const Battler *
     return (uint8_t)e;
 }
 
-uint16_t battle_damage(const Battle *b, const Battler *a, const BattleMove *m, const Battler *d,
-                       unsigned random_percent, uint8_t *eff) {
-    *eff = effectiveness(b, m->type, d);
+static uint16_t calculate_damage(const Battle *b, const Battler *a, const BattleMove *m, const Battler *d,
+                                 unsigned random_percent, bool typeless, uint8_t *eff) {
+    *eff = typeless ? 4 : effectiveness(b, m->type, d);
     if (*eff == 0) return 0;
     const bool physical = m->category == BCAT_PHYSICAL;
     const uint32_t atk = physical ? a->attack : a->sp_attack;
     const uint32_t def = (physical ? d->defense : d->sp_defense) ? (physical ? d->defense : d->sp_defense) : 1;
     uint32_t dmg = ((2u * a->level / 5u + 2u) * m->power * atk / def) / 50u + 2u;
     dmg = dmg * random_percent / 100u;
-    if (m->type == a->types[0] || (a->type_count == 2 && m->type == a->types[1])) dmg = dmg * 3u / 2u;
+    if (!typeless && (m->type == a->types[0] || (a->type_count == 2 && m->type == a->types[1])))
+        dmg = dmg * 3u / 2u;
     dmg = dmg * *eff / 4u;
     if (dmg == 0) dmg = 1;
     return dmg > 0xffff ? 0xffff : (uint16_t)dmg;
+}
+
+uint16_t battle_damage(const Battle *b, const Battler *a, const BattleMove *m, const Battler *d,
+                       unsigned random_percent, uint8_t *eff) {
+    return calculate_damage(b, a, m, d, random_percent, false, eff);
 }
 
 static void emit(EventLog *log, BattleEvent ev) {
@@ -452,36 +480,64 @@ static void execute_switch(Battle *b, Position user, uint8_t index, EventLog *lo
     send_out(b, user, index, log);
 }
 
-static void hit(Battle *b, Position user, Position target, const BattleMove *m, uint16_t id,
-                bool spread, EventLog *log) {
+static void apply_damage(Battle *b, BattleEvent ev, uint16_t damage, EventLog *log) {
+    Battler *mon = mutable_at(b, ev.target);
+    mon->hp = damage >= mon->hp ? 0 : (uint16_t)(mon->hp - damage);
+    ev.amount = damage;
+    ev.hp_after = mon->hp;
+    emit(log, ev);
+    if (!mon->hp) {
+        mon->fainted = true;
+        emit(log, (BattleEvent){.kind = EV_FAINT, .target = ev.target});
+    }
+}
+
+static bool hit(Battle *b, Position user, Position target, const BattleMove *m, uint16_t id,
+                bool spread, bool typeless, EventLog *log) {
     BattleEvent ev = {.user = user, .target = target, .move_id = id};
     if (m->accuracy && next_random(b) % 100u >= m->accuracy) {
         ev.kind = EV_MISS;
         emit(log, ev);
-        return;
+        return false;
     }
-    Battler *d = mutable_at(b, target);
-    uint8_t eff;
-    uint16_t damage = battle_damage(b, battle_at(b, user), m, d, 85u + next_random(b) % 16u, &eff);
-    if (!eff) {
+    const Battler *defender = battle_at(b, target);
+    uint16_t damage = calculate_damage(b, battle_at(b, user), m, defender,
+                                       85u + next_random(b) % 16u, typeless, &ev.effectiveness);
+    if (!ev.effectiveness) {
         ev.kind = EV_NO_EFFECT;
         emit(log, ev);
-        return;
+        return false;
     }
     if (spread) {
         damage = damage * 3u / 4u;
         if (!damage) damage = 1;
     }
-    d->hp = damage >= d->hp ? 0 : (uint16_t)(d->hp - damage);
     ev.kind = EV_DAMAGE;
-    ev.amount = damage;
-    ev.hp_after = d->hp;
-    ev.effectiveness = eff;
-    emit(log, ev);
-    if (!d->hp) {
-        d->fainted = true;
-        emit(log, (BattleEvent){.kind = EV_FAINT, .target = target});
+    apply_damage(b, ev, damage, log);
+    return true;
+}
+
+static void execute_struggle(Battle *b, Position user, EventLog *log) {
+    const BattleRequest *rules = b->request;
+    const uint8_t foe = 1 - user.side;
+    const uint8_t mask = battle_target_mask(b, user, &struggle_target, foe);
+    uint8_t targets[BC_MAX_ACTIVE];
+    unsigned count = 0;
+    for (uint8_t slot = 0; slot < BC_MAX_ACTIVE; ++slot)
+        if (mask & (1u << slot)) targets[count++] = slot;
+    const Position target = {foe, count > 1 ? targets[next_random(b) % count] : count ? targets[0] : 0};
+    emit(log, (BattleEvent){.kind = EV_MOVE_USED, .user = user, .target = target, .move_id = BATTLE_MOVE_STRUGGLE});
+    if (!count) {
+        emit(log, (BattleEvent){.kind = EV_NO_EFFECT, .user = user, .target = target, .move_id = BATTLE_MOVE_STRUGGLE});
+        return;
     }
+    const BattleMove move = {.power = rules->struggle_power, .category = BCAT_PHYSICAL,
+                             .accuracy = rules->struggle_accuracy, .target = BTARGET_SINGLE};
+    if (!hit(b, user, target, &move, BATTLE_MOVE_STRUGGLE, false, true, log)) return;
+    const unsigned max_hp = battle_at(b, user)->max_hp;
+    const unsigned rounding = rules->struggle_recoil == BSTRUGGLE_MAX_HP_NEAREST ? 2 : 0;
+    const uint16_t recoil = (max_hp + rounding) / 4u;
+    apply_damage(b, (BattleEvent){.kind = EV_RECOIL, .user = user, .target = user}, recoil ? recoil : 1, log);
 }
 
 static void execute_move(Battle *b, const TurnAction *t, Position user, EventLog *log) {
@@ -509,7 +565,7 @@ static void execute_move(Battle *b, const TurnAction *t, Position user, EventLog
     }
     for (uint8_t side = 0; side < 2; ++side)
         for (uint8_t slot = 0; slot < BC_MAX_ACTIVE; ++slot)
-            if (targets[side] & (1u << slot)) hit(b, user, (Position){side, slot}, m, id, count > 1, log);
+            if (targets[side] & (1u << slot)) hit(b, user, (Position){side, slot}, m, id, count > 1, false, log);
 }
 
 void battle_run_turn(Battle *b, const Action *in, unsigned count, EventLog *log) {
@@ -567,7 +623,10 @@ void battle_run_turn(Battle *b, const Action *in, unsigned count, EventLog *log)
             if (battle_can_shift(b, user)) shift(b, user, log);
             continue;
         }
-        execute_move(b, &order[i], user, log);
+        if (order[i].action.kind == ACT_STRUGGLE)
+            execute_struggle(b, user, log);
+        else
+            execute_move(b, &order[i], user, log);
         const bool player_lost = side_defeated(b, 0), foe_lost = side_defeated(b, 1);
         if (player_lost || foe_lost) {
             ++b->turn;

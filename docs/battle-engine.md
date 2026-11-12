@@ -130,7 +130,40 @@ The GC DOL is 244,256 B (+1,344 B since stage 1), with +1,248 B text,
 +92 B data and unchanged BSS. Frontier link use is 26,315,644 B ROM
 (+248 B), 231,980 B EWRAM and 28,532 B IWRAM.
 
-Struggle, drag/phazing and pivots remain pending. A player-selected pivot
-needs a resumable turn boundary so the queued actions can continue after
-the reserve choice. Stat stages, status, residual effects, abilities,
-items, field effects and gimmicks follow the lifecycle work.
+## Lifecycle, stage 3
+
+The GC offers Struggle when the battler has exhausted the PP of every
+known move and can reach an opponent. This uses the same legality check
+for the player and AI. A move with PP that the GC does not implement
+stays unsupported. Struggle takes no PP, chooses a random legal foe using
+the battle RNG, and resolves physical damage without type effectiveness
+or STAB. Recoil can knock out the user, and the core checks both sides for
+defeat after the attack and recoil. Double knockouts can result in a draw.
+
+Request and APP V4 carry resolved Struggle power, accuracy and the recoil
+rounding rule. The state adds one byte for eligible field positions.
+STRUGGLE uses the same eight-byte action envelope. This version handles
+the typeless, max-HP-based Gen IV+ rule: one quarter of max HP rounded
+down (Gen IV) or to nearest with ties up (Gen V+), with a minimum of one.
+The Frontier exporter explicitly rejects earlier recoil rules or a typed
+Struggle for V4. V1 through V3 retain their state lengths and commands.
+
+The native tests cover all four formats, exhausted vs unsupported moves,
+type immunity bypass, both recoil rounding modes, Rotation with a wing
+using Struggle, and simultaneous faint with a draw. The Dolphin Double
+fixture began with Taillow at 1 HP and zero PP. Struggle caused 14 recoil
+damage, the GBA sent out Grovyle to fill its position, and the battle won
+in two turns and returned to the field. Phase 1 fault injection, 64 KiB
+and GX, Party Viewer reconnect and cache reuse, Single apply/readback
+and cancel, V3 switch, Triple Shift and Rotation all passed.
+
+The V4 battle reported 10 µs peak core resolution, 9 events in the largest
+batch and a 33.366 ms maximum presentation poll gap. The GC DOL is
+246,656 B (+2,400 B since stage 2), with +2,216 B text, +188 B data and
+unchanged BSS. Frontier link use is 26,316,212 B ROM (+568 B), 231,980 B
+EWRAM and 28,532 B IWRAM.
+
+Drag/phazing and pivots remain pending. A player-selected pivot needs a
+resumable turn boundary so the queued actions can continue after the
+reserve choice. Stat stages, status, residual effects, abilities, items,
+field effects and gimmicks follow the lifecycle work.

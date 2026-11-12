@@ -111,10 +111,11 @@ static bool send_multi_state(uint8_t phase) {
             m->max_hp = x->max_hp;
             if (side != 0) continue;
             memcpy(state->pp[slot], x->pp, sizeof(state->pp[slot]));
+            if (battle_can_struggle(&b.battle, pos)) extended.struggle_mask |= 1u << slot;
             for (unsigned move = 0; move < 4; ++move)
                 state->targets[slot][move] = battle_command_targets(&b.battle, pos, move);
         }
-    uint8_t bytes[BATTLE_ROSTER_STATE_BYTES];
+    uint8_t bytes[BATTLE_STRUGGLE_STATE_BYTES];
     uint16_t status;
     unsigned size;
     const uint16_t opcode = roster() ? BATTLE_OP_STATE_ROSTER : BATTLE_OP_STATE_MULTI;
@@ -126,7 +127,8 @@ static bool send_multi_state(uint8_t phase) {
                                                   mon ? mon->hp : record ? record->hp : 0,
                                                   record ? record->max_hp : 0};
         }
-        size = battle_roster_state_encode(&extended, bytes);
+        size = b.mode.app_version == BATTLE_APP_VERSION_STRUGGLE
+             ? battle_struggle_state_encode(&extended, bytes) : battle_roster_state_encode(&extended, bytes);
     } else {
         size = battle_multi_state_encode(state, bytes);
     }
@@ -178,6 +180,7 @@ static bool poll_multi_action(BattleMultiAction *a) {
     if (!host_app_to(b.link, b.mode.app_id, opcode, NULL, 0, &d, &n, &status)) return false;
     if (status == APP_OK) {
         switch (b.mode.app_version) {
+        case BATTLE_APP_VERSION_STRUGGLE: return battle_struggle_action_decode(d, n, a);
         case BATTLE_APP_VERSION_SWITCH: return battle_switch_action_decode(d, n, a);
         case BATTLE_APP_VERSION_ROSTER: return battle_roster_action_decode(d, n, a);
         default: return battle_multi_action_decode(d, n, a);
@@ -374,6 +377,7 @@ static bool player_can_act(Position user) {
     const bool rotation = b.request.format == BATTLE_FORMAT_ROTATION;
     for (uint8_t slot = 0; slot < b.battle.sides[0].active_count; ++slot) {
         if (!rotation && slot != user.slot) continue;
+        if (battle_can_struggle(&b.battle, (Position){0, slot})) return true;
         for (unsigned move = 0; move < 4; ++move)
             if (battle_command_targets(&b.battle, (Position){0, slot}, move)) return true;
     }
@@ -411,11 +415,12 @@ static BattleViewStatus step_multi_choose(void) {
     }
     if (a.token != b.token || a.actor != user.slot || a.action == BACTION_NONE) return BV_RUNNING;
     const bool switching = a.action == BACTION_SWITCH;
+    const bool struggling = a.action == BACTION_STRUGGLE;
     const Action act = {
-        .kind = switching ? ACT_SWITCH : a.action == BACTION_SHIFT ? ACT_SHIFT : ACT_MOVE,
+        .kind = switching ? ACT_SWITCH : struggling ? ACT_STRUGGLE : a.action == BACTION_SHIFT ? ACT_SHIFT : ACT_MOVE,
         .user = user, .move_slot = a.move_slot, .target = {{1, a.target}}, .rotation = a.rotation, .reserve = a.target,
     };
-    if ((a.action > BACTION_SHIFT && !switching) || !battle_validate_action(&b.battle, &act) ||
+    if ((a.action > BACTION_SHIFT && !switching && !struggling) || !battle_validate_action(&b.battle, &act) ||
         (switching && (b.reserved & (1u << act.reserve)))) {
         SYS_Report("MULTI ACTION turn=%u actor=%u target=%u rejected\n", turn, user.slot, a.target);
         b.state_sent = false;

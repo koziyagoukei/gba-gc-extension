@@ -371,7 +371,7 @@ static void test_roster_wire(void) {
     assert(n && buffer[0] == BATTLE_REQUEST_VERSION_ROSTER);
     assert(battle_request_decode(buffer, n, &decoded) && decoded.player_count == 2);
     assert(decoded.version == BATTLE_REQUEST_VERSION_ROSTER);
-    buffer[0] = BATTLE_REQUEST_VERSION_SWITCH + 1;
+    buffer[0] = BATTLE_REQUEST_VERSION_STRUGGLE + 1;
     assert(!battle_request_decode(buffer, n, &decoded));
 
     const BattleRosterState state = {
@@ -586,6 +586,103 @@ static void test_switch_wire(void) {
     assert(!battle_switch_action_decode(bytes, sizeof(bytes), &decoded));
 }
 
+static void enable_struggle(BattleRequest *r) {
+    r->version = BATTLE_REQUEST_VERSION_STRUGGLE;
+    r->struggle_power = 50;
+    r->struggle_accuracy = 0;
+    r->struggle_recoil = BSTRUGGLE_MAX_HP_NEAREST;
+}
+
+static void test_struggle_wire(void) {
+    BattleRequest r, decoded;
+    make_multi(&r, BATTLE_FORMAT_SINGLE);
+    enable_struggle(&r);
+    uint8_t bytes[2048];
+    const unsigned length = battle_request_encode(&r, bytes, sizeof(bytes));
+    assert(length && bytes[0] == 4 && bytes[21] == 50 && bytes[22] == 0 && bytes[23] == BSTRUGGLE_MAX_HP_NEAREST);
+    assert(battle_request_decode(bytes, length, &decoded) && decoded.struggle_power == 50);
+    bytes[23] = 255;
+    assert(!battle_request_decode(bytes, length, &decoded));
+
+    const BattleRosterState state = {
+        .field_state = {.phase = BPHASE_CHOOSE, .token = 1}, .struggle_mask = 1,
+    };
+    BattleRosterState reply;
+    const unsigned n = battle_struggle_state_encode(&state, bytes);
+    assert(n == BATTLE_STRUGGLE_STATE_BYTES);
+    assert(battle_struggle_state_decode(bytes, n, &reply) && reply.struggle_mask == 1);
+    assert(!battle_roster_state_decode(bytes, n, &reply));
+    bytes[n - 1] = 8;
+    assert(!battle_struggle_state_decode(bytes, n, &reply));
+
+    const BattleMultiAction action = {.token = 1, .action = BACTION_STRUGGLE, .rotation = BROT_RIGHT};
+    BattleMultiAction ack;
+    const unsigned size = battle_multi_action_encode(&action, bytes);
+    assert(battle_struggle_action_decode(bytes, size, &ack) && ack.rotation == BROT_RIGHT);
+    assert(!battle_switch_action_decode(bytes, size, &ack));
+    bytes[5] = 1;
+    assert(!battle_struggle_action_decode(bytes, size, &ack));
+}
+
+static void test_struggle(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    const Action struggle = {.kind = ACT_STRUGGLE, .user = {0, 0}};
+    make_multi(&r, BATTLE_FORMAT_SINGLE);
+    enable_struggle(&r);
+    r.player[0].record.hp = r.player[0].record.max_hp = 202;
+    r.opponent[0].mon.types[0] = T_GHOST;
+    r.player[0].mon.moves[0].unsupported = UNSUP_SECONDARY;
+    assert(battle_init(&b, &r, 77) == BI_OK);
+    assert(!battle_validate_action(&b, &struggle)); // Unsupported with PP is not PP exhaustion.
+    r.player[0].record.pp[0] = 0;
+    assert(battle_init(&b, &r, 77) == BI_OK && battle_validate_action(&b, &struggle));
+    Action ai;
+    battle_choose_ai(&b, 0, &ai);
+    assert(ai.kind == ACT_STRUGGLE && battle_validate_action(&b, &ai));
+    battle_run_turn(&b, &struggle, 1, &log);
+    assert(log.events[0].move_id == BATTLE_MOVE_STRUGGLE && log.events[1].kind == EV_DAMAGE);
+    assert(log.events[1].effectiveness == 4);
+    assert(log.events[2].kind == EV_RECOIL && log.events[2].amount == 51);
+    assert(battle_active(&b, 0)->hp == 151 && battle_active(&b, 0)->pp[0] == 0);
+
+    r.struggle_recoil = BSTRUGGLE_MAX_HP_FLOOR;
+    assert(battle_init(&b, &r, 77) == BI_OK);
+    battle_run_turn(&b, &struggle, 1, &log);
+    assert(log.events[2].amount == 50);
+
+    r.player[0].record.hp = r.opponent[0].record.hp = 1;
+    assert(battle_init(&b, &r, 77) == BI_OK);
+    battle_run_turn(&b, &struggle, 1, &log);
+    assert(b.outcome == OUTCOME_DRAW && event_count(&log, EV_FAINT) == 2);
+    assert(!battle_at(&b, (Position){0, 0}) && !battle_at(&b, (Position){1, 0}));
+
+    make_multi(&r, BATTLE_FORMAT_DOUBLE);
+    enable_struggle(&r);
+    r.player[0].record.pp[0] = 0;
+    assert(battle_init(&b, &r, 77) == BI_OK);
+    battle_run_turn(&b, &struggle, 1, &log);
+    assert(event_count(&log, EV_DAMAGE) == 1 && log.events[1].target.side == 1);
+
+    make_multi(&r, BATTLE_FORMAT_TRIPLE);
+    enable_struggle(&r);
+    r.player[0].record.pp[0] = 0;
+    assert(battle_init(&b, &r, 77) == BI_OK);
+    battle_run_turn(&b, &struggle, 1, &log);
+    assert(event_count(&log, EV_DAMAGE) == 1 && log.events[1].target.slot != BPOS_RIGHT);
+
+    make_multi(&r, BATTLE_FORMAT_ROTATION);
+    enable_struggle(&r);
+    r.player[1].record.pp[0] = 0;
+    assert(battle_init(&b, &r, 77) == BI_OK);
+    const Action rotate = {.kind = ACT_STRUGGLE, .user = {0, BPOS_CENTER}, .rotation = BROT_LEFT};
+    assert(battle_validate_action(&b, &rotate));
+    battle_run_turn(&b, &rotate, 1, &log);
+    assert(log.events[0].kind == EV_ROTATE && log.events[1].move_id == BATTLE_MOVE_STRUGGLE);
+    assert(b.sides[0].battlers[0].hp == 200 && b.sides[0].battlers[1].hp < 200);
+}
+
 int main(void) {
     test_request_roundtrip();
     test_messages();
@@ -601,6 +698,8 @@ int main(void) {
     test_rotation_replacement();
     test_voluntary_switch();
     test_switch_wire();
+    test_struggle_wire();
+    test_struggle();
     puts("battle tests passed");
     return 0;
 }

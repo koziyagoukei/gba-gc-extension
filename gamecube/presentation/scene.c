@@ -148,6 +148,7 @@ static const char *message_text(const SceneMessage *msg) {
     case MSG_FAINT: return "Fainted!";
     case MSG_CANCEL: return "The battle was cancelled.";
     case MSG_NO_MOVES: return "No supported move remains.";
+    case MSG_RECOIL: return "Recoil damage!";
     case MSG_WITHDRAW: return "Returned to the party.";
     case MSG_SHIFT: return "Shifted to the center!";
     case MSG_ROTATE: return "Rotated to the front!";
@@ -174,7 +175,9 @@ static void draw_message(const BattleLayout *layout) {
         else render_text(x, y + 28, 1, UI_MUTED, "%s", msg->subject.side ? "Opponent" : "Player");
         if (msg->kind == MSG_MOVE) {
             CacheEntry *move = battle_move_label(scene.build, msg->move);
-            if (move) draw_label(move, x + 210, y + 27, 220, 23);
+            if (msg->move == BATTLE_MOVE_STRUGGLE)
+                render_text(x + 210, y + 28, 1, UI_MUTED, "Struggle");
+            else if (move) draw_label(move, x + 210, y + 27, 220, 23);
             else render_text(x + 210, y + 28, 1, UI_MUTED, "Move #%u", msg->move);
         }
     }

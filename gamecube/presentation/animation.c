@@ -96,6 +96,12 @@ void animation_play(BattleAnimation *a, const BattleLayout *layout, const EventL
             add(a, (AnimationStep){.kind = ANIM_ROTATE, .target = e->target, .rotation = e->rotation});
             message(a, (SceneMessage){.kind = MSG_ROTATE, .subject = e->target}, 22);
             break;
+        case EV_RECOIL:
+            if (!battle_layout_anchor(layout, e->target)) break;
+            message(a, (SceneMessage){.kind = MSG_RECOIL, .subject = e->target}, 0);
+            add(a, (AnimationStep){.kind = ANIM_HP, .target = e->target, .hp = e->hp_after});
+            wait(a, 18);
+            break;
         case EV_WITHDRAW:
             if (!battle_layout_anchor(layout, e->target)) break;
             message(a, (SceneMessage){.kind = MSG_WITHDRAW, .subject = e->target}, 0);

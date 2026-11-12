@@ -39,7 +39,7 @@ typedef struct {
     uint8_t active_count;
 } Side;
 
-typedef enum { ACT_NONE, ACT_MOVE, ACT_FORFEIT, ACT_SHIFT, ACT_SWITCH } ActionKind;
+typedef enum { ACT_NONE, ACT_MOVE, ACT_FORFEIT, ACT_SHIFT, ACT_SWITCH, ACT_STRUGGLE } ActionKind;
 typedef struct {
     ActionKind kind;
     Position user;
@@ -48,7 +48,7 @@ typedef struct {
     uint8_t rotation, reserve;
 } Action;
 
-typedef enum { EV_MOVE_USED, EV_MISS, EV_DAMAGE, EV_NO_EFFECT, EV_FAINT, EV_FORFEIT, EV_NO_MOVES, EV_END, EV_SHIFT, EV_ROTATE, EV_SEND_OUT, EV_WITHDRAW } EventKind;
+typedef enum { EV_MOVE_USED, EV_MISS, EV_DAMAGE, EV_NO_EFFECT, EV_FAINT, EV_FORFEIT, EV_NO_MOVES, EV_END, EV_SHIFT, EV_ROTATE, EV_SEND_OUT, EV_WITHDRAW, EV_RECOIL } EventKind;
 typedef struct {
     EventKind kind;
     Position user, target;
@@ -88,6 +88,7 @@ uint8_t battle_command_targets(const Battle *battle, Position user, unsigned mov
 unsigned battle_collect_actors(const Battle *battle, uint8_t side, Position *out);
 void battle_choose_at(Battle *battle, Position pos, Action *out);
 uint8_t battle_reserve_mask(const Battle *battle, uint8_t side);
+bool battle_can_struggle(const Battle *battle, Position position);
 uint8_t battle_switch_mask(const Battle *battle, Position position);
 uint8_t battle_replacement_mask(const Battle *battle, Position position);
 bool battle_pending_replacement(const Battle *battle, Position *position);
