@@ -1,5 +1,8 @@
 # Multi-format battle PoC
 
+This document records the tagged minimal-format baseline. See
+[GC Battle Engine](battle-engine.md) for the roster protocol and lifecycle.
+
 Frontier owns the test teams and input. GameCube owns the temporary battle,
 ordering, HP/PP, faint, result and TV layout. The generic JoyBus connector
 provides the mode, APP, asset and result channels. Multi battles are

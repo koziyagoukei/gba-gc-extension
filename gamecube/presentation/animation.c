@@ -8,10 +8,12 @@ void animation_init(BattleAnimation *a, const Battle *battle) {
     for (unsigned side = 0; side < 2; ++side) {
         const Side *s = &battle->sides[side];
         for (unsigned slot = 0; slot < s->active_count && slot < BC_MAX_ACTIVE; ++slot) {
-            const Battler *b = &s->battlers[s->active[slot]];
-            a->actor[side][slot].battler = s->active[slot];
-            a->actor[side][slot].hp = b->hp;
-            a->actor[side][slot].max_hp = b->max_hp;
+            ActorFrame *frame = &a->actor[side][slot];
+            const Battler *b = battle_at(battle, (Position){side, slot});
+            frame->battler = b ? s->active[slot] : BATTLE_SLOT_NONE;
+            if (!b) continue;
+            frame->hp = b->hp;
+            frame->max_hp = b->max_hp;
         }
     }
 }
@@ -94,6 +96,13 @@ void animation_play(BattleAnimation *a, const BattleLayout *layout, const EventL
             add(a, (AnimationStep){.kind = ANIM_ROTATE, .target = e->target, .rotation = e->rotation});
             message(a, (SceneMessage){.kind = MSG_ROTATE, .subject = e->target}, 22);
             break;
+        case EV_SEND_OUT:
+            if (!battle_layout_anchor(layout, e->target) || e->battler >= BATTLE_MAX_PER_SIDE) break;
+            message(a, (SceneMessage){.kind = MSG_ENTER, .subject = e->target}, 0);
+            add(a, (AnimationStep){.kind = ANIM_ENTER, .target = e->target, .frames = 18,
+                                   .entrant = e->battler + 1, .hp = e->hp_after, .max_hp = e->amount});
+            wait(a, 22);
+            break;
         case EV_END:
             if (e->outcome == OUTCOME_WIN || e->outcome == OUTCOME_LOSE || e->outcome == OUTCOME_DRAW)
                 message(a, (SceneMessage){.kind = MSG_RESULT, .outcome = e->outcome}, 30);
@@ -110,6 +119,8 @@ static bool advance(BattleAnimation *a, const BattleLayout *layout, const Animat
     case ANIM_WAIT: break;
     case ANIM_FADE: a->fade = 1 - t; break;
     case ANIM_ENTER:
+        if (!f && s->entrant)
+            *actor = (ActorFrame){.battler = s->entrant - 1, .hp = s->hp, .max_hp = s->max_hp};
         actor->visible = true;
         actor->scale = t * (2 - t);
         break;

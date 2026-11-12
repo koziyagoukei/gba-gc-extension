@@ -73,5 +73,12 @@ int main(void) {
     finish(&anim, triple);
     assert(anim.actor[0][BPOS_CENTER].battler == 0 && anim.actor[0][BPOS_CENTER].hp == 30);
     assert(anim.actor[1][BPOS_CENTER].battler == 2 && anim.actor[1][BPOS_CENTER].hp == 32);
+    const EventLog entrant = {{
+        {.kind = EV_SEND_OUT, .target = {0, BPOS_LEFT}, .battler = 3, .amount = 90, .hp_after = 65},
+    }, 1};
+    animation_play(&anim, triple, &entrant);
+    finish(&anim, triple);
+    assert(anim.actor[0][BPOS_LEFT].visible && anim.actor[0][BPOS_LEFT].battler == 3);
+    assert(anim.actor[0][BPOS_LEFT].hp == 65 && anim.actor[0][BPOS_LEFT].max_hp == 90);
     puts("presentation-test OK");
 }

@@ -14,7 +14,7 @@ const char *battle_init_error_name(int error) {
     switch (error) {
     case BI_OK: return "ok";
     case BI_FORMAT: return "invalid format or active count";
-    case BI_PARTY_SIZE: return "test format requires an exact starting lineup and display-only multi results";
+    case BI_PARTY_SIZE: return "invalid roster or result policy";
     case BI_NO_PLAYER_MOVES: return "player has no supported move";
     case BI_NO_OPPONENT_MOVES: return "opponent has no supported move";
     case BI_BAD_TYPES: return "type data out of range";
@@ -68,15 +68,26 @@ unsigned battle_formation_size(uint8_t format) {
     }
 }
 
+static bool field_position(const Battle *b, Position p) {
+    return p.side < 2 && p.slot < b->sides[p.side].active_count;
+}
+
+static bool roster_battle(const Battle *b) {
+    return b->request->version == BATTLE_REQUEST_VERSION_ROSTER;
+}
+
 const Battler *battle_at(const Battle *b, Position p) {
-    if (p.side > 1 || p.slot >= b->sides[p.side].active_count) return NULL;
+    if (!field_position(b, p)) return NULL;
     const Side *s = &b->sides[p.side];
-    return &s->battlers[s->active[p.slot]];
+    const uint8_t index = s->active[p.slot];
+    return index < s->count ? &s->battlers[index] : NULL;
 }
 
 static Battler *mutable_at(Battle *b, Position p) {
+    if (!field_position(b, p)) return NULL;
     Side *s = &b->sides[p.side];
-    return &s->battlers[s->active[p.slot]];
+    const uint8_t index = s->active[p.slot];
+    return index < s->count ? &s->battlers[index] : NULL;
 }
 
 static bool rotation_battle(const Battle *b) {
@@ -107,7 +118,7 @@ uint8_t battle_rotation_origin(uint8_t rotation, uint8_t destination) {
 
 bool battle_adjacent(const Battle *b, Position a, Position d) {
     static const uint8_t triple_neighbors[] = {0x3, 0x7, 0x6};
-    if (!battle_at(b, a) || !battle_at(b, d) || (a.side == d.side && a.slot == d.slot)) return false;
+    if (!field_position(b, a) || !field_position(b, d) || (a.side == d.side && a.slot == d.slot)) return false;
     if (b->request->format == BATTLE_FORMAT_TRIPLE) return triple_neighbors[a.slot] & (1u << d.slot);
     if (rotation_battle(b)) return a.slot == BPOS_CENTER && d.slot == BPOS_CENTER;
     return true;
@@ -126,7 +137,8 @@ uint8_t battle_target_mask(const Battle *b, Position user, const BattleMove *m, 
     uint8_t mask = 0;
     for (uint8_t slot = 0; slot < b->sides[side].active_count; ++slot) {
         const Position p = {side, slot};
-        if ((p.side == user.side && p.slot == user.slot) || battle_at(b, p)->fainted) continue;
+        const Battler *target_mon = battle_at(b, p);
+        if ((p.side == user.side && p.slot == user.slot) || !target_mon || target_mon->fainted) continue;
         if (rotation_battle(b) && slot != BPOS_CENTER) continue;
         if ((m->target & BTARGET_IGNORE_DISTANCE) || battle_adjacent(b, user, p))
             mask |= 1u << slot;
@@ -153,8 +165,11 @@ unsigned battle_collect_actors(const Battle *b, uint8_t side, Position *out) {
         return 1;
     }
     unsigned count = 0;
-    for (uint8_t slot = 0; slot < b->sides[side].active_count; ++slot)
-        if (!battle_at(b, (Position){side, slot})->fainted) out[count++] = (Position){side, slot};
+    for (uint8_t slot = 0; slot < b->sides[side].active_count; ++slot) {
+        const Position pos = {side, slot};
+        const Battler *mon = battle_at(b, pos);
+        if (mon && !mon->fainted) out[count++] = pos;
+    }
     return count;
 }
 
@@ -170,26 +185,44 @@ int battle_init(Battle *b, const BattleRequest *r, uint32_t seed) {
     b->request = r;
     b->rng = seed ? seed : 0x9e3779b9u;
     const unsigned active = battle_formation_size(r->format);
-    if (!active || r->active_per_side != active) return BI_FORMAT;
+    if (!active || r->active_per_side != active ||
+        (r->version > BATTLE_REQUEST_VERSION && r->version != BATTLE_REQUEST_VERSION_ROSTER))
+        return BI_FORMAT;
     if (!r->type_count || r->type_count > BATTLE_MAX_TYPES) return BI_BAD_TYPES;
-    if (r->player_count != active || r->opponent_count != active ||
-        (active > 1 && r->result_policy != RESULT_POLICY_DISPLAY_ONLY)) return BI_PARTY_SIZE;
+    const bool roster = roster_battle(b);
+    if (!r->player_count || !r->opponent_count || r->player_count > BATTLE_MAX_PER_SIDE ||
+        r->opponent_count > BATTLE_MAX_PER_SIDE ||
+        (!roster && (r->player_count != active || r->opponent_count != active)) ||
+        ((roster || active > 1) && r->result_policy != RESULT_POLICY_DISPLAY_ONLY))
+        return BI_PARTY_SIZE;
     for (unsigned side = 0; side < 2; ++side) {
         Side *s = &b->sides[side];
         const BattleEntry *entries = side ? r->opponent : r->player;
         s->count = side ? r->opponent_count : r->player_count;
+        s->active_count = active;
+        memset(s->active, BATTLE_SLOT_NONE, sizeof(s->active));
+        unsigned sent = 0;
         for (unsigned i = 0; i < s->count; ++i) {
             load_battler(&s->battlers[i], &entries[i]);
             const Battler *x = &s->battlers[i];
             if (x->type_count < 1 || x->type_count > 2 || x->types[0] >= r->type_count ||
                 (x->type_count == 2 && x->types[1] >= r->type_count)) return BI_BAD_TYPES;
+            if (x->party_slot == BATTLE_SLOT_NONE || x->hp > x->max_hp) return BI_PARTY_SIZE;
             for (unsigned j = 0; j < i; ++j)
                 if (s->battlers[j].party_slot == x->party_slot) return BI_PARTY_SIZE;
-            if (x->fainted) return BI_FAINTED_LEAD;
-            if (!battle_usable_moves(b, x)) return side ? BI_NO_OPPONENT_MOVES : BI_NO_PLAYER_MOVES;
-            s->active[i] = i;
+            if (x->fainted) {
+                if (!roster) return BI_FAINTED_LEAD;
+                continue;
+            }
+            if (!roster && !battle_usable_moves(b, x)) return side ? BI_NO_OPPONENT_MOVES : BI_NO_PLAYER_MOVES;
+            if (sent < active) {
+                static const uint8_t rotation_order[] = {BPOS_CENTER, BPOS_LEFT, BPOS_RIGHT};
+                const unsigned slot = roster && rotation_battle(b) ? rotation_order[sent] : sent;
+                s->active[slot] = i;
+                ++sent;
+            }
         }
-        s->active_count = active;
+        if (!sent) return BI_FAINTED_LEAD;
     }
     return BI_OK;
 }
@@ -197,7 +230,7 @@ int battle_init(Battle *b, const BattleRequest *r, uint32_t seed) {
 bool battle_validate_action(const Battle *b, const Action *a) {
     if (a->kind == ACT_FORFEIT) return a->user.side == 0;
     if (a->kind == ACT_SHIFT) return a->rotation == BROT_KEEP && battle_can_shift(b, a->user);
-    if (a->kind != ACT_MOVE || !battle_at(b, a->user) || a->move_slot >= 4) return false;
+    if (a->kind != ACT_MOVE || !field_position(b, a->user) || a->move_slot >= 4) return false;
     Position candidate = a->user;
     if (rotation_battle(b)) {
         if (a->user.slot != BPOS_CENTER) return false;
@@ -274,6 +307,58 @@ static void emit(EventLog *log, BattleEvent ev) {
     if (log->count < BC_MAX_EVENTS) log->events[log->count++] = ev;
 }
 
+uint8_t battle_reserve_mask(const Battle *b, uint8_t side) {
+    if (side >= 2 || !roster_battle(b) || b->outcome != OUTCOME_NONE) return 0;
+    const Side *s = &b->sides[side];
+    uint8_t mask = 0;
+    for (unsigned i = 0; i < s->count; ++i)
+        if (!s->battlers[i].fainted) mask |= 1u << i;
+    for (unsigned pos = 0; pos < s->active_count; ++pos)
+        if (s->active[pos] < s->count) mask &= ~(1u << s->active[pos]);
+    return mask;
+}
+
+uint8_t battle_replacement_mask(const Battle *b, Position p) {
+    if (!field_position(b, p) || battle_at(b, p)) return 0;
+    return battle_reserve_mask(b, p.side);
+}
+
+bool battle_pending_replacement(const Battle *b, Position *position) {
+    if (!roster_battle(b) || b->outcome != OUTCOME_NONE) return false;
+    for (uint8_t side = 0; side < 2; ++side)
+        for (uint8_t slot = 0; slot < b->sides[side].active_count; ++slot) {
+            const Position p = {side, slot};
+            if (!battle_replacement_mask(b, p)) continue;
+            if (position) *position = p;
+            return true;
+        }
+    return false;
+}
+
+static void send_out(Battle *b, Position p, uint8_t index, EventLog *log) {
+    Side *side = &b->sides[p.side];
+    const Battler *mon = &side->battlers[index];
+    side->active[p.slot] = index;
+    emit(log, (BattleEvent){.kind = EV_SEND_OUT, .target = p, .battler = index,
+                            .amount = mon->max_hp, .hp_after = mon->hp});
+}
+
+bool battle_replace(Battle *b, Position p, uint8_t index, EventLog *log) {
+    if (index >= BATTLE_MAX_PER_SIDE || !(battle_replacement_mask(b, p) & (1u << index))) return false;
+    log->count = 0;
+    send_out(b, p, index, log);
+    return true;
+}
+
+static void clear_fainted_positions(Battle *b) {
+    if (!roster_battle(b)) return;
+    for (uint8_t side = 0; side < 2; ++side)
+        for (uint8_t slot = 0; slot < b->sides[side].active_count; ++slot) {
+            const Battler *mon = battle_at(b, (Position){side, slot});
+            if (mon && mon->fainted) b->sides[side].active[slot] = BATTLE_SLOT_NONE;
+        }
+}
+
 static bool side_defeated(Battle *b, uint8_t side) {
     const Side *s = &b->sides[side];
     for (unsigned i = 0; i < s->count; ++i)
@@ -318,6 +403,20 @@ static void shift(Battle *b, Position user, EventLog *log) {
     slots[user.slot] = slots[BPOS_CENTER];
     slots[BPOS_CENTER] = old;
     emit(log, (BattleEvent){.kind = EV_SHIFT, .user = user, .target = {user.side, BPOS_CENTER}});
+}
+
+static void center_triple_finalists(Battle *b, EventLog *log) {
+    if (!roster_battle(b) || b->request->format != BATTLE_FORMAT_TRIPLE) return;
+    Position last[2];
+    for (uint8_t side = 0; side < 2; ++side) {
+        if (battle_reserve_mask(b, side)) return;
+        Position active[BC_MAX_ACTIVE];
+        if (battle_collect_actors(b, side, active) != 1) return;
+        last[side] = active[0];
+    }
+    if (battle_adjacent(b, last[0], last[1])) return;
+    shift(b, last[0], log);
+    shift(b, last[1], log);
 }
 
 static bool acts_first(const TurnAction *a, const TurnAction *d) {
@@ -393,6 +492,8 @@ void battle_run_turn(Battle *b, const Action *in, unsigned count, EventLog *log)
     unsigned n = 0;
     log->count = 0;
     if (b->outcome != OUTCOME_NONE) return;
+    if (battle_pending_replacement(b, NULL) &&
+        !(count == 1 && in[0].kind == ACT_FORFEIT && battle_validate_action(b, in))) return;
     for (unsigned i = 0; i < count && n < BC_MAX_ACTIONS; ++i) {
         const Action *a = &in[i];
         if (a->kind == ACT_FORFEIT && battle_validate_action(b, a)) {
@@ -400,7 +501,7 @@ void battle_run_turn(Battle *b, const Action *in, unsigned count, EventLog *log)
             finish(b, OUTCOME_CANCELLED, log);
             return;
         }
-        if (a->kind == ACT_NONE && battle_at(b, a->user)) {
+        if (a->kind == ACT_NONE && field_position(b, a->user)) {
             emit(log, (BattleEvent){.kind = EV_NO_MOVES, .user = a->user});
             finish(b, OUTCOME_UNSUPPORTED, log);
             return;
@@ -424,7 +525,8 @@ void battle_run_turn(Battle *b, const Action *in, unsigned count, EventLog *log)
     }
     for (unsigned i = 0; i < n; ++i) {
         const Position user = locate(b, order[i].action.user.side, order[i].battler);
-        if (battle_at(b, user)->fainted) continue;
+        const Battler *actor = battle_at(b, user);
+        if (!actor || actor->fainted) continue;
         if (order[i].action.kind == ACT_SHIFT) {
             if (battle_can_shift(b, user)) shift(b, user, log);
             continue;
@@ -433,9 +535,12 @@ void battle_run_turn(Battle *b, const Action *in, unsigned count, EventLog *log)
         const bool player_lost = side_defeated(b, 0), foe_lost = side_defeated(b, 1);
         if (player_lost || foe_lost) {
             ++b->turn;
+            clear_fainted_positions(b);
             finish(b, player_lost && foe_lost ? OUTCOME_DRAW : foe_lost ? OUTCOME_WIN : OUTCOME_LOSE, log);
             return;
         }
     }
     ++b->turn;
+    clear_fainted_positions(b);
+    center_triple_finalists(b, log);
 }

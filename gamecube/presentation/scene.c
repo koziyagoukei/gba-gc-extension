@@ -30,7 +30,9 @@ bool battle_scene_begin(uint32_t build, const Battle *battle) {
 
 static const Battler *battler_at(Position p) {
     if (!battle_layout_anchor(scene.layout, p)) return NULL;
-    return &scene.battle->sides[p.side].battlers[scene.animation.actor[p.side][p.slot].battler];
+    const Side *side = &scene.battle->sides[p.side];
+    const uint8_t index = scene.animation.actor[p.side][p.slot].battler;
+    return index < side->count ? &side->battlers[index] : NULL;
 }
 
 void battle_scene_show_target(Position pos) {

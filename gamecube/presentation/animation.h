@@ -29,8 +29,8 @@ typedef enum { ANIM_MESSAGE, ANIM_WAIT, ANIM_FADE, ANIM_ENTER, ANIM_ATTACK, ANIM
 typedef struct {
     AnimationKind kind;
     Position source, target;
-    uint16_t frames, hp;
-    uint8_t rotation;
+    uint16_t frames, hp, max_hp;
+    uint8_t rotation, entrant; // one-based roster index for a send-out
     SceneMessage message;
 } AnimationStep;
 

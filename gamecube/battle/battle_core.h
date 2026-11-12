@@ -15,7 +15,7 @@
 
 #define BC_MAX_ACTIVE BATTLE_FIELD_SLOTS
 #define BC_MAX_ACTIONS (2 * BC_MAX_ACTIVE)
-#define BC_MAX_EVENTS (BC_MAX_ACTIONS * (1 + 2 * (BC_MAX_ACTIONS - 1)) + 1)
+#define BC_MAX_EVENTS (BC_MAX_ACTIONS * (1 + 2 * (BC_MAX_ACTIONS - 1)) + 3)
 
 typedef struct { uint8_t side, slot; } Position;   // side 0 = player, 1 = opponent; slot = active position
 typedef struct { Position pos; } Target;
@@ -35,7 +35,7 @@ typedef struct {
 typedef struct {
     Battler battlers[BATTLE_MAX_PER_SIDE];
     uint8_t count;
-    uint8_t active[BC_MAX_ACTIVE];  // battler index per active position
+    uint8_t active[BC_MAX_ACTIVE];  // stable battler index or BATTLE_SLOT_NONE
     uint8_t active_count;
 } Side;
 
@@ -48,7 +48,7 @@ typedef struct {
     uint8_t rotation;
 } Action;
 
-typedef enum { EV_MOVE_USED, EV_MISS, EV_DAMAGE, EV_NO_EFFECT, EV_FAINT, EV_FORFEIT, EV_NO_MOVES, EV_END, EV_SHIFT, EV_ROTATE } EventKind;
+typedef enum { EV_MOVE_USED, EV_MISS, EV_DAMAGE, EV_NO_EFFECT, EV_FAINT, EV_FORFEIT, EV_NO_MOVES, EV_END, EV_SHIFT, EV_ROTATE, EV_SEND_OUT } EventKind;
 typedef struct {
     EventKind kind;
     Position user, target;
@@ -57,6 +57,7 @@ typedef struct {
     uint8_t effectiveness;   // quarters: 0 none, 2 = x0.5, 4 = x1, 8 = x2 ...
     uint8_t outcome;         // EV_END
     uint8_t rotation;        // EV_ROTATE
+    uint8_t battler;         // EV_SEND_OUT: roster index; amount=max HP, hp_after=current HP
 } BattleEvent;
 
 typedef struct { BattleEvent events[BC_MAX_EVENTS]; unsigned count; } EventLog;
@@ -86,6 +87,10 @@ uint8_t battle_target_mask(const Battle *battle, Position user, const BattleMove
 uint8_t battle_command_targets(const Battle *battle, Position user, unsigned move_slot);
 unsigned battle_collect_actors(const Battle *battle, uint8_t side, Position *out);
 void battle_choose_at(Battle *battle, Position pos, Action *out);
+uint8_t battle_reserve_mask(const Battle *battle, uint8_t side);
+uint8_t battle_replacement_mask(const Battle *battle, Position position);
+bool battle_pending_replacement(const Battle *battle, Position *position);
+bool battle_replace(Battle *battle, Position position, uint8_t battler, EventLog *log);
 bool battle_move_supported(const BattleRequest *request, const BattleMove *move);
 uint8_t battle_usable_moves(const Battle *battle, const Battler *battler);  // bit mask
 bool battle_validate_action(const Battle *battle, const Action *action);

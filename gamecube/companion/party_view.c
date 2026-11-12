@@ -136,7 +136,8 @@ static void step_session(void) {
     ++v.sessions;
     ModeInfo mode;
     if (!host_mode(&v.link, &mode)) { lost("MODE"); return; }
-    if (mode.mode_id == GC_MODE_BATTLE && mode.app_id == APP_GC_BATTLE && mode.app_version == BATTLE_APP_VERSION) {
+    if (mode.mode_id == GC_MODE_BATTLE && mode.mode_version == BATTLE_MODE_VERSION && mode.app_id == APP_GC_BATTLE &&
+        (mode.app_version == BATTLE_APP_VERSION || mode.app_version == BATTLE_APP_VERSION_ROSTER)) {
         battle_view_begin(&v.link, &mode);
         set_state(V_BATTLE, "Battle");
         return;

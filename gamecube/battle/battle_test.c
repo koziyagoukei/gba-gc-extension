@@ -348,6 +348,151 @@ static void test_multi_wire(void) {
     assert(!battle_multi_action_decode(bytes, BATTLE_MULTI_ACTION_BYTES, &reply));
 }
 
+static void add_reserve(BattleRequest *r, unsigned side) {
+    BattleEntry *entries = side ? r->opponent : r->player;
+    uint8_t *count = side ? &r->opponent_count : &r->player_count;
+    entries[*count] = entries[0];
+    entries[*count].record.slot = entries[0].record.slot + *count;
+    ++*count;
+}
+
+static void set_fainted(Battle *b, unsigned side, unsigned index) {
+    b->sides[side].battlers[index].hp = 0;
+    b->sides[side].battlers[index].fainted = true;
+}
+
+static void test_roster_wire(void) {
+    BattleRequest r, decoded;
+    make_multi(&r, BATTLE_FORMAT_SINGLE);
+    add_reserve(&r, 0);
+    r.version = BATTLE_REQUEST_VERSION_ROSTER;
+    uint8_t buffer[2048];
+    unsigned n = battle_request_encode(&r, buffer, sizeof(buffer));
+    assert(n && buffer[0] == BATTLE_REQUEST_VERSION_ROSTER);
+    assert(battle_request_decode(buffer, n, &decoded) && decoded.player_count == 2);
+    assert(decoded.version == BATTLE_REQUEST_VERSION_ROSTER);
+    buffer[0] = BATTLE_REQUEST_VERSION_ROSTER + 1;
+    assert(!battle_request_decode(buffer, n, &decoded));
+
+    const BattleRosterState state = {
+        .field_state = {.phase = BPHASE_REPLACE, .turn = 1, .actor = 0, .token = 17},
+        .reserves = 1u << 5, .player = {[5] = {0x85, 10, 30}},
+    };
+    BattleRosterState roster;
+    BattleMultiState legacy;
+    n = battle_roster_state_encode(&state, buffer);
+    assert(n == BATTLE_ROSTER_STATE_BYTES && n + APP_REQUEST_HEADER <= WIRE_PAYLOAD);
+    assert(battle_roster_state_decode(buffer, n, &roster) && roster.reserves == (1u << 5));
+    assert(roster.player[5].party_slot == 0x85 && roster.player[5].hp == 10);
+    assert(!battle_multi_state_decode(buffer, BATTLE_MULTI_STATE_BYTES, &legacy));
+    assert(!battle_roster_state_decode(buffer, n - 1, &roster));
+    const BattleMultiAction action = {.token = 17, .action = BACTION_REPLACE, .target = 5};
+    BattleMultiAction reply;
+    n = battle_multi_action_encode(&action, buffer);
+    assert(battle_roster_action_decode(buffer, n, &reply) && reply.target == 5);
+    assert(!battle_multi_action_decode(buffer, n, &reply));
+    buffer[5] = BATTLE_MAX_PER_SIDE;
+    assert(!battle_roster_action_decode(buffer, n, &reply));
+}
+
+static void test_single_replacement(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    Position vacant;
+    make_multi(&r, BATTLE_FORMAT_SINGLE);
+    add_reserve(&r, 1);
+    assert(battle_init(&b, &r, 8) == BI_PARTY_SIZE);
+    r.version = BATTLE_REQUEST_VERSION_ROSTER;
+    r.opponent[0].record.hp = 1;
+    assert(battle_init(&b, &r, 8) == BI_OK);
+    const Action action = move(0, 0, 0);
+    battle_run_turn(&b, &action, 1, &log);
+    assert(b.outcome == OUTCOME_NONE && b.turn == 1);
+    assert(battle_pending_replacement(&b, &vacant) && vacant.side == 1 && vacant.slot == 0);
+    assert(!battle_at(&b, vacant));
+    assert(!battle_replace(&b, vacant, 0, &log));
+    battle_run_turn(&b, &action, 1, &log);
+    assert(b.turn == 1 && log.count == 0);
+    assert(battle_replace(&b, vacant, 1, &log));
+    assert(log.count == 1 && log.events[0].kind == EV_SEND_OUT && log.events[0].battler == 1);
+    assert(battle_at(&b, vacant)->party_slot == r.opponent[1].record.slot);
+    assert(!battle_pending_replacement(&b, NULL));
+}
+
+static void test_double_replacements(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    Position vacant;
+    make_multi(&r, BATTLE_FORMAT_DOUBLE);
+    r.version = BATTLE_REQUEST_VERSION_ROSTER;
+    add_reserve(&r, 0);
+    add_reserve(&r, 1);
+    r.player[0].mon.moves[0].target = BTARGET_ALL_ADJACENT;
+    r.player[1].record.hp = r.opponent[0].record.hp = r.opponent[1].record.hp = 1;
+    assert(battle_init(&b, &r, 81) == BI_OK);
+    const Action attack = move(0, 0, 0);
+    battle_run_turn(&b, &attack, 1, &log);
+    assert(event_count(&log, EV_FAINT) == 3 && b.outcome == OUTCOME_NONE);
+    assert(battle_pending_replacement(&b, &vacant) && vacant.side == 0 && vacant.slot == 1);
+    assert(battle_replacement_mask(&b, vacant) == 4);
+    assert(battle_replace(&b, vacant, 2, &log));
+    assert(!battle_replace(&b, (Position){0, 0}, 2, &log));
+    assert(battle_pending_replacement(&b, &vacant) && vacant.side == 1 && vacant.slot == 0);
+    assert(battle_replace(&b, vacant, 2, &log));
+    assert(!battle_pending_replacement(&b, NULL));
+    assert(!battle_at(&b, (Position){1, 1}));
+    assert(!battle_replace(&b, (Position){1, 1}, 2, &log));
+}
+
+static void test_triple_center(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_multi(&r, BATTLE_FORMAT_TRIPLE);
+    r.version = BATTLE_REQUEST_VERSION_ROSTER;
+    assert(battle_init(&b, &r, 12) == BI_OK);
+    set_fainted(&b, 0, BPOS_CENTER);
+    set_fainted(&b, 0, BPOS_RIGHT);
+    set_fainted(&b, 1, BPOS_LEFT);
+    set_fainted(&b, 1, BPOS_CENTER);
+    battle_run_turn(&b, NULL, 0, &log);
+    assert(event_count(&log, EV_SHIFT) == 2);
+    assert(battle_at(&b, (Position){0, BPOS_CENTER})->party_slot == r.player[0].record.slot);
+    assert(battle_at(&b, (Position){1, BPOS_CENTER})->party_slot == r.opponent[2].record.slot);
+    assert(!battle_at(&b, (Position){0, BPOS_LEFT}));
+}
+
+static void test_rotation_replacement(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    Position vacant;
+    make_multi(&r, BATTLE_FORMAT_ROTATION);
+    r.version = BATTLE_REQUEST_VERSION_ROSTER;
+    add_reserve(&r, 1);
+    r.opponent[0].record.hp = 1;
+    assert(battle_init(&b, &r, 13) == BI_OK);
+    assert(battle_active(&b, 1)->party_slot == r.opponent[0].record.slot);
+    const Action attack = move(0, BPOS_CENTER, BPOS_CENTER);
+    battle_run_turn(&b, &attack, 1, &log);
+    assert(battle_pending_replacement(&b, &vacant) && vacant.side == 1 && vacant.slot == BPOS_CENTER);
+    assert(!battle_replace(&b, vacant, 1, &log)); // A wing is already on the field.
+    assert(battle_replace(&b, vacant, 3, &log));
+    assert(battle_at(&b, (Position){1, BPOS_LEFT})->party_slot == r.opponent[1].record.slot);
+    set_fainted(&b, 1, 3);
+    battle_run_turn(&b, NULL, 0, &log);
+    assert(!battle_pending_replacement(&b, NULL) && !battle_active(&b, 1));
+    Action rotate = move(1, BPOS_CENTER, BPOS_CENTER);
+    rotate.rotation = BROT_LEFT;
+    assert(battle_validate_action(&b, &rotate));
+    b.sides[1].battlers[1].stat_stages[0] = 2;
+    battle_run_turn(&b, &rotate, 1, &log);
+    assert(log.events[0].kind == EV_ROTATE && !event_count(&log, EV_SEND_OUT));
+    assert(battle_active(&b, 1)->stat_stages[0] == 2);
+}
+
 int main(void) {
     test_request_roundtrip();
     test_messages();
@@ -356,6 +501,11 @@ int main(void) {
     test_double();
     test_triple();
     test_rotation();
+    test_roster_wire();
+    test_single_replacement();
+    test_double_replacements();
+    test_triple_center();
+    test_rotation_replacement();
     puts("battle tests passed");
     return 0;
 }
