@@ -9,6 +9,7 @@ void battle_scene_reset(void);
 bool battle_scene_begin(uint32_t build, const Battle *battle);
 void battle_scene_show_target(Position pos);
 void battle_scene_choose(unsigned turn, Position user);
+void battle_scene_choose_reserve(unsigned turn, Position user);
 void battle_scene_play(const EventLog *log);
 bool battle_scene_tick(void);
 void battle_scene_draw(void);

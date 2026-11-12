@@ -201,7 +201,58 @@ largest batch and a 50.05 ms maximum presentation poll gap. The GC DOL
 is 247,936 B (+1,280 B). GC text/data/BSS grew by 1,136 / 168 / 192 B.
 Frontier ROM link use is 26,316,684 B (+472 B), with RAM unchanged.
 
-Pivots remain pending. A player-selected pivot needs a resumable turn
-boundary so queued actions can continue after the reserve choice. Stat
-stages, status, residual effects, abilities, items, field effects and
-gimmicks follow the lifecycle work.
+## Lifecycle, stage 5
+
+Request/APP V6 adds the resolved damaging pivot effect. The Frontier
+exporter maps its hit-and-switch move data, including U-turn, Volt Switch
+and Flip Turn. The turn stores its ordered actions and current cursor.
+After a successful hit, a player with a legal reserve receives a new
+mid-turn prompt. The original move and its PP cost have already resolved.
+When a valid reserve is selected, the actor withdraws, the entrant appears
+in the same position, and the remaining actions resume at the stored
+cursor. The turn only increments once. Opponent pivots choose a legal
+reserve through the battle RNG.
+
+Immunity, a miss, no legal reserve, and a terminal knockout each bypass
+the prompt. The GBA can forfeit while choosing a reserve. Input from
+another prompt is ignored through the command token and position checks.
+All partial state remains on the GameCube and V6 fixture results are
+display-only.
+
+The V6 state remains 93 bytes and adds the PIVOT phase. Its action uses
+the eight-byte envelope with a reserve index. Older decoders refuse
+the new phase and command. The presentation draws the hit, waits for
+the reserve, then plays recall, send-out and the rest of the turn,
+continuing to poll during the wait and animations.
+
+In V6 Triple, manual Shift shares priority zero with moves and is
+ordered by speed and the RNG tie break. V1 through V5 retain their earlier
+Shift ordering. The BW references are
+[BuildActionOrder](https://github.com/Project-Holon/aletheia/blob/main/src/game/ov093/btl_server_flow.c#L2197)
+and [ProcAction](https://github.com/Project-Holon/aletheia/blob/main/src/game/ov093/btl_server_flow.c#L2497).
+[RunActionOrder](https://github.com/Project-Holon/aletheia/blob/main/src/game/ov093/btl_server_flow.c#L1855)
+is the reference for turn interruption and continuation.
+
+Dolphin confirmed a U-turn hit, a separate reserve prompt, the selected
+Grovyle send-out, and the original turn's remaining actions. The battle
+won in three turns and returned to the field. A separate run forfeited
+during reserve selection and also returned to the field. Both runs
+kept the persistent-state digests unchanged. The native matrix covers
+all formats, action replay and invalid reserve rejection, misses and
+immunity, no reserve, battle-ending hits, AI pivot and Triple order.
+The core passed ASan/UBSan. Phase 1 fault injection and 64 KiB/GX,
+Party Viewer reconnect and cache, Single apply/readback and cancel,
+Double force effects, Triple Shift and Rotation all passed on Dolphin.
+
+The V6 winning run logged 10 µs peak core time, 8 events in the largest
+batch and a 33.366 ms maximum interval between presentation polls.
+The GC DOL is 249,472 B (+1,536 B since stage 4). Its text/data/BSS
+grew by 1,128 / 344 / 192 B. Frontier uses 26,316,980 B ROM (+296 B),
+231,980 B EWRAM and 28,532 B IWRAM. No physical hardware was tested.
+
+Milestone 1 covers initial deployment, voluntary and forced switching,
+damaging pivots, faint/replacement, empty positions, Struggle and battle
+outcome. The current GBA entry points are debug fixtures. Non-damaging
+pivot variants, switch-blocking abilities and volatile effects, and
+persistent results for the new formats depend on later milestones.
+Next come stat stages, major status and the end-of-turn phase.

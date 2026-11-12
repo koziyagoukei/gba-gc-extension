@@ -86,7 +86,7 @@ static bool log_digest(const char *when) {
 static bool send_multi_state(uint8_t phase) {
     BattleRosterState extended = {.field_state = {
         .phase = phase,
-        .turn = (uint8_t)(b.battle.turn + (phase == BPHASE_CHOOSE)),
+        .turn = (uint8_t)(b.battle.turn + (phase == BPHASE_CHOOSE || phase == BPHASE_PIVOT)),
         .outcome = b.battle.outcome ? b.battle.outcome : b.outcome,
         .token = b.token,
     }};
@@ -96,9 +96,10 @@ static bool send_multi_state(uint8_t phase) {
         state->actor = user.slot;
         state->flags = battle_can_shift(&b.battle, user) ? BATTLE_MULTI_SHIFT : 0;
         extended.reserves = battle_switch_mask(&b.battle, user) & ~b.reserved;
-    } else if (phase == BPHASE_REPLACE) {
+    } else if (phase >= BPHASE_REPLACE) {
         state->actor = b.replacement.slot;
-        extended.reserves = battle_replacement_mask(&b.battle, b.replacement);
+        extended.reserves = phase == BPHASE_PIVOT ? battle_switch_mask(&b.battle, b.replacement)
+                                                   : battle_replacement_mask(&b.battle, b.replacement);
     }
     for (uint8_t side = 0; side < 2; ++side)
         for (uint8_t slot = 0; slot < BC_MAX_ACTIVE; ++slot) {
@@ -180,6 +181,7 @@ static bool poll_multi_action(BattleMultiAction *a) {
     if (!host_app_to(b.link, b.mode.app_id, opcode, NULL, 0, &d, &n, &status)) return false;
     if (status == APP_OK) {
         switch (b.mode.app_version) {
+        case BATTLE_APP_VERSION_PIVOT: return battle_pivot_action_decode(d, n, a);
         case BATTLE_APP_VERSION_DRAG:
         case BATTLE_APP_VERSION_STRUGGLE: return battle_struggle_action_decode(d, n, a);
         case BATTLE_APP_VERSION_SWITCH: return battle_switch_action_decode(d, n, a);
@@ -444,12 +446,16 @@ static BattleViewStatus step_multi_choose(void) {
 
 static void next_prompt(void) {
     b.state_sent = false;
-    set_bstate(battle_pending_replacement(&b.battle, &b.replacement) ? B_REPLACE : B_CHOOSE);
+    const bool selecting_reserve = battle_pending_pivot(&b.battle, &b.replacement) ||
+                                   battle_pending_replacement(&b.battle, &b.replacement);
+    set_bstate(selecting_reserve ? B_REPLACE : B_CHOOSE);
 }
 
 static BattleViewStatus step_replacement(void) {
     const Position pos = b.replacement;
-    const uint8_t mask = battle_replacement_mask(&b.battle, pos);
+    const bool pivot = battle_pending_pivot(&b.battle, NULL);
+    const uint8_t turn = b.battle.turn + pivot;
+    const uint8_t mask = pivot ? battle_switch_mask(&b.battle, pos) : battle_replacement_mask(&b.battle, pos);
     if (pos.side == 1) {
         for (uint8_t i = 0; i < BATTLE_MAX_PER_SIDE; ++i)
             if (battle_replace(&b.battle, pos, i, &b.log)) return play_turn(b.battle.turn);
@@ -457,10 +463,11 @@ static BattleViewStatus step_replacement(void) {
     }
     if (!b.state_sent) {
         if (++b.token == 0) ++b.token;
-        if (!send_state(BPHASE_REPLACE)) return BV_LOST;
+        if (!send_state(pivot ? BPHASE_PIVOT : BPHASE_REPLACE)) return BV_LOST;
         b.state_sent = true;
-        battle_scene_choose(b.battle.turn, pos);
-        SYS_Report("ROSTER REPLACE pos=%u mask=%02x token=%u\n", pos.slot, mask, b.token);
+        battle_scene_choose_reserve(turn, pos);
+        SYS_Report("ROSTER %s pos=%u mask=%02x token=%u turn=%u\n", pivot ? "PIVOT" : "REPLACE",
+                   pos.slot, mask, b.token, turn);
     }
     BattleMultiAction a;
     if (!poll_multi_action(&a)) return BV_LOST;
@@ -471,12 +478,21 @@ static BattleViewStatus step_replacement(void) {
         return play_turn(b.battle.turn);
     }
     if (!current || a.action == BACTION_NONE) return BV_RUNNING;
-    if (a.action != BACTION_REPLACE || !battle_replace(&b.battle, pos, a.target, &b.log)) {
+    if (a.action != (pivot ? BACTION_PIVOT : BACTION_REPLACE)) {
         b.state_sent = false;
         return BV_RUNNING;
     }
-    SYS_Report("ROSTER PLAYER SEND OUT pos=%u roster=%u\n", pos.slot, a.target);
-    return play_turn(b.battle.turn);
+    const uint64_t started = gettime();
+    const bool selected = pivot ? battle_resume_pivot(&b.battle, a.target, &b.log)
+                                : battle_replace(&b.battle, pos, a.target, &b.log);
+    if (!selected) {
+        b.state_sent = false;
+        return BV_RUNNING;
+    }
+    const uint32_t elapsed = us_since(started);
+    if (elapsed > b.peak_core_us) b.peak_core_us = elapsed;
+    SYS_Report("ROSTER PLAYER %s pos=%u roster=%u turn=%u\n", pivot ? "PIVOT" : "SEND OUT", pos.slot, a.target, turn);
+    return play_turn(turn);
 }
 
 BattleViewStatus battle_view_update(bool start_pressed, const char **message) {

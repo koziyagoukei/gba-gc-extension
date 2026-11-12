@@ -67,8 +67,24 @@ enum BattleInitError {
 };
 
 typedef struct {
+    Action action;
+    uint8_t battler;
+    int priority;
+    uint16_t speed;
+    uint32_t tie;
+} TurnAction;
+
+typedef struct {
+    TurnAction actions[BC_MAX_ACTIONS];
+    unsigned next, count;
+    Position pivot;
+    bool waiting_for_pivot;
+} TurnResolution;
+
+typedef struct {
     const BattleRequest *request;
     Side sides[2];
+    TurnResolution resolution;
     uint32_t rng;
     uint8_t turn;     // turns completed
     uint8_t outcome;  // BattleOutcome, OUTCOME_NONE while running
@@ -101,4 +117,6 @@ void battle_choose_ai(Battle *battle, uint8_t side, Action *out);
 uint16_t battle_damage(const Battle *battle, const Battler *attacker, const BattleMove *move,
                        const Battler *defender, unsigned random_percent, uint8_t *effectiveness);
 void battle_run_turn(Battle *battle, const Action *actions, unsigned count, EventLog *log);
+bool battle_pending_pivot(const Battle *battle, Position *position);
+bool battle_resume_pivot(Battle *battle, uint8_t battler, EventLog *log);
 #endif

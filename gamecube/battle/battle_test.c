@@ -371,7 +371,7 @@ static void test_roster_wire(void) {
     assert(n && buffer[0] == BATTLE_REQUEST_VERSION_ROSTER);
     assert(battle_request_decode(buffer, n, &decoded) && decoded.player_count == 2);
     assert(decoded.version == BATTLE_REQUEST_VERSION_ROSTER);
-    buffer[0] = BATTLE_REQUEST_VERSION_DRAG + 1;
+    buffer[0] = BATTLE_REQUEST_VERSION_PIVOT + 1;
     assert(!battle_request_decode(buffer, n, &decoded));
 
     const BattleRosterState state = {
@@ -775,6 +775,119 @@ static void test_drag(void) {
     assert(battle_request_decode(buffer, size, &decoded) && decoded.player[1].mon.moves[0].effect == BME_HIT);
 }
 
+static void test_pivot(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    Position pos;
+    make_multi(&r, BATTLE_FORMAT_DOUBLE);
+    enable_struggle(&r);
+    r.version = BATTLE_REQUEST_VERSION_PIVOT;
+    add_reserve(&r, 0);
+    r.player[0].record.speed = 110;
+    r.player[0].mon.moves[0].effect = BME_PIVOT;
+    const Action actions[] = {move(0, 0, 0), move(1, 0, 0), move(0, 1, 1), move(1, 1, 0)};
+    assert(battle_init(&b, &r, 301) == BI_OK);
+    battle_run_turn(&b, actions, 4, &log);
+    assert(battle_pending_pivot(&b, &pos) && pos.side == 0 && pos.slot == 0 && b.turn == 0);
+    assert(log.count == 2 && log.events[0].kind == EV_MOVE_USED);
+    assert(b.sides[0].battlers[0].pp[0] == 19 && b.sides[1].battlers[0].pp[0] == 20);
+    const uint16_t hit_hp = b.sides[1].battlers[0].hp;
+    battle_run_turn(&b, actions, 4, &log);
+    assert(!log.count && b.sides[1].battlers[0].hp == hit_hp);
+    assert(!battle_resume_pivot(&b, 1, &log));
+    assert(battle_resume_pivot(&b, 2, &log) && b.turn == 1);
+    assert(log.events[0].kind == EV_WITHDRAW && log.events[1].kind == EV_SEND_OUT);
+    assert(!battle_pending_pivot(&b, NULL) && !battle_resume_pivot(&b, 2, &log));
+    assert(event_count(&log, EV_MOVE_USED) == 3);
+    assert(b.sides[1].battlers[0].hp == hit_hp);
+    assert(b.sides[0].battlers[0].hp == 200 && b.sides[0].battlers[2].hp < 200);
+    assert(b.sides[0].battlers[0].pp[0] == 19 && b.sides[0].battlers[2].pp[0] == 20);
+
+    assert(battle_init(&b, &r, 301) == BI_OK);
+    battle_run_turn(&b, actions, 4, &log);
+    const Action stop = {.kind = ACT_FORFEIT, .user = {0, 0}};
+    battle_run_turn(&b, &stop, 1, &log);
+    assert(b.outcome == OUTCOME_CANCELLED && !battle_pending_pivot(&b, NULL));
+    assert(!battle_resume_pivot(&b, 2, &log));
+
+    r.opponent[0].mon.types[0] = T_GHOST;
+    assert(battle_init(&b, &r, 301) == BI_OK);
+    battle_run_turn(&b, actions, 1, &log);
+    assert(!battle_pending_pivot(&b, NULL) && event_count(&log, EV_NO_EFFECT) == 1);
+
+    r.opponent[0].mon.types[0] = T_NORMAL;
+    r.player_count = 2;
+    assert(battle_init(&b, &r, 301) == BI_OK);
+    battle_run_turn(&b, actions, 1, &log);
+    assert(!battle_pending_pivot(&b, NULL) && event_count(&log, EV_DAMAGE) == 1);
+
+    make_multi(&r, BATTLE_FORMAT_SINGLE);
+    enable_struggle(&r);
+    r.version = BATTLE_REQUEST_VERSION_PIVOT;
+    add_reserve(&r, 0);
+    add_reserve(&r, 1);
+    r.opponent[0].mon.moves[0].effect = BME_PIVOT;
+    const Action ai = move(1, 0, 0);
+    assert(battle_init(&b, &r, 301) == BI_OK);
+    battle_run_turn(&b, &ai, 1, &log);
+    assert(!battle_pending_pivot(&b, NULL) && b.turn == 1 && b.sides[1].active[0] == 1);
+    assert(event_count(&log, EV_WITHDRAW) == 1);
+    r.player[0].mon.moves[0].effect = BME_PIVOT;
+    r.opponent[0].record.hp = r.opponent[1].record.hp = 1;
+    r.opponent_count = 1;
+    assert(battle_init(&b, &r, 301) == BI_OK);
+    battle_run_turn(&b, actions, 1, &log);
+    assert(b.outcome == OUTCOME_WIN && !battle_pending_pivot(&b, NULL));
+
+    make_multi(&r, BATTLE_FORMAT_ROTATION);
+    enable_struggle(&r);
+    r.version = BATTLE_REQUEST_VERSION_PIVOT;
+    add_reserve(&r, 0);
+    r.player[1].mon.moves[0].effect = BME_PIVOT;
+    assert(battle_init(&b, &r, 301) == BI_OK);
+    Action rotate = move(0, BPOS_CENTER, BPOS_CENTER);
+    rotate.rotation = BROT_LEFT;
+    battle_run_turn(&b, &rotate, 1, &log);
+    assert(log.events[0].kind == EV_ROTATE);
+    assert(battle_pending_pivot(&b, &pos) && pos.slot == BPOS_CENTER);
+    assert(battle_resume_pivot(&b, 3, &log) && b.sides[0].active[BPOS_CENTER] == 3);
+    assert(b.sides[0].active[BPOS_RIGHT] == 0 && b.sides[0].active[BPOS_LEFT] == 2);
+
+    make_multi(&r, BATTLE_FORMAT_TRIPLE);
+    enable_struggle(&r);
+    r.version = BATTLE_REQUEST_VERSION_PIVOT;
+    const Action triple[] = {{.kind = ACT_SHIFT, .user = {0, BPOS_LEFT}}, move(1, BPOS_CENTER, BPOS_LEFT)};
+    assert(battle_init(&b, &r, 301) == BI_OK);
+    battle_run_turn(&b, triple, 2, &log);
+    assert(log.events[0].kind == EV_MOVE_USED && log.events[2].kind == EV_SHIFT);
+
+    add_reserve(&r, 0);
+    r.player[0].mon.moves[0].effect = BME_PIVOT;
+    assert(battle_init(&b, &r, 301) == BI_OK);
+    const Action far = move(0, BPOS_LEFT, BPOS_RIGHT), near = move(0, BPOS_LEFT, BPOS_CENTER);
+    assert(!battle_validate_action(&b, &far) && battle_validate_action(&b, &near));
+    battle_run_turn(&b, &near, 1, &log);
+    assert(battle_pending_pivot(&b, &pos) && pos.slot == BPOS_LEFT);
+    assert(battle_resume_pivot(&b, 3, &log) && b.sides[0].active[BPOS_LEFT] == 3);
+}
+
+static void test_pivot_wire(void) {
+    BattleRosterState state = {
+        .field_state = {.phase = BPHASE_PIVOT, .token = 2},
+        .reserves = 4, .player = {[2] = {0x82, 10, 20}},
+    }, decoded;
+    uint8_t bytes[BATTLE_STRUGGLE_STATE_BYTES];
+    unsigned n = battle_struggle_state_encode(&state, bytes);
+    assert(battle_pivot_state_decode(bytes, n, &decoded));
+    assert(!battle_struggle_state_decode(bytes, n, &decoded));
+    const BattleMultiAction action = {.action = BACTION_PIVOT, .token = 2, .target = 2};
+    BattleMultiAction ack;
+    n = battle_multi_action_encode(&action, bytes);
+    assert(battle_pivot_action_decode(bytes, n, &ack) && ack.token == 2 && ack.target == 2);
+    assert(!battle_struggle_action_decode(bytes, n, &ack));
+}
+
 int main(void) {
     test_request_roundtrip();
     test_messages();
@@ -793,6 +906,8 @@ int main(void) {
     test_struggle_wire();
     test_struggle();
     test_drag();
+    test_pivot();
+    test_pivot_wire();
     puts("battle tests passed");
     return 0;
 }

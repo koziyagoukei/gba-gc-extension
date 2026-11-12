@@ -47,6 +47,11 @@ void battle_scene_choose(unsigned turn, Position user) {
     scene.animation.message = (SceneMessage){.kind = MSG_CHOOSE};
 }
 
+void battle_scene_choose_reserve(unsigned turn, Position user) {
+    battle_scene_choose(turn, user);
+    scene.animation.message.kind = MSG_RESERVE;
+}
+
 void battle_scene_play(const EventLog *log) {
     scene.show_target = scene.choosing = false;
     animation_play(&scene.animation, scene.layout, log);
@@ -140,6 +145,7 @@ static const char *message_text(const SceneMessage *msg) {
     case MSG_INTRO: return "The trainer wants to battle!";
     case MSG_ENTER: return msg->subject.side ? "The opponent sent out" : "Go!";
     case MSG_CHOOSE: return "Choose a move on the GBA.";
+    case MSG_RESERVE: return "Choose a reserve on the GBA.";
     case MSG_MOVE: return "Move used";
     case MSG_MISS: return "The attack missed!";
     case MSG_IMMUNE: return "It had no effect.";

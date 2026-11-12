@@ -29,7 +29,7 @@ bool battle_move_supported(const BattleRequest *r, const BattleMove *m) {
     if (target < BTARGET_SINGLE || target > BTARGET_SELF) return false;
     if (m->effect != BME_HIT) {
         if (r->version < BATTLE_REQUEST_VERSION_DRAG || r->battle_type != BTYPE_TRAINER || target != BTARGET_SINGLE ||
-            m->effect > BME_FORCE_OUT_ON_HIT) return false;
+            m->effect > (r->version >= BATTLE_REQUEST_VERSION_PIVOT ? BME_PIVOT : BME_FORCE_OUT_ON_HIT)) return false;
         if (m->effect == BME_FORCE_OUT) return m->category == BCAT_STATUS && !m->power;
     }
     return m->power && (m->category == BCAT_PHYSICAL || m->category == BCAT_SPECIAL);
@@ -189,7 +189,7 @@ int battle_init(Battle *b, const BattleRequest *r, uint32_t seed) {
     b->rng = seed ? seed : 0x9e3779b9u;
     const unsigned active = battle_formation_size(r->format);
     if (!active || r->active_per_side != active ||
-        r->version > BATTLE_REQUEST_VERSION_DRAG)
+        r->version > BATTLE_REQUEST_VERSION_PIVOT)
         return BI_FORMAT;
     if (!r->type_count || r->type_count > BATTLE_MAX_TYPES) return BI_BAD_TYPES;
     if (r->version >= BATTLE_REQUEST_VERSION_STRUGGLE &&
@@ -412,14 +412,6 @@ static void finish(Battle *b, uint8_t outcome, EventLog *log) {
     emit(log, (BattleEvent){.kind = EV_END, .outcome = outcome});
 }
 
-typedef struct {
-    Action action;
-    uint8_t battler;
-    int priority;
-    uint16_t speed;
-    uint32_t tie;
-} TurnAction;
-
 static Position locate(const Battle *b, uint8_t side, uint8_t battler) {
     const Side *s = &b->sides[side];
     for (uint8_t slot = 0; slot < s->active_count; ++slot)
@@ -460,14 +452,14 @@ static void center_triple_finalists(Battle *b, EventLog *log) {
     shift(b, last[1], log);
 }
 
-static unsigned action_rank(ActionKind kind) {
+static unsigned action_rank(const Battle *b, ActionKind kind) {
     if (kind == ACT_SWITCH) return 2;
-    if (kind == ACT_SHIFT) return 1;
+    if (kind == ACT_SHIFT && b->request->version < BATTLE_REQUEST_VERSION_PIVOT) return 1;
     return 0;
 }
 
-static bool acts_first(const TurnAction *a, const TurnAction *d) {
-    const unsigned ax = action_rank(a->action.kind), dx = action_rank(d->action.kind);
+static bool acts_first(const Battle *b, const TurnAction *a, const TurnAction *d) {
+    const unsigned ax = action_rank(b, a->action.kind), dx = action_rank(b, d->action.kind);
     if (ax != dx) return ax > dx;
     if (a->priority != d->priority) return a->priority > d->priority;
     if (a->speed != d->speed) return a->speed > d->speed;
@@ -483,15 +475,18 @@ static void execute_switch(Battle *b, Position user, uint8_t index, EventKind re
     send_out(b, user, index, log);
 }
 
-static bool drag_out(Battle *b, Position target, EventLog *log) {
-    const uint8_t mask = battle_switch_mask(b, target);
-    if (!mask) return false;
+static uint8_t random_reserve(Battle *b, uint8_t mask) {
     uint8_t candidates[BATTLE_MAX_PER_SIDE];
     unsigned count = 0;
     for (uint8_t i = 0; i < BATTLE_MAX_PER_SIDE; ++i)
         if (mask & (1u << i)) candidates[count++] = i;
-    const unsigned choice = count > 1 ? next_random(b) % count : 0;
-    execute_switch(b, target, candidates[choice], EV_DRAG_OUT, log);
+    return candidates[count > 1 ? next_random(b) % count : 0];
+}
+
+static bool drag_out(Battle *b, Position target, EventLog *log) {
+    const uint8_t mask = battle_switch_mask(b, target);
+    if (!mask) return false;
+    execute_switch(b, target, random_reserve(b, mask), EV_DRAG_OUT, log);
     return true;
 }
 
@@ -559,7 +554,7 @@ static void execute_struggle(Battle *b, Position user, EventLog *log) {
     apply_damage(b, (BattleEvent){.kind = EV_RECOIL, .user = user, .target = user}, recoil ? recoil : 1, log);
 }
 
-static void execute_move(Battle *b, const TurnAction *t, Position user, EventLog *log) {
+static bool execute_move(Battle *b, const TurnAction *t, Position user, EventLog *log) {
     Battler *a = mutable_at(b, user);
     const unsigned move = t->action.move_slot;
     const BattleMove *m = &a->moves[move];
@@ -580,7 +575,7 @@ static void execute_move(Battle *b, const TurnAction *t, Position user, EventLog
     emit(log, (BattleEvent){.kind = EV_MOVE_USED, .user = user, .target = first, .move_id = id});
     if (!count) {
         emit(log, (BattleEvent){.kind = EV_NO_EFFECT, .user = user, .target = first, .move_id = id});
-        return;
+        return false;
     }
     if (m->effect == BME_FORCE_OUT) {
         BattleEvent event = {.user = user, .target = first, .move_id = id};
@@ -591,29 +586,87 @@ static void execute_move(Battle *b, const TurnAction *t, Position user, EventLog
             event.kind = EV_NO_EFFECT;
             emit(log, event);
         }
-        return;
+        return false;
     }
+    bool pivot = false;
     for (uint8_t side = 0; side < 2; ++side)
         for (uint8_t slot = 0; slot < BC_MAX_ACTIVE; ++slot) {
             if (!(targets[side] & (1u << slot))) continue;
             const Position target = {side, slot};
             const bool landed = hit(b, user, target, m, id, count > 1, false, log);
             if (landed && m->effect == BME_FORCE_OUT_ON_HIT) drag_out(b, target, log);
+            if (landed && m->effect == BME_PIVOT) pivot = true;
         }
+    return pivot;
+}
+
+bool battle_pending_pivot(const Battle *b, Position *position) {
+    if (!b->resolution.waiting_for_pivot || b->outcome != OUTCOME_NONE) return false;
+    if (position) *position = b->resolution.pivot;
+    return true;
+}
+
+static void continue_turn(Battle *b, EventLog *log) {
+    TurnResolution *turn = &b->resolution;
+    while (turn->next < turn->count) {
+        const TurnAction *action = &turn->actions[turn->next++];
+        const Position user = locate(b, action->action.user.side, action->battler);
+        const Battler *actor = battle_at(b, user);
+        if (!actor || actor->fainted) continue;
+        if (action->action.kind == ACT_SHIFT) {
+            if (battle_can_shift(b, user)) shift(b, user, log);
+            continue;
+        }
+        bool pivot = false;
+        if (action->action.kind == ACT_STRUGGLE)
+            execute_struggle(b, user, log);
+        else
+            pivot = execute_move(b, action, user, log);
+        const bool player_lost = side_defeated(b, 0), foe_lost = side_defeated(b, 1);
+        if (player_lost || foe_lost) {
+            ++b->turn;
+            clear_fainted_positions(b);
+            finish(b, player_lost && foe_lost ? OUTCOME_DRAW : foe_lost ? OUTCOME_WIN : OUTCOME_LOSE, log);
+            return;
+        }
+        const uint8_t reserves = pivot ? battle_switch_mask(b, user) : 0;
+        if (!reserves) continue;
+        if (user.side == 0) {
+            turn->pivot = user;
+            turn->waiting_for_pivot = true;
+            return;
+        }
+        execute_switch(b, user, random_reserve(b, reserves), EV_WITHDRAW, log);
+    }
+    ++b->turn;
+    clear_fainted_positions(b);
+    center_triple_finalists(b, log);
+}
+
+bool battle_resume_pivot(Battle *b, uint8_t index, EventLog *log) {
+    Position user;
+    if (index >= BATTLE_MAX_PER_SIDE || !battle_pending_pivot(b, &user) ||
+        !(battle_switch_mask(b, user) & (1u << index))) return false;
+    log->count = 0;
+    b->resolution.waiting_for_pivot = false;
+    execute_switch(b, user, index, EV_WITHDRAW, log);
+    continue_turn(b, log);
+    return true;
 }
 
 void battle_run_turn(Battle *b, const Action *in, unsigned count, EventLog *log) {
-    TurnAction order[BC_MAX_ACTIONS];
+    TurnAction *order = b->resolution.actions;
     uint8_t seen[2] = {0};
     uint8_t reserved[2] = {0};
     unsigned n = 0;
     log->count = 0;
     if (b->outcome != OUTCOME_NONE) return;
-    if (battle_pending_replacement(b, NULL) &&
+    if ((battle_pending_pivot(b, NULL) || battle_pending_replacement(b, NULL)) &&
         !(count == 1 && in[0].kind == ACT_FORFEIT && battle_validate_action(b, in))) return;
     for (unsigned i = 0; i < count && n < BC_MAX_ACTIONS; ++i) {
         const Action *a = &in[i];
         if (a->kind == ACT_FORFEIT && battle_validate_action(b, a)) {
+            b->resolution.waiting_for_pivot = false;
             emit(log, (BattleEvent){.kind = EV_FORFEIT, .user = a->user});
             finish(b, OUTCOME_CANCELLED, log);
             return;
@@ -639,7 +692,7 @@ void battle_run_turn(Battle *b, const Action *in, unsigned count, EventLog *log)
     for (unsigned i = 1; i < n; ++i) {
         const TurnAction a = order[i];
         unsigned j = i;
-        for (; j > 0 && acts_first(&a, &order[j-1]); --j) order[j] = order[j-1];
+        for (; j > 0 && acts_first(b, &a, &order[j-1]); --j) order[j] = order[j-1];
         order[j] = a;
     }
     unsigned first = 0;
@@ -650,27 +703,7 @@ void battle_run_turn(Battle *b, const Action *in, unsigned count, EventLog *log)
     if (rotation_battle(b))
         for (unsigned i = first; i < n; ++i)
             rotate(b, order[i].action.user.side, order[i].action.rotation, log);
-    for (unsigned i = first; i < n; ++i) {
-        const Position user = locate(b, order[i].action.user.side, order[i].battler);
-        const Battler *actor = battle_at(b, user);
-        if (!actor || actor->fainted) continue;
-        if (order[i].action.kind == ACT_SHIFT) {
-            if (battle_can_shift(b, user)) shift(b, user, log);
-            continue;
-        }
-        if (order[i].action.kind == ACT_STRUGGLE)
-            execute_struggle(b, user, log);
-        else
-            execute_move(b, &order[i], user, log);
-        const bool player_lost = side_defeated(b, 0), foe_lost = side_defeated(b, 1);
-        if (player_lost || foe_lost) {
-            ++b->turn;
-            clear_fainted_positions(b);
-            finish(b, player_lost && foe_lost ? OUTCOME_DRAW : foe_lost ? OUTCOME_WIN : OUTCOME_LOSE, log);
-            return;
-        }
-    }
-    ++b->turn;
-    clear_fainted_positions(b);
-    center_triple_finalists(b, log);
+    b->resolution.next = first;
+    b->resolution.count = n;
+    continue_turn(b, log);
 }
