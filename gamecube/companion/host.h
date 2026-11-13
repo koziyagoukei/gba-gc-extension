@@ -16,6 +16,8 @@
 #define GCX_RELEASE_NAME "dev"
 #elif GCX_RELEASE == 1
 #define GCX_RELEASE_NAME "v0.1.0-alpha"
+#elif GCX_RELEASE == 2
+#define GCX_RELEASE_NAME "m3-dev"
 #else
 #error "unknown GCX_RELEASE: add its name to host.h and docs/releases.md"
 #endif

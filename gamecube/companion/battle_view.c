@@ -130,7 +130,7 @@ static bool send_multi_state(uint8_t phase) {
                                                   mon ? mon->hp : record ? record->hp : 0,
                                                   record ? record->max_hp : 0};
         }
-        if (b.mode.app_version == BATTLE_APP_VERSION_CONDITIONS)
+        if (b.mode.app_version >= BATTLE_APP_VERSION_CONDITIONS)  // V8 keeps the V7 state layout
             size = battle_condition_state_encode(&extended, bytes);
         else if (b.mode.app_version >= BATTLE_APP_VERSION_STRUGGLE)
             size = battle_struggle_state_encode(&extended, bytes);
@@ -187,6 +187,7 @@ static bool poll_multi_action(BattleMultiAction *a) {
     if (!host_app_to(b.link, b.mode.app_id, opcode, NULL, 0, &d, &n, &status)) return false;
     if (status == APP_OK) {
         switch (b.mode.app_version) {
+        case BATTLE_APP_VERSION_EFFECTS:
         case BATTLE_APP_VERSION_CONDITIONS:
         case BATTLE_APP_VERSION_PIVOT: return battle_pivot_action_decode(d, n, a);
         case BATTLE_APP_VERSION_DRAG:
@@ -288,6 +289,22 @@ static void log_entry(const char *side, const BattleEntry *e) {
                        e->mon.moves[m].accuracy, e->mon.moves[m].target, r->pp[m], r->max_pp[m],
                        battle_move_supported(&b.request, &e->mon.moves[m]) ? "supported" : "UNSUPPORTED",
                        e->mon.moves[m].unsupported);
+    if (b.request.version < BATTLE_REQUEST_VERSION_EFFECTS) return;
+    // V8: the resolved effect list, and the game's effect id for unsupported moves.
+    for (unsigned m = 0; m < 4; ++m) {
+        const BattleMove *move = &e->mon.moves[m];
+        if (!r->moves[m]) continue;
+        char text[160];
+        unsigned used = (unsigned)snprintf(text, sizeof(text), "PH6   move%u prio=%d flags=%02x source=%u effects:",
+                                           m, move->priority, move->move_flags, move->source_effect);
+        for (unsigned i = 0; i < move->effect_count && used < sizeof(text); ++i) {
+            const BattleEffect *x = &move->effects[i];
+            used += (unsigned)snprintf(text + used, sizeof(text) - used, " %s/%s/%u%%/%u,%d,%u",
+                                       battle_effect_kind_name(x->kind), x->who ? "user" : "target", x->chance,
+                                       x->arg0, x->arg1, x->arg2);
+        }
+        SYS_Report("%s\n", text);
+    }
 }
 
 static BattleViewStatus step_result(void) {
