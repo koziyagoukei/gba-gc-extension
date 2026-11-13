@@ -27,4 +27,15 @@
 - A reconnect in the middle of a battle restarts it from the request. Only the final result of a battle id is ever applied.
 - The frontier test picks the first able party member with a supported move, not a player-chosen one.
 - Party digests are compared within one mode visit. Walking in the field legitimately changes party bytes (step counters), so digests from different visits or boots differ.
-- On the TV, the ENDED screen after a battle falls back to the last party-view drawing.
+- (Fixed in release 1) The lobby no longer draws the previous party behind the ENDED and PROBE screens.
+
+## Public alpha (release 1, v0.1.0-alpha)
+
+- **No GBA patch is distributed.** A BPS patch of the Frontier ROM against Japanese Emerald would be 20.6 MB and mostly new data derived from the official games (see [releases](releases.md)). Until a distributable form exists, only developers can build the GBA side from source.
+- A release DOL only runs with a GBA build of the same release, and refuses development builds (release 0). Development DOLs accept any peer.
+- The Cube Tester battles use fixed temporary teams (level 23 vs level 13) and the V7 condition rules. Results are display-only; the HP/PP apply path stays in the debug menu.
+- Abilities, items, critical hits, weather, terrain, gimmicks, most secondary effects, priority moves and multi-hit moves are not simulated. Unsupported moves cannot be chosen.
+- Move animations are not implemented; the menu entry says so.
+- After a session, the GC waits for the next one on its own after 3 seconds (A does it at once). A version mismatch stays on screen until A.
+- A link loss during a battle restarts the battle from its request (turn 1, original HP/PP).
+- The Frontier test suite (`make check`) reports 2,455 failing tests; the same failures occur on `frontier-hack` before the GC integration and are not caused by it.

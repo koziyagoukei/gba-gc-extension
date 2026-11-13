@@ -24,6 +24,12 @@ Run the resulting test executable. It covers every legal payload length, little-
 
 `./build.ps1` also builds `build/companion.dol` with the same `-Interval`; it has no `-Auto` modes.
 
+`-Release N` stamps the companion host with a public release number (default 0 = development; see [releases](releases.md)). Only release numbers listed in `gamecube/companion/host.h` build:
+
+```powershell
+./build.ps1 -Release 1   # v0.1.0-alpha
+```
+
 The GBA side lives in a pokeemerald-expansion checkout (branch `gc-extension`). Copy the shared protocol code there, then check it:
 
 ```powershell

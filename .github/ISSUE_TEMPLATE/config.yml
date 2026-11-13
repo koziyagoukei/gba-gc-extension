@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: テストガイド / Public test guide
+    url: https://github.com/koziyagoukei/gba-gc-extension/blob/main/docs/public-test-guide.md
+    about: 導入手順・既知の制限はこちら。Setup steps and known limits.

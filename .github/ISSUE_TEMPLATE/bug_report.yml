@@ -1,0 +1,127 @@
+name: 不具合報告 / Bug report
+description: Public Alpha のテスト中に見つけた不具合を報告します。 Report a problem found while testing the public alpha.
+title: "[不具合] "
+labels: ["bug", "public-alpha"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **ROM・セーブデータ・BIOS・個人情報は絶対に添付しないでください。**
+        **Never attach ROMs, save files, BIOS files or personal information.**
+        スクリーンショットはテレビ側とGBA側の画面だけにしてください。
+  - type: checkboxes
+    id: no-files
+    attributes:
+      label: 確認 / Confirmation
+      options:
+        - label: ROM・セーブ・BIOS・個人情報を添付していません。 I am not attaching ROMs, saves, BIOS or personal data.
+          required: true
+  - type: input
+    id: dolphin
+    attributes:
+      label: Dolphin のバージョン / Dolphin version
+      placeholder: "2609b"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: "Windows 11"
+    validations:
+      required: true
+  - type: input
+    id: release
+    attributes:
+      label: テスト版のバージョン / Test release
+      description: せつぞく かくにん（Link check）に表示されるリリース番号。 Release number shown by the link check.
+      placeholder: "release 1 (v0.1.0-alpha)"
+    validations:
+      required: true
+  - type: input
+    id: gba-build
+    attributes:
+      label: GBA パッチのバージョン / GBA build ID
+      description: せつぞく かくにんの「GBA release … build …」 The GBA line of the link check.
+      placeholder: "GBA release 1 build 6234551A"
+    validations:
+      required: true
+  - type: input
+    id: gc-build
+    attributes:
+      label: GC DOL のバージョン / companion.dol
+      description: せつぞく かくにんの「GC release … build …」、またはテレビ右上の表示。 The GC line of the link check or the label at the top right of the TV.
+      placeholder: "GC release 1 build 48320001 (r1 v0.1.0-alpha)"
+    validations:
+      required: true
+  - type: dropdown
+    id: format
+    attributes:
+      label: 対戦形式 / Battle format
+      options:
+        - シングル / Single
+        - ダブル / Double
+        - トリプル / Triple
+        - ローテーション / Rotation
+        - パーティビューア / Party Viewer
+        - せつぞく かくにん / Link check
+        - フィールド・その他 / Field or other
+    validations:
+      required: true
+  - type: input
+    id: pokemon
+    attributes:
+      label: 使ったポケモン / Pokémon used
+      placeholder: "スバメ、ヌマクロー、ジュプトル"
+  - type: input
+    id: moves
+    attributes:
+      label: 使ったわざ / Moves used
+      placeholder: "でんこうせっか → ジグザグマ"
+  - type: input
+    id: turn
+    attributes:
+      label: 発生したターン / Turn
+      placeholder: "3"
+  - type: textarea
+    id: before
+    attributes:
+      label: 発生前の操作 / What you did before
+      placeholder: "キューブテスターでダブルを選び、1ターン目に…"
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期待した動作 / Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 実際の動作 / Actual behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 再現手順 / Steps to reproduce
+      placeholder: |
+        1. companion.dol を起動
+        2. キューブテスターで …
+        3. …
+    validations:
+      required: true
+  - type: textarea
+    id: media
+    attributes:
+      label: スクリーンショット・ログ / Screenshots or log
+      description: |
+        テレビ側・GBA側の画面。Dolphin のログ（OSReport の `PH2` / `PH3` / `PH5` で始まる行）があれば貼ってください。
+        TV and GBA screenshots; Dolphin log lines starting with PH2/PH3/PH5 if available.
+  - type: input
+    id: seed
+    attributes:
+      label: 再現 seed（わかる場合）/ Seed (if available)
+      description: Dolphin のログの `PH3 CORE init=… seed=…` の値。 The seed from the `PH3 CORE` log line.
+      placeholder: "4e70ccec"
