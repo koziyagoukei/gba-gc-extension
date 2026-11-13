@@ -13,16 +13,17 @@ bool host_open(HostLink *link) {
     if (!session_request(&link->session, &request, &reply, NO_FAULT) || reply.len != 0) return false;
     const Caps caps = {MSG_PROTOCOL_VERSION, PEER_GC_HOST, HOST_BUILD_ID,
                        CAP_APP | CAP_ASSETS | CAP_BYE | CAP_MODE | CAP_RESULT | CAP_RLE,
-                       WIRE_PAYLOAD, APP_POKEMON, PKMN_APP_VERSION, {'G', 'C', 'X', 'H'}};
+                       WIRE_PAYLOAD, APP_POKEMON, PKMN_APP_VERSION, GCX_RELEASE, {'G', 'C', 'X', 'H'}};
     request.type = CAPS;
     request.len = (uint16_t)caps_encode(&caps, request.payload);
     // A Phase 1 PoC client NACKs CAPS; session_request then fails after retries.
     if (!session_request(&link->session, &request, &reply, NO_FAULT)) return false;
     if (!caps_decode(reply.payload, reply.len, &link->client) || link->client.version < MSG_PROTOCOL_MIN_VERSION)
         return false;
-    SYS_Report("PH2 CAPS peer=%u build=%08x caps=%x app=%04x v%u max=%u tag=%.4s\n", link->client.peer_type,
-               link->client.build_id, link->client.caps, link->client.app_id, link->client.app_version,
-               link->client.max_payload, (const char *)link->client.tag);
+    SYS_Report("PH2 CAPS peer=%u build=%08x caps=%x app=%04x v%u max=%u tag=%.4s release=%u (host %u)\n",
+               link->client.peer_type, link->client.build_id, link->client.caps, link->client.app_id,
+               link->client.app_version, link->client.max_payload, (const char *)link->client.tag,
+               link->client.release, GCX_RELEASE);
     return true;
 }
 

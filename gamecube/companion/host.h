@@ -7,6 +7,18 @@
 // chunked asset fetch and BYE. Game protocols build on these calls.
 
 #define HOST_BUILD_ID 0x48320001u  // "H2" companion host, revision 1
+// Release number (docs/releases.md); build.ps1 -Release sets it. 0 = development.
+#ifndef GCX_RELEASE
+#define GCX_RELEASE GCX_RELEASE_DEV
+#endif
+// Public name of each release number (docs/releases.md).
+#if GCX_RELEASE == 0
+#define GCX_RELEASE_NAME "dev"
+#elif GCX_RELEASE == 1
+#define GCX_RELEASE_NAME "v0.1.0-alpha"
+#else
+#error "unknown GCX_RELEASE: add its name to host.h and docs/releases.md"
+#endif
 #define ASSET_STAGING_BYTES 24576u  // largest decoded asset (battle backgrounds)
 // The game answers once per GBA frame; allow for an occasional long frame.
 #define HOST_REPLY_TIMEOUT_MS 500u

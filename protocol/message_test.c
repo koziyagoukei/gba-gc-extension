@@ -5,7 +5,7 @@
 
 static void test_caps(void) {
     const Caps in = {MSG_PROTOCOL_VERSION, PEER_POKEEMERALD_EXPANSION, 0x89abcdefu, CAP_APP | CAP_ASSETS | CAP_BYE,
-                     WIRE_PAYLOAD, APP_POKEMON, PKMN_APP_VERSION, {'B','P','E','E'}};
+                     WIRE_PAYLOAD, APP_POKEMON, PKMN_APP_VERSION, 7, {'B','P','E','E'}};
     uint8_t bytes[CAPS_BYTES];
     Caps out;
     assert(caps_encode(&in, bytes) == CAPS_BYTES);
@@ -14,6 +14,9 @@ static void test_caps(void) {
     assert(caps_decode(bytes, CAPS_BYTES, &out));
     assert(memcmp(&in.tag, &out.tag, 4) == 0 && out.build_id == in.build_id && out.caps == in.caps &&
            out.app_id == APP_POKEMON && out.max_payload == WIRE_PAYLOAD && out.peer_type == in.peer_type);
+    assert(bytes[18] == 7 && bytes[19] == 0 && out.release == 7);
+    assert(gcx_release_compatible(GCX_RELEASE_DEV, 3) && gcx_release_compatible(1, 1) &&
+           !gcx_release_compatible(1, 0) && !gcx_release_compatible(1, 2));
 }
 
 static void test_asset_info(void) {

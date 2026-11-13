@@ -16,8 +16,8 @@
 #define MAX_PARTY 6
 #define MAX_PLAN (MAX_PARTY * 9)
 
-enum ViewState { V_PROBE, V_SESSION, V_PARTY, V_ASSETS, V_ACTIVE, V_ENDED, V_BATTLE };
-static const char *const state_names[] = {"PROBE", "SESSION", "PARTY", "ASSETS", "ACTIVE", "ENDED", "BATTLE"};
+enum ViewState { V_PROBE, V_SESSION, V_PARTY, V_ASSETS, V_ACTIVE, V_ENDED, V_BATTLE, V_LINK_CHECK };
+static const char *const state_names[] = {"PROBE", "SESSION", "PARTY", "ASSETS", "ACTIVE", "ENDED", "BATTLE", "LINK CHECK"};
 
 static struct {
     enum ViewState state;
@@ -35,6 +35,9 @@ static struct {
     const char *message;
     bool fetching;
     uint64_t silent_until;
+    char ended_text[96];
+    uint32_t check_frames, check_polls, check_worst_us;
+    uint64_t check_sum_us;
 } v;
 static AssetFetch fetch;
 
@@ -128,6 +131,15 @@ static void step_session(void) {
     const uint8_t *d;
     unsigned n;
     if (!host_open(&v.link)) { lost("HELLO/CAPS"); return; }
+    if (!gcx_release_compatible(GCX_RELEASE, v.link.client.release)) {
+        // A release DOL only runs with the GBA patch of the same release.
+        SYS_Report("PH5 RELEASE mismatch host=%u client=%u\n", GCX_RELEASE, v.link.client.release);
+        host_bye(&v.link, BYE_HOST_EXIT);
+        snprintf(v.ended_text, sizeof(v.ended_text), "Version mismatch: GBA patch r%u, companion.dol r%u (%s)",
+                 v.link.client.release, GCX_RELEASE, GCX_RELEASE_NAME);
+        set_state(V_ENDED, v.ended_text);
+        return;
+    }
     if (v.link.client.peer_type != PEER_POKEEMERALD_EXPANSION || v.link.client.app_id != APP_POKEMON ||
         v.link.client.app_version != PKMN_APP_VERSION || !(v.link.client.caps & CAP_ASSETS)) {
         set_state(V_ENDED, "Unsupported client");
@@ -140,6 +152,14 @@ static void step_session(void) {
         mode.app_version >= BATTLE_APP_VERSION && mode.app_version <= BATTLE_APP_VERSION_CONDITIONS) {
         battle_view_begin(&v.link, &mode);
         set_state(V_BATTLE, "Battle");
+        return;
+    }
+    if (mode.mode_id == GC_MODE_LINK_CHECK) {
+        v.check_frames = v.check_polls = v.check_worst_us = 0;
+        v.check_sum_us = 0;
+        SYS_Report("PH5 LINK CHECK release=%u build=%08x protocol=%u\n", v.link.client.release,
+                   v.link.client.build_id, v.link.client.version);
+        set_state(V_LINK_CHECK, NULL);
         return;
     }
     if (mode.mode_id != GC_MODE_PARTY_VIEW) {
@@ -265,6 +285,26 @@ static void step_active(bool start_pressed) {
     if (ui.flags & UI_EXIT_REQUESTED) end_session(BYE_CLIENT_EXIT, "The GBA closed the session");
 }
 
+// GC_MODE_LINK_CHECK: polls the GBA every frame, measures the round trip and
+// shows both sides' versions until either side ends the session.
+static void step_link_check(bool start_pressed) {
+    const uint8_t *d;
+    unsigned n;
+    PartyUi ui;
+    if (start_pressed) { end_session(BYE_HOST_EXIT, "Link check ended from the GameCube"); return; }
+    const uint64_t t = gettime();
+    if (!app(PKMN_UI_STATE, NULL, 0, &d, &n) || !party_ui_decode(d, n, false, &ui)) { lost("LINK CHECK"); return; }
+    const uint32_t us = us_since(t);
+    ++v.check_polls;
+    v.check_sum_us += us;
+    if (us > v.check_worst_us) v.check_worst_us = us;
+    if (ui.flags & UI_EXIT_REQUESTED) {
+        SYS_Report("PH5 LINK CHECK polls=%u avg_us=%u worst_us=%u\n", v.check_polls,
+                   (unsigned)(v.check_sum_us / v.check_polls), v.check_worst_us);
+        end_session(BYE_CLIENT_EXIT, "Link check finished");
+    }
+}
+
 void party_view_init(void) {
     memset(&v, 0, sizeof(v));
     v.message = "Waiting for GBA (GC Extension Mode)";
@@ -306,6 +346,7 @@ void party_view_update(bool start_pressed, bool a_pressed, bool z_pressed) {
     case V_PARTY: step_party(); break;
     case V_ASSETS: step_assets(); break;
     case V_ACTIVE: step_active(start_pressed); break;
+    case V_LINK_CHECK: step_link_check(start_pressed); break;
     case V_ENDED:
         if (a_pressed) { v.probe_wait = 0; set_state(V_PROBE, "Waiting for GBA (GC Extension Mode)"); }
         break;
@@ -418,6 +459,7 @@ void party_view_draw(void) {
     render_texture(ui_art(ART_LINK_CREST), 12, 7, 30, 30, WHITE);
     const bool party_screen = v.state == V_PARTY || v.state == V_ASSETS || v.state == V_ACTIVE;
     render_text(52, 10, 1.5f, UI_INK, "%s", party_screen ? "PARTY ROSTER" : "LINK PLAZA");
+    render_text(530, 30, 1, DIM, "r%u %s", GCX_RELEASE, GCX_RELEASE_NAME);
     render_text(288, 14, 1, DIM, "%s", state_names[v.state]);
     if (party_screen)
         render_text(404, 14, 1, DIM, "%.4s build %08x", (const char *)v.link.client.tag, v.link.client.build_id);
@@ -433,7 +475,7 @@ void party_view_draw(void) {
         ui_panel(180, 240, 280, 27, UI_EDGE, UI_CREAM);
         render_text(216, 245, 1, UI_INK, "GAME BOY ADVANCE LINK");
     }
-    if (v.state != V_ACTIVE) {
+    if (v.state != V_ACTIVE && v.state != V_LINK_CHECK) {
         const float y = have_party ? 440 : 322;
         ui_panel(16, y - 8, 608, 33, BORDER, UI_CREAM);
         if (v.state == V_ASSETS)
@@ -442,6 +484,18 @@ void party_view_draw(void) {
             render_text(24, y, 1, ACCENT, "%s  %u/%u", v.message, v.record_index, v.count);
         else
             render_text(24, y, 1, ACCENT, "%s%s", v.message, v.state == V_ENDED ? "  (A: reconnect)" : "");
+    }
+    if (v.state == V_LINK_CHECK) {
+        const Caps *c = &v.link.client;
+        ui_panel(64, 300, 512, 128, BORDER, PANEL);
+        render_text(80, 310, 1.5f, UI_INK, "CONNECTED");
+        render_text(80, 340, 1, UI_INK, "GBA  %.4s  release %u  build %08x  protocol v%u", (const char *)c->tag,
+                    c->release, c->build_id, c->version);
+        render_text(80, 360, 1, UI_INK, "GC   companion.dol  release %u (%s)  protocol v%u", GCX_RELEASE,
+                    GCX_RELEASE_NAME, MSG_PROTOCOL_VERSION);
+        render_text(80, 380, 1, DIM, "round trip avg %u us  worst %u us  (%u polls)",
+                    v.check_polls ? (unsigned)(v.check_sum_us / v.check_polls) : 0, v.check_worst_us, v.check_polls);
+        render_text(80, 402, 1, DIM, "B on the GBA ends the check");
     }
     const CacheStats c = cache_stats();
     render_text(16, 458, 1, DIM, "cache %u assets %u KiB  hits %u", c.entries, (unsigned)(c.arena_used / 1024),
