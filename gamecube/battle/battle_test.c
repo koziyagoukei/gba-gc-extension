@@ -1208,6 +1208,487 @@ static void test_switch_rotation_conditions(void) {
     assert(!battle_validate_action(&b, &rotate));
 }
 
+
+// ---------------------------------------------------------------- V8 move effects
+
+static BattleEffect fx(uint8_t kind, uint8_t who, uint8_t chance, uint8_t arg0, int8_t arg1, uint8_t arg2) {
+    return (BattleEffect){.kind = kind, .who = who, .chance = chance, .arg0 = arg0, .arg1 = arg1, .arg2 = arg2};
+}
+#define DAMAGE1 fx(BEFF_DAMAGE, BWHO_TARGET, 0, 1, 0, 1)
+
+static void push(BattleMove *m, BattleEffect e) {
+    assert(m->effect_count < BATTLE_MAX_EFFECTS);
+    m->effects[m->effect_count++] = e;
+}
+
+static BattleMove status_move(uint8_t target, uint8_t accuracy) {
+    return (BattleMove){.category = BCAT_STATUS, .target = target, .accuracy = accuracy};
+}
+
+static BattleMove damaging(uint16_t power, uint8_t type, uint8_t accuracy) {
+    BattleMove m = hit(power, type, BCAT_PHYSICAL);
+    m.accuracy = accuracy;
+    push(&m, DAMAGE1);
+    return m;
+}
+
+// V7 condition request upgraded to V8: every damaging move gets a DAMAGE effect.
+static void make_effects(BattleRequest *r, uint8_t format) {
+    make_conditions(r, format);
+    r->version = BATTLE_REQUEST_VERSION_EFFECTS;
+    for (unsigned side = 0; side < 2; ++side) {
+        BattleEntry *entries = side ? r->opponent : r->player;
+        const unsigned count = side ? r->opponent_count : r->player_count;
+        for (unsigned i = 0; i < count; ++i)
+            for (unsigned m = 0; m < 4; ++m) {
+                BattleMove *move = &entries[i].mon.moves[m];
+                if (move->unsupported || move->effect_count) continue;
+                move->effect = BME_HIT;
+                if (move->power) push(move, DAMAGE1);
+            }
+    }
+}
+
+static const BattleEvent *find(const EventLog *log, EventKind kind) {
+    for (unsigned i = 0; i < log->count; ++i)
+        if (log->events[i].kind == kind) return &log->events[i];
+    return NULL;
+}
+
+static void test_effects_wire(void) {
+    static BattleRequest r, decoded;
+    static uint8_t bytes[4096];
+    make_effects(&r, BATTLE_FORMAT_DOUBLE);
+    BattleMove thunder = damaging(90, T_WATER, 100);
+    thunder.category = BCAT_SPECIAL;
+    thunder.source_effect = 0x1234;
+    thunder.move_flags = BMF_IGNORES_PROTECT;
+    push(&thunder, fx(BEFF_STATUS, BWHO_TARGET, 10, BST_PARALYSIS, 0, 0));
+    push(&thunder, fx(BEFF_STAT, BWHO_USER, 100, BSTAT_SPA, -2, 0));
+    set_move(&r.player[0], 1, 85, thunder, 15);
+    const uint32_t n = battle_request_encode(&r, bytes, sizeof(bytes));
+    // 4 entries x 4 moves: headers + 1 DAMAGE for each plain move, 3 effects for the new one.
+    const uint32_t effects = 16 * BATTLE_MOVE_EFFECTS_HEADER + (4 + 3) * BATTLE_EFFECT_BYTES;
+    assert(n == BATTLE_REQUEST_HEADER + 4 * BATTLE_ENTRY_BYTES + NTYPES * NTYPES + BATTLE_CONDITION_RULE_BYTES + effects);
+    assert(n == battle_request_size(&r));
+    assert(battle_request_decode(bytes, n, &decoded));
+    const BattleMove *d = &decoded.player[0].mon.moves[1];
+    assert(d->effect_count == 3 && d->source_effect == 0x1234 && d->move_flags == BMF_IGNORES_PROTECT);
+    assert(d->effects[1].kind == BEFF_STATUS && d->effects[1].chance == 10 && d->effects[1].arg0 == BST_PARALYSIS);
+    assert(d->effects[2].who == BWHO_USER && d->effects[2].arg1 == -2);
+    assert(decoded.opponent[1].mon.moves[0].effects[0].kind == BEFF_DAMAGE);
+    // Malformed input is rejected: truncation, trailing data, reserved bytes, invalid descriptors.
+    assert(!battle_request_decode(bytes, n - 1, &decoded));
+    bytes[n] = 0;
+    assert(!battle_request_decode(bytes, n + 1, &decoded));
+    const unsigned fixed = BATTLE_REQUEST_HEADER + 4 * BATTLE_ENTRY_BYTES + NTYPES * NTYPES + BATTLE_CONDITION_RULE_BYTES;
+    const unsigned second = fixed + BATTLE_MOVE_EFFECTS_HEADER + BATTLE_EFFECT_BYTES;  // player 0, move 1
+    uint8_t saved = bytes[second + BATTLE_MOVE_EFFECTS_HEADER + 7];
+    bytes[second + BATTLE_MOVE_EFFECTS_HEADER + 7] = 1;   // reserved descriptor byte
+    assert(!battle_request_decode(bytes, n, &decoded));
+    bytes[second + BATTLE_MOVE_EFFECTS_HEADER + 7] = saved;
+    saved = bytes[second + BATTLE_MOVE_EFFECTS_HEADER + 2 * BATTLE_EFFECT_BYTES + 4];
+    bytes[second + BATTLE_MOVE_EFFECTS_HEADER + 2 * BATTLE_EFFECT_BYTES + 4] = 0;  // stat delta 0
+    assert(!battle_request_decode(bytes, n, &decoded));
+    bytes[second + BATTLE_MOVE_EFFECTS_HEADER + 2 * BATTLE_EFFECT_BYTES + 4] = saved;
+    bytes[second] = BATTLE_MAX_EFFECTS + 1;
+    assert(!battle_request_decode(bytes, n, &decoded));
+    bytes[second] = 3;
+    assert(battle_request_decode(bytes, n, &decoded));
+    bytes[BATTLE_REQUEST_HEADER + PKMN_RECORD_BYTES + 4] = 1;  // V8 keeps the legacy effect byte reserved
+    assert(!battle_request_decode(bytes, n, &decoded));
+    bytes[BATTLE_REQUEST_HEADER + PKMN_RECORD_BYTES + 4] = 0;
+    bytes[0] = BATTLE_REQUEST_VERSION_EFFECTS + 1;
+    assert(!battle_request_decode(bytes, n, &decoded));
+
+    // Structural rules shared by both sides.
+    BattleMove m = status_move(BTARGET_SELF, 0);
+    assert(!battle_move_effects_valid(&m));                      // empty list
+    push(&m, fx(BEFF_STAT, BWHO_TARGET, 0, BSTAT_ATK, 2, 0));
+    assert(battle_move_effects_valid(&m));
+    m.effects[0].chance = 30;
+    assert(!battle_move_effects_valid(&m));                      // chances only on hits
+    m = damaging(40, T_NORMAL, 100);
+    m.effects[0].arg1 = BHITS_2TO5_GEN5;
+    assert(!battle_move_effects_valid(&m));                      // 2-5 rule needs 2..5
+    m.effects[0].arg0 = 2;
+    m.effects[0].arg2 = 5;
+    assert(battle_move_effects_valid(&m));
+    m = hit(40, T_NORMAL, BCAT_PHYSICAL);
+    push(&m, fx(BEFF_STAT, BWHO_USER, 0, BSTAT_ATK, 1, 0));
+    assert(!battle_move_effects_valid(&m));                      // damaging move without DAMAGE
+    m = status_move(BTARGET_SELF, 0);
+    push(&m, fx(BEFF_PROTECT, BWHO_USER, 0, 3, 0, 0));
+    push(&m, fx(BEFF_STAT, BWHO_TARGET, 0, BSTAT_ATK, 1, 0));
+    assert(!battle_move_effects_valid(&m));                      // Protect stands alone
+}
+
+static void run1(Battle *b, Action player, Action foe, EventLog *log) {
+    const Action actions[] = {player, foe};
+    battle_run_turn(b, actions, 2, log);
+}
+
+static void test_effect_status_and_stats(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    const Action player = move(0, 0, 0), foe = move(1, 0, 0);
+    // Swords Dance (+2 Atk, self) and Screech (-2 Def, target) through descriptors.
+    make_effects(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove swords = status_move(BTARGET_SELF, 0), screech = status_move(BTARGET_SINGLE, 0);
+    push(&swords, fx(BEFF_STAT, BWHO_TARGET, 0, BSTAT_ATK, 2, 0));
+    push(&screech, fx(BEFF_STAT, BWHO_TARGET, 0, BSTAT_DEF, -2, 0));
+    set_move(&r.player[0], 0, 14, swords, 20);
+    set_move(&r.opponent[0], 0, 103, screech, 40);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    for (unsigned i = 0; i < 4; ++i) {
+        run1(&b, player, foe, &log);
+        assert(event_count(&log, EV_STAGE) == (i == 3 ? 0 : 2) && event_count(&log, EV_NO_EFFECT) == (i == 3 ? 2 : 0));
+    }
+    assert(battle_active(&b, 0)->stat_stages[BSTAT_ATK] == 6 && battle_active(&b, 0)->stat_stages[BSTAT_DEF] == -6);
+
+    // Dragon-Dance-style lists apply every stat; one change is enough to count.
+    make_effects(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove dance = status_move(BTARGET_SELF, 0);
+    push(&dance, fx(BEFF_STAT, BWHO_TARGET, 0, BSTAT_ATK, 1, 0));
+    push(&dance, fx(BEFF_STAT, BWHO_TARGET, 0, BSTAT_SPE, 1, 0));
+    set_move(&r.player[0], 0, 349, dance, 20);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_active(&b, 0)->stat_stages[BSTAT_ATK] = 6;
+    battle_run_turn(&b, &player, 1, &log);
+    assert(event_count(&log, EV_STAGE) == 1 && !find(&log, EV_NO_EFFECT));
+    assert(battle_active(&b, 0)->stat_stages[BSTAT_SPE] == 1);
+
+    // Will-O-Wisp: a Fire type is immune; Thunder Wave follows the type chart.
+    make_effects(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove wisp = status_move(BTARGET_SINGLE, 0), wave = status_move(BTARGET_SINGLE, 0);
+    wisp.type = T_FIRE;
+    push(&wisp, fx(BEFF_STATUS, BWHO_TARGET, 0, BST_BURN, 0, 0));
+    wave.type = T_NORMAL;
+    push(&wave, fx(BEFF_STATUS, BWHO_TARGET, 0, BST_PARALYSIS, 0, 0));
+    wave.effects[0].flags = BEFL_TYPE_CHART;
+    set_move(&r.player[0], 0, 261, wisp, 15);
+    set_move(&r.player[0], 1, 86, wave, 20);
+    r.opponent[0].mon.types[0] = r.opponent[0].mon.types[1] = T_FIRE;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, &player, 1, &log);
+    assert(find(&log, EV_NO_EFFECT) && !find(&log, EV_STATUS));
+    r.opponent[0].mon.types[0] = r.opponent[0].mon.types[1] = T_GHOST;   // Normal has no effect on Ghost
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    Action wave_action = move(0, 0, 0);
+    wave_action.move_slot = 1;
+    battle_run_turn(&b, &wave_action, 1, &log);
+    assert(find(&log, EV_NO_EFFECT) && !find(&log, EV_STATUS));
+    r.player[0].mon.moves[1].effects[0].flags = 0;                      // without the flag it lands
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, &wave_action, 1, &log);
+    assert(find(&log, EV_STATUS) && find(&log, EV_STATUS)->condition == BST_PARALYSIS);
+
+    // Hypnosis: sleep counter within the rules' range; Toxic on an already statused target fails.
+    make_effects(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove hypnosis = status_move(BTARGET_SINGLE, 0), toxic = status_move(BTARGET_SINGLE, 0);
+    push(&hypnosis, fx(BEFF_STATUS, BWHO_TARGET, 0, BST_SLEEP, 0, 0));
+    push(&toxic, fx(BEFF_STATUS, BWHO_TARGET, 0, BST_TOXIC, 0, 0));
+    set_move(&r.player[0], 0, 95, hypnosis, 20);
+    set_move(&r.player[0], 1, 92, toxic, 10);
+    for (uint32_t seed = 1; seed < 40; ++seed) {
+        assert(battle_init(&b, &r, seed) == BI_OK);
+        battle_run_turn(&b, &player, 1, &log);
+        const unsigned counter = BATTLE_CONDITION_COUNTER(battle_active(&b, 1)->status);
+        assert(BATTLE_CONDITION_KIND(battle_active(&b, 1)->status) == BST_SLEEP && counter >= 2 && counter <= 4);
+        Action toxic_action = player;
+        toxic_action.move_slot = 1;
+        battle_run_turn(&b, &toxic_action, 1, &log);
+        assert(find(&log, EV_NO_EFFECT) && BATTLE_CONDITION_KIND(battle_active(&b, 1)->status) == BST_SLEEP);
+    }
+}
+
+static void test_effect_heal_drain_recoil(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    const Action player = move(0, 0, 0);
+    // Recover: floor(max / 2), capped; at full HP it fails.
+    make_effects(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove recover = status_move(BTARGET_SELF, 0);
+    push(&recover, fx(BEFF_HEAL, BWHO_USER, 0, 1, 0, 2));
+    set_move(&r.player[0], 0, 105, recover, 5);
+    r.player[0].record.max_hp = 201;
+    r.player[0].record.hp = 201;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, &player, 1, &log);
+    assert(find(&log, EV_FAIL) && !find(&log, EV_HEAL));
+    battle_active(&b, 0)->hp = 20;
+    battle_run_turn(&b, &player, 1, &log);
+    assert(find(&log, EV_HEAL)->amount == 100 && battle_active(&b, 0)->hp == 120);
+    battle_active(&b, 0)->hp = 180;
+    battle_run_turn(&b, &player, 1, &log);
+    assert(find(&log, EV_HEAL)->amount == 21 && battle_active(&b, 0)->hp == 201);
+
+    // Giga Drain: half of the HP the target actually lost, at least 1.
+    make_effects(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove drain = damaging(75, T_NORMAL, 0);
+    drain.category = BCAT_SPECIAL;
+    push(&drain, fx(BEFF_DRAIN, BWHO_USER, 0, 50, 0, 0));
+    set_move(&r.player[0], 0, 202, drain, 10);
+    assert(battle_init(&b, &r, 3) == BI_OK);
+    battle_active(&b, 0)->hp = 10;
+    battle_active(&b, 1)->hp = 9;   // overkill: only 9 HP is lost
+    battle_run_turn(&b, &player, 1, &log);
+    assert(find(&log, EV_DRAIN)->amount == 4 && battle_active(&b, 0)->hp == 14);
+    assert(b.outcome == OUTCOME_WIN);
+    assert(battle_init(&b, &r, 3) == BI_OK);
+    battle_run_turn(&b, &player, 1, &log);   // full HP: nothing to drain into
+    assert(!find(&log, EV_DRAIN) && find(&log, EV_DAMAGE));
+
+    // Double-Edge: 33% of the HP lost by the target; recoil can knock the user out.
+    make_effects(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove edge = damaging(120, T_NORMAL, 0);
+    push(&edge, fx(BEFF_RECOIL, BWHO_USER, 0, 33, 0, 0));
+    set_move(&r.player[0], 0, 38, edge, 15);
+    assert(battle_init(&b, &r, 5) == BI_OK);
+    battle_run_turn(&b, &player, 1, &log);
+    const BattleEvent *dmg = find(&log, EV_DAMAGE), *recoil = find(&log, EV_RECOIL);
+    assert(dmg && recoil && recoil->amount == dmg->amount * 33 / 100);
+    assert(battle_init(&b, &r, 5) == BI_OK);
+    battle_active(&b, 0)->hp = 1;
+    battle_active(&b, 1)->hp = 1;
+    battle_run_turn(&b, &player, 1, &log);
+    assert(find(&log, EV_RECOIL)->amount == 1 && b.outcome == OUTCOME_DRAW);
+}
+
+static void test_effect_secondary(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    const Action player = move(0, 0, 0);
+    // Thunderbolt-style 10% paralysis: over many seeds roughly 10% of hits, never on a fainted target.
+    make_effects(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove bolt = damaging(20, T_NORMAL, 0);
+    push(&bolt, fx(BEFF_STATUS, BWHO_TARGET, 10, BST_PARALYSIS, 0, 0));
+    set_move(&r.player[0], 0, 85, bolt, 15);
+    unsigned paralyzed = 0;
+    for (uint32_t seed = 1; seed <= 2000; ++seed) {
+        assert(battle_init(&b, &r, seed) == BI_OK);
+        battle_run_turn(&b, &player, 1, &log);
+        paralyzed += find(&log, EV_STATUS) != NULL;
+    }
+    assert(paralyzed > 140 && paralyzed < 260);
+    r.player[0].mon.moves[0].effects[1].chance = 100;
+    assert(battle_init(&b, &r, 9) == BI_OK);
+    battle_active(&b, 1)->hp = 1;
+    battle_run_turn(&b, &player, 1, &log);
+    assert(find(&log, EV_FAINT) && !find(&log, EV_STATUS));
+    // A self effect still applies after the target fainted (Close-Combat style).
+    r.player[0].mon.moves[0].effects[1] = fx(BEFF_STAT, BWHO_USER, 0, BSTAT_DEF, -1, 0);
+    assert(battle_init(&b, &r, 9) == BI_OK);
+    battle_active(&b, 1)->hp = 1;
+    battle_run_turn(&b, &player, 1, &log);
+    assert(find(&log, EV_STAGE) && battle_active(&b, 0)->stat_stages[BSTAT_DEF] == -1);
+    // Flamethrower-style burn cannot land on a Fire type; Ice Beam freeze respects the rules.
+    r.player[0].mon.moves[0].effects[1] = fx(BEFF_STATUS, BWHO_TARGET, 100, BST_BURN, 0, 0);
+    r.opponent[0].mon.types[0] = r.opponent[0].mon.types[1] = T_FIRE;
+    assert(battle_init(&b, &r, 9) == BI_OK);
+    battle_run_turn(&b, &player, 1, &log);
+    assert(!find(&log, EV_STATUS));
+    BattleMove frostbite = damaging(20, T_NORMAL, 0);
+    push(&frostbite, fx(BEFF_STATUS, BWHO_TARGET, 10, BST_FROSTBITE, 0, 0));
+    assert(!battle_move_supported(&r, &frostbite));   // the rules use freeze, not frostbite
+}
+
+static void test_effect_multi_hit(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    const Action player = move(0, 0, 0);
+    make_effects(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove swipes = damaging(10, T_NORMAL, 0);
+    swipes.effects[0] = fx(BEFF_DAMAGE, BWHO_TARGET, 0, 2, BHITS_2TO5_GEN5, 5);
+    set_move(&r.player[0], 0, 154, swipes, 15);
+    r.opponent[0].record.hp = r.opponent[0].record.max_hp = 999;
+    unsigned counts[6] = {0};
+    for (uint32_t seed = 1; seed <= 4000; ++seed) {
+        assert(battle_init(&b, &r, seed) == BI_OK);
+        battle_run_turn(&b, &player, 1, &log);
+        const BattleEvent *multi = find(&log, EV_MULTI_HIT);
+        assert(multi && multi->amount == event_count(&log, EV_DAMAGE));
+        ++counts[multi->amount];
+    }
+    assert(counts[2] > 1200 && counts[2] < 1600 && counts[3] > 1200 && counts[3] < 1600);
+    assert(counts[4] > 450 && counts[4] < 750 && counts[5] > 450 && counts[5] < 750);
+    // Accuracy is checked once; hits stop when the target faints.
+    r.player[0].mon.moves[0].effects[0] = fx(BEFF_DAMAGE, BWHO_TARGET, 0, 5, 0, 5);
+    r.opponent[0].record.hp = 1;
+    assert(battle_init(&b, &r, 2) == BI_OK);
+    battle_run_turn(&b, &player, 1, &log);
+    assert(event_count(&log, EV_DAMAGE) == 1 && find(&log, EV_MULTI_HIT)->amount == 1 && find(&log, EV_FAINT));
+}
+
+static void test_effect_priority_protect(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    // Quick Attack (+1) goes before a faster foe.
+    make_effects(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove quick = damaging(40, T_NORMAL, 0);
+    quick.priority = 1;
+    set_move(&r.player[0], 0, 98, quick, 30);
+    r.player[0].record.speed = 10;
+    r.opponent[0].record.speed = 200;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    assert(log.events[0].kind == EV_MOVE_USED && log.events[0].user.side == 0);
+
+    // Protect (+4) blocks the foe's attack and status move.
+    make_effects(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove guard = status_move(BTARGET_SELF, 0);
+    guard.priority = 4;
+    push(&guard, fx(BEFF_PROTECT, BWHO_USER, 0, 3, 0, 0));
+    set_move(&r.player[0], 0, 182, guard, 10);
+    BattleMove growl = status_move(BTARGET_SINGLE, 0);
+    push(&growl, fx(BEFF_STAT, BWHO_TARGET, 0, BSTAT_ATK, -1, 0));
+    set_move(&r.opponent[0], 1, 45, growl, 40);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    assert(find(&log, EV_PROTECT) && find(&log, EV_PROTECTED) && !find(&log, EV_DAMAGE));
+    // Consecutive uses succeed with 1/3, 1/9, ...; a Protect chain resets after another move.
+    unsigned second = 0;
+    for (uint32_t seed = 1; seed <= 900; ++seed) {
+        assert(battle_init(&b, &r, seed) == BI_OK);
+        run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+        run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+        second += find(&log, EV_PROTECT) != NULL;
+        if (find(&log, EV_PROTECT)) assert(battle_active(&b, 0)->protect_uses == 2);
+        else assert(find(&log, EV_FAIL) && battle_active(&b, 0)->protect_uses == 0);
+    }
+    assert(second > 240 && second < 360);
+    // Protect fails when the user is the last to move.
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){move(0, 0, 0)}, 1, &log);
+    assert(find(&log, EV_FAIL) && !battle_active(&b, 0)->protected_turn);
+    // A move that ignores Protect goes through; the flag is gone next turn.
+    r.opponent[0].mon.moves[0].move_flags = BMF_IGNORES_PROTECT;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    assert(find(&log, EV_PROTECT) && find(&log, EV_DAMAGE));
+    battle_run_turn(&b, (Action[]){move(1, 0, 0)}, 1, &log);
+    assert(!battle_active(&b, 0)->protected_turn && find(&log, EV_DAMAGE));
+}
+
+static void test_effect_formats(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    // Double: Growl lowers both foes; a protected foe is skipped by a spread hit.
+    make_effects(&r, BATTLE_FORMAT_DOUBLE);
+    BattleMove growl = status_move(BTARGET_ALL_FOES, 100);
+    push(&growl, fx(BEFF_STAT, BWHO_TARGET, 0, BSTAT_ATK, -1, 0));
+    set_move(&r.player[0], 1, 45, growl, 40);
+    Action g = move(0, 0, 0);
+    g.move_slot = 1;
+    assert(battle_init(&b, &r, 4) == BI_OK);
+    battle_run_turn(&b, &g, 1, &log);
+    assert(event_count(&log, EV_STAGE) == 2 && battle_at(&b, (Position){1, 1})->stat_stages[BSTAT_ATK] == -1);
+    BattleMove surf = damaging(90, T_WATER, 0);
+    surf.category = BCAT_SPECIAL;
+    surf.target = BTARGET_ALL_ADJACENT;
+    push(&surf, fx(BEFF_STAT, BWHO_TARGET, 100, BSTAT_SPE, -1, 0));
+    set_move(&r.player[0], 2, 57, surf, 15);
+    BattleMove guard = status_move(BTARGET_SELF, 0);
+    guard.priority = 4;
+    push(&guard, fx(BEFF_PROTECT, BWHO_USER, 0, 3, 0, 0));
+    set_move(&r.opponent[0], 1, 182, guard, 10);
+    assert(battle_init(&b, &r, 4) == BI_OK);
+    Action s = move(0, 0, 0), p = move(1, 0, 0);
+    s.move_slot = 2;
+    p.move_slot = 1;
+    const Action actions[] = {s, p};
+    battle_run_turn(&b, actions, 2, &log);
+    assert(event_count(&log, EV_PROTECTED) == 1 && event_count(&log, EV_DAMAGE) == 2);   // ally and the other foe
+    assert(battle_at(&b, (Position){0, 1})->stat_stages[BSTAT_SPE] == -1 &&
+           battle_at(&b, (Position){1, 0})->stat_stages[BSTAT_SPE] == 0);
+
+    // Triple: a single-target status effect respects distance from an edge.
+    make_effects(&r, BATTLE_FORMAT_TRIPLE);
+    BattleMove screech = status_move(BTARGET_SINGLE, 0);
+    push(&screech, fx(BEFF_STAT, BWHO_TARGET, 0, BSTAT_DEF, -2, 0));
+    set_move(&r.player[0], 1, 103, screech, 40);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    assert(battle_command_targets(&b, (Position){0, 0}, 1) == 0x3);   // left reaches left/center only
+    Action far = move(0, 0, 2);
+    far.move_slot = 1;
+    assert(!battle_validate_action(&b, &far));
+
+    // Rotation: a raised stage stays with the battler while it is a wing.
+    make_effects(&r, BATTLE_FORMAT_ROTATION);
+    BattleMove swords = status_move(BTARGET_SELF, 0);
+    push(&swords, fx(BEFF_STAT, BWHO_TARGET, 0, BSTAT_ATK, 2, 0));
+    set_move(&r.player[0], 1, 14, swords, 20);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    Action sd = move(0, BPOS_CENTER, BPOS_CENTER);
+    sd.move_slot = 1;
+    battle_run_turn(&b, &sd, 1, &log);
+    const uint8_t front = b.sides[0].active[BPOS_CENTER];
+    assert(b.sides[0].battlers[front].stat_stages[BSTAT_ATK] == 2);
+    Action rotate_left = move(0, BPOS_CENTER, BPOS_CENTER);
+    rotate_left.rotation = BROT_LEFT;
+    battle_run_turn(&b, &rotate_left, 1, &log);
+    assert(b.sides[0].active[BPOS_CENTER] != front && b.sides[0].battlers[front].stat_stages[BSTAT_ATK] == 2);
+}
+
+static void test_effect_lifecycle(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    // U-turn and Dragon Tail as descriptor lists reuse the pivot / forced-switch lifecycle.
+    make_effects(&r, BATTLE_FORMAT_SINGLE);
+    add_reserve(&r, 0);
+    add_reserve(&r, 1);
+    BattleMove uturn = damaging(70, T_NORMAL, 0), tail = damaging(60, T_NORMAL, 0);
+    push(&uturn, fx(BEFF_PIVOT, BWHO_TARGET, 0, 0, 0, 0));
+    tail.priority = -6;
+    push(&tail, fx(BEFF_FORCE_OUT, BWHO_TARGET, 0, 0, 0, 0));
+    set_move(&r.player[0], 0, 369, uturn, 20);
+    set_move(&r.player[1], 0, 369, uturn, 20);
+    set_move(&r.opponent[0], 0, 525, tail, 10);
+    set_move(&r.opponent[1], 0, 525, tail, 10);
+    assert(battle_init(&b, &r, 2) == BI_OK);
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    Position pivot;
+    assert(battle_pending_pivot(&b, &pivot) && pivot.side == 0);
+    assert(battle_resume_pivot(&b, 1, &log));
+    assert(find(&log, EV_WITHDRAW) && find(&log, EV_DRAG_OUT));   // the entrant is dragged out by Dragon Tail
+    // Unsupported lists are not usable: no silent fallback to a plain hit.
+    make_effects(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove bad = hit(80, T_NORMAL, BCAT_PHYSICAL);           // damaging move without a DAMAGE effect
+    set_move(&r.player[0], 1, 44, bad, 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    assert(!(battle_usable_moves(&b, battle_active(&b, 0)) & 2));
+    r.player[0].mon.moves[1].unsupported = UNSUP_SECONDARY;
+    push(&r.player[0].mon.moves[1], DAMAGE1);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    assert(!(battle_usable_moves(&b, battle_active(&b, 0)) & 2));
+
+    // Same seed, same inputs: identical event logs.
+    EventLog first, again;
+    make_effects(&r, BATTLE_FORMAT_DOUBLE);
+    BattleMove swipes = damaging(15, T_NORMAL, 80);
+    swipes.effects[0] = fx(BEFF_DAMAGE, BWHO_TARGET, 0, 2, BHITS_2TO5_GEN5, 5);
+    push(&swipes, fx(BEFF_STATUS, BWHO_TARGET, 30, BST_POISON, 0, 0));
+    set_move(&r.player[0], 0, 154, swipes, 15);
+    const Action turn[] = {move(0, 0, 1), move(1, 0, 0), move(0, 1, 0), move(1, 1, 1)};
+    assert(battle_init(&b, &r, 77) == BI_OK);
+    battle_run_turn(&b, turn, 4, &first);
+    assert(battle_init(&b, &r, 77) == BI_OK);
+    battle_run_turn(&b, turn, 4, &again);
+    assert(first.count == again.count && first.count > 4);
+    for (unsigned i = 0; i < first.count; ++i) {
+        const BattleEvent *x = &first.events[i], *y = &again.events[i];
+        assert(x->kind == y->kind && x->amount == y->amount && x->hp_after == y->hp_after &&
+               x->target.side == y->target.side && x->target.slot == y->target.slot && x->condition == y->condition);
+    }
+}
+
 int main(void) {
     test_request_roundtrip();
     test_messages();
@@ -1235,6 +1716,14 @@ int main(void) {
     test_residual_lifecycle();
     test_pivot_then_residual();
     test_switch_rotation_conditions();
+    test_effects_wire();
+    test_effect_status_and_stats();
+    test_effect_heal_drain_recoil();
+    test_effect_secondary();
+    test_effect_multi_hit();
+    test_effect_priority_protect();
+    test_effect_formats();
+    test_effect_lifecycle();
     puts("battle tests passed");
     return 0;
 }

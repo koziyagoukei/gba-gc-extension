@@ -171,6 +171,12 @@ static const char *message_text(const SceneMessage *msg) {
     case MSG_CURE: return "Status cleared.";
     case MSG_STATUS_BLOCK: return "Unable to move!";
     case MSG_RESIDUAL: return "Status damage!";
+    case MSG_HEAL: return "HP was restored.";
+    case MSG_DRAIN: return "Drained the target's energy!";
+    case MSG_PROTECT: return "Protected itself!";
+    case MSG_PROTECTED: return "The attack was blocked!";
+    case MSG_FAIL: return "But it failed!";
+    case MSG_MULTI_HIT: return "Hit multiple times!";
     case MSG_NONE: return "";
     }
     return "";
@@ -187,7 +193,7 @@ static void draw_message(const BattleLayout *layout) {
     render_text(x, y, 1.25f, UI_INK, "%s", message_text(msg));
     if (msg->kind == MSG_ENTER || msg->kind == MSG_MOVE || msg->kind == MSG_FAINT ||
         msg->kind == MSG_SHIFT || msg->kind == MSG_ROTATE || msg->kind == MSG_WITHDRAW || msg->kind == MSG_DRAG_OUT ||
-        (msg->kind >= MSG_STAGE && msg->kind <= MSG_RESIDUAL)) {
+        (msg->kind >= MSG_STAGE && msg->kind <= MSG_MULTI_HIT)) {
         const Battler *b = battler_at(msg->subject);
         CacheEntry *name = b ? battle_label(scene.build, &b->entry->record) : NULL;
         if (name) draw_label(name, x, y + 27, 190, 23);
@@ -196,6 +202,8 @@ static void draw_message(const BattleLayout *layout) {
             static const char *const stats[] = {"ATK", "DEF", "SP. ATK", "SP. DEF", "SPEED", "ACCURACY", "EVASION"};
             render_text(x + 210, y + 28, 1, UI_MUTED, "%s %s%d", stats[msg->stat], msg->stage > 0 ? "+" : "", msg->stage);
         }
+        if (msg->kind == MSG_MULTI_HIT)
+            render_text(x + 210, y + 28, 1, UI_MUTED, "%d hit%s", msg->stage, msg->stage == 1 ? "" : "s");
         if (msg->condition)
             render_text(x + 210, y + 28, 1, UI_MUTED, "%s", condition_label(msg->condition));
         if (msg->kind == MSG_MOVE) {

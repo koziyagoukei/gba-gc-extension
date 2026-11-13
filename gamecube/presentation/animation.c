@@ -141,6 +141,25 @@ void animation_play(BattleAnimation *a, const BattleLayout *layout, const EventL
             add(a, (AnimationStep){.kind = ANIM_HP, .target = e->target, .hp = e->hp_after});
             wait(a, 18);
             break;
+        case EV_HEAL:
+        case EV_DRAIN:
+            if (!battle_layout_anchor(layout, e->target)) break;
+            message(a, (SceneMessage){.kind = e->kind == EV_HEAL ? MSG_HEAL : MSG_DRAIN, .subject = e->target}, 0);
+            add(a, (AnimationStep){.kind = ANIM_HP, .target = e->target, .hp = e->hp_after});
+            wait(a, 18);
+            break;
+        case EV_PROTECT:
+            message(a, (SceneMessage){.kind = MSG_PROTECT, .subject = e->user}, 32);
+            break;
+        case EV_PROTECTED:
+            message(a, (SceneMessage){.kind = MSG_PROTECTED, .subject = e->target}, 32);
+            break;
+        case EV_FAIL:
+            message(a, (SceneMessage){.kind = MSG_FAIL, .subject = e->user}, 32);
+            break;
+        case EV_MULTI_HIT:
+            message(a, (SceneMessage){.kind = MSG_MULTI_HIT, .subject = e->target, .stage = (int8_t)e->amount}, 30);
+            break;
         case EV_END:
             if (e->outcome == OUTCOME_WIN || e->outcome == OUTCOME_LOSE || e->outcome == OUTCOME_DRAW)
                 message(a, (SceneMessage){.kind = MSG_RESULT, .outcome = e->outcome}, 30);
@@ -182,9 +201,11 @@ static bool advance(BattleAnimation *a, const BattleLayout *layout, const Animat
         a->effect = battle_layout_anchor(layout, s->target)->hit_center;
         break;
     case ANIM_HP: {
-        const float step = actor->max_hp / (layout->active_per_side == 1 ? 48.0f : 22.0f);
-        actor->hp -= step < 1 ? 1 : step;
-        if (actor->hp > s->hp) return false;
+        // Drains toward the new value in either direction (damage or healing).
+        float step = actor->max_hp / (layout->active_per_side == 1 ? 48.0f : 22.0f);
+        if (step < 1) step = 1;
+        if (actor->hp > s->hp + step) { actor->hp -= step; return false; }
+        if (actor->hp + step < s->hp) { actor->hp += step; return false; }
         actor->hp = s->hp;
         return true;
     }

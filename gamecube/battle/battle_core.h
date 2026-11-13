@@ -15,7 +15,11 @@
 
 #define BC_MAX_ACTIVE BATTLE_FIELD_SLOTS
 #define BC_MAX_ACTIONS (2 * BC_MAX_ACTIVE)
-#define BC_MAX_EVENTS (BC_MAX_ACTIONS * (1 + 2 * (BC_MAX_ACTIONS - 1)) + 3 + 2 * BC_MAX_ACTIONS)
+// Worst case per action: MOVE_USED, then per target up to BATTLE_MAX_HITS hits,
+// faint, multi-hit, thaw, drain and every other effect (with switch events),
+// then recoil and its faint; plus end-of-turn residuals and the battle end.
+#define BC_EVENTS_PER_TARGET (BATTLE_MAX_HITS + 4 + 2 * BATTLE_MAX_EFFECTS)
+#define BC_MAX_EVENTS (BC_MAX_ACTIONS * (3 + BC_MAX_ACTIVE * BC_EVENTS_PER_TARGET) + 3 * BC_MAX_ACTIONS + 8)
 
 typedef struct { uint8_t side, slot; } Position;   // side 0 = player, 1 = opponent; slot = active position
 typedef struct { Position pos; } Target;
@@ -31,6 +35,8 @@ typedef struct {
     uint16_t move_ids[4];
     uint8_t pp[4], max_pp[4];
     bool fainted;
+    bool protected_turn;     // Protect succeeded this turn
+    uint8_t protect_uses;    // consecutive successful Protect uses (field lifetime)
 } Battler;
 
 typedef struct {
@@ -49,12 +55,13 @@ typedef struct {
     uint8_t rotation, reserve;
 } Action;
 
-typedef enum { EV_MOVE_USED, EV_MISS, EV_DAMAGE, EV_NO_EFFECT, EV_FAINT, EV_FORFEIT, EV_NO_MOVES, EV_END, EV_SHIFT, EV_ROTATE, EV_SEND_OUT, EV_WITHDRAW, EV_RECOIL, EV_DRAG_OUT, EV_STAGE, EV_STATUS, EV_CURE, EV_STATUS_BLOCK, EV_RESIDUAL } EventKind;
+typedef enum { EV_MOVE_USED, EV_MISS, EV_DAMAGE, EV_NO_EFFECT, EV_FAINT, EV_FORFEIT, EV_NO_MOVES, EV_END, EV_SHIFT, EV_ROTATE, EV_SEND_OUT, EV_WITHDRAW, EV_RECOIL, EV_DRAG_OUT, EV_STAGE, EV_STATUS, EV_CURE, EV_STATUS_BLOCK, EV_RESIDUAL,
+              EV_HEAL, EV_DRAIN, EV_PROTECT, EV_PROTECTED, EV_FAIL, EV_MULTI_HIT } EventKind;
 typedef struct {
     EventKind kind;
     Position user, target;
     uint16_t move_id;
-    uint16_t amount, hp_after;
+    uint16_t amount, hp_after;   // EV_MULTI_HIT: amount = hits landed; EV_HEAL/EV_DRAIN: HP restored
     uint8_t effectiveness;   // quarters: 0 none, 2 = x0.5, 4 = x1, 8 = x2 ...
     uint8_t outcome;         // EV_END
     uint8_t rotation;        // EV_ROTATE
