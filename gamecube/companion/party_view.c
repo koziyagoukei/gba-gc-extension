@@ -473,7 +473,8 @@ void party_view_draw(void) {
     render_text(288, 14, 1, DIM, "%s", state_names[v.state]);
     if (party_screen)
         render_text(404, 14, 1, DIM, "%.4s build %08x", (const char *)v.link.client.tag, v.link.client.build_id);
-    const bool have_party = v.count && (v.state == V_ACTIVE || v.state == V_ASSETS || v.have_record[0]);
+    // Only a party session draws the roster; the lobby never shows a previous session's party.
+    const bool have_party = v.count && party_screen && (v.state != V_PARTY || v.have_record[0]);
     if (have_party) {
         draw_party();
         unsigned slot = v.ui.cursor < v.count ? v.ui.cursor : 0;
