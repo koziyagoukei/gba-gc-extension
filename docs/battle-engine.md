@@ -396,3 +396,138 @@ same 16 µs peak core time. These are emulator measurements.
 Physical hardware and persistent V7 results remain outside this
 verification. The Move Effect System can build on the primary status
 and stat-stage paths and the existing mid-turn action suspension.
+
+
+## Milestone 3 — move effect system
+
+Request/APP V8 replaces the single resolved effect byte with an effect list
+per move. The GBA resolves it from its own move data; the GameCube runs it
+in `gamecube/battle/battle_effects.c` without asking the GBA during a turn.
+
+### What each side owns
+
+| GBA (Frontier exporter) | GameCube (battle core) |
+| --- | --- |
+| Move ID, power, type, category, accuracy, priority, target class | Accuracy and evasion rolls, type immunity |
+| Effect list: kind, subject, chance, arguments | Damage, hit count, secondary-effect rolls |
+| Hit-count rule (`B_MULTI_HIT_CHANCE`), Protect base (`B_PROTECT_FAILURE_RATE`), Recover's half heal | Stat stages, statuses, heal/drain/recoil amounts |
+| `ignoresProtect`, Thunder Wave's type-chart exception | Protect state, action order, faint, replacement, pivot prompts |
+| Unsupported reasons and the game effect ID (diagnostic) | Refusing unusable lists; logging them (`PH6` lines) |
+
+### Wire format
+
+After the V7 condition rules, for every entry (player entries, then
+opponent entries) and each of its four moves: `u8 count, u8 move flags,
+u16 source effect`, then `count` 8-byte descriptors
+`kind, who, chance, arg0, s8 arg1, arg2, flags, reserved`. At most six
+effects per move and ten hits. The decoder rejects truncated or trailing
+data, nonzero reserved bytes, a nonzero legacy effect byte, and lists that
+break the structural rules in `battle_move_effects_valid` (one leading
+DAMAGE exactly for damaging moves, chances only on hits, Protect alone,
+argument ranges). The request version must match the APP version, and
+release numbers keep a release-1 GBA away from a release-2 DOL.
+
+### Effect handlers
+
+| Kind | Arguments | Behaviour |
+| --- | --- | --- |
+| DAMAGE | min/max hits, hit rule | Accuracy once, then hits; stops when the target faints; MULTI_HIT event for more than one hit |
+| STAT | stat, delta | Clamped to ±6; no change emits nothing (status moves fall back to NO_EFFECT) |
+| STATUS | status, type-chart flag | Fails on an existing status or a type immunity; sleep counter from the rules |
+| CURE | status mask | Refresh-style |
+| HEAL | numerator/denominator of max HP | Rounded down, at least 1; FAIL at full HP |
+| DRAIN | percent | Of the HP the target lost, at least 1 |
+| RECOIL | percent | Once per move, of the HP all targets lost, at least 1 |
+| FORCE_OUT | — | Status move or after a landed hit (existing drag logic) |
+| PIVOT | — | After a landed hit (existing mid-turn reserve prompt) |
+| PROTECT | consecutive base (2 or 3) | Fails for the last mover; odds 1/base^n (n ≤ 3); the chain resets after any other move, a status block or a switch |
+
+V5–V7 effect bytes are translated into the same lists when a battler is
+loaded, so all request versions use one path. The legacy RNG order is
+kept: the Milestone 1–2 suite passes unchanged.
+
+### Order within one move
+
+1. PP is spent and MOVE_USED is emitted (status blocks were checked before).
+2. Targets come from the format rules (Triple distance, Rotation front).
+3. PROTECT runs on the user alone and ends the move.
+4. Per target: Protect check (unless the move ignores it) → accuracy →
+   type immunity → hits → drain → remaining effects in list order (chance
+   per target; effects on a fainted target are skipped, self effects still
+   apply) → force-out / pivot. Status moves apply their list and emit
+   NO_EFFECT if nothing changed.
+5. Recoil from the HP all targets lost.
+6. Faint resolution, outcome, replacement and pivot prompts stay in the
+   turn loop; end-of-turn residuals follow the Milestone 2 order.
+
+New events: HEAL, DRAIN, PROTECT, PROTECTED, FAIL, MULTI_HIT. The TV shows
+them as messages; the HP bar now animates upward for healing.
+
+### Exported moves
+
+The exporter supports `EFFECT_HIT`, `EFFECT_STAT_CHANGE`,
+`EFFECT_NON_VOLATILE_STATUS` (not powder moves), `EFFECT_RECOIL`,
+`EFFECT_RESTORE_HP`, `EFFECT_PROTECT` (normal protection only),
+`EFFECT_HIT_ESCAPE`, `EFFECT_HIT_SWITCH_TARGET`, `EFFECT_ROAR` and
+`EFFECT_REFRESH`, plus these additional effects: stat changes (status-move
+and secondary), the major statuses (freeze or frostbite per config) and
+absorb. `multiHit` and `strikeCount` set the hit count. Exported and
+exercised: Swords Dance, Agility, Screech, Growl, Thunder Wave,
+Will-O-Wisp, Toxic, Hypnosis, Recover, Giga Drain, Thunderbolt,
+Flamethrower, Ice Beam, Icy Wind, Heat Wave, Quick Attack, Protect, Fury
+Swipes, Double Kick, Double-Edge, U-turn, Dragon Tail and Surf.
+
+Still unsupported (shown as unusable on the GBA, with the effect ID in the
+host log): flinch, confusion and other volatile effects, two-turn and
+recharge moves, fixed or variable damage, OHKO, explosion, always-crit,
+Protect variants (King's Shield etc.), weather, terrain, field and side
+effects, item and ability interactions, powder moves.
+
+### Verification
+
+The native suite adds the V8 codec and its rejections, stat and status
+moves with immunities, heal cap, drain and recoil amounts, 10% secondary
+odds over 2,000 seeds, the 35/35/15/15 hit split over 4,000 seeds,
+priority, Protect odds (1/3 on a second use over 900 seeds), last-mover
+failure, ignores-Protect, Double spread with a protected foe, Triple
+distance, Rotation stage retention, U-turn/Dragon Tail lists, unsupported
+lists and seeded replay. Wire, message, battle and presentation suites
+pass with warnings as errors; the battle suite passes ASan and UBSan.
+
+Dolphin 2609b, release-2 pair, from the Cube Tester:
+
+| Format | Observed |
+| --- | --- |
+| Single | Swords Dance +2, Screech −2, Hypnosis miss and then blocked by Protect, Recover capped at max HP, Giga Drain draining 1 of 3, Quick Attack first at +1 priority, WIN |
+| Double | Protect blocking Icy Wind and Thunderbolt, Icy Wind super effective with Speed −1 on the other foe, U-turn reserve prompt, Fury Swipes 3 hits, Dragon Tail KO (no drag on a fainted target) and replacement, Toxic and its residual, WIN |
+| Triple | Screech limited to reachable foes, Thunderbolt NO_EFFECT on Ground, Surf hitting allies and three foes, WIN in one turn |
+| Rotation | Swords Dance then rotation keeping the stage, Double-Edge recoil 10 of 33, Hypnosis sleep blocking the foe, WIN |
+
+Every battle returned to the field with unchanged digests, and the test
+saves kept their SHA-256. Peak core time was 13–39 µs per turn with up to
+14 events; the longest poll gap during playback was 33–50 ms, with one
+534 ms gap in a V7 regression run (as recorded in Milestone 2). One link
+loss happened during a stalling Single (430 SI errors, 7 retries); the
+host reconnected and restarted the battle from its request as designed.
+
+Regression: Phase 1 normal and fault injection (10,000 pings, 64 KiB CRC
+4e5e3311, GX), the Phase 2 party viewer with a forced 3 s silence,
+reconnect and 23/23 cache hits, Phase 3 apply/readback (PP 20 → 19 → 18),
+V1 Triple and Rotation, V2 reserve, V4 Struggle, V5 drag, V6 pivot and the
+V7 Double and Rotation condition fixtures all passed through the new
+engine. The Frontier `make check` results are identical to `frontier-hack`
+before the GC work (same 2,413 failing test names).
+
+| Build | Release 1 | Milestone 3 |
+| --- | ---: | ---: |
+| GC DOL | 261,344 B | 269,952 B |
+| GC ELF text / data / BSS | 209,518 / 51,560 / 2,741,696 B | 216,782 / 52,876 / 2,797,824 B |
+| Frontier linked ROM | 26,322,912 B | 26,326,480 B |
+| Frontier EWRAM | 231,984 B | 231,984 B |
+
+### Next
+
+Volatile states (flinch, confusion, substitute, two-turn and recharge
+moves) use the same effect list with new kinds and per-battler volatile
+storage. Abilities and held items then hook into the stages named above:
+before accuracy, on damage, after a hit and at the end of the turn.

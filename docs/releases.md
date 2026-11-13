@@ -15,6 +15,7 @@ The **link check** (Cube Tester → せつぞく かくにん, or the debug entr
 | Release | Name | GC `companion.dol` | GBA build | Protocol | Status |
 |---|---|---|---|---|---|
 | 0 | dev | `./build.ps1` | any development build | message layer v3 | development |
+| 2 | m3-dev | `./build.ps1 -Release 2` (branch `milestone3`) | Frontier branch `frontier-gc-m3` (`GcExtension_GetRelease() = 2`) | message layer v3, battle request V8 (move effects) | development only, not distributed |
 | 1 | v0.1.0-alpha | `./build.ps1 -Release 1` | Frontier Hack with `GcExtension_GetRelease() = 1` (`src/frontier_cube_tester.c`) | message layer v3, battle request V7 | **not released** (see below) |
 
 Build IDs identify exact binaries. The GBA build ID is a CRC of the ROM
