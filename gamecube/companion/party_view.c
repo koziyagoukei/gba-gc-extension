@@ -34,7 +34,8 @@ static struct {
     uint32_t party_us, assets_us;
     const char *message;
     bool fetching;
-    uint64_t silent_until;
+    uint64_t silent_until, ended_at;
+    bool hold_end;  // keep a version mismatch on screen until A
     char ended_text[96];
     uint32_t check_frames, check_polls, check_worst_us;
     uint64_t check_sum_us;
@@ -47,6 +48,7 @@ static uint32_t us_since(uint64_t t) { return (uint32_t)ticks_to_microsecs(getti
 static void set_state(enum ViewState state, const char *message) {
     if (state != v.state) SYS_Report("PH2 STATE %s -> %s%s%s\n", state_names[v.state], state_names[state],
                                      message ? " : " : "", message ? message : "");
+    if (state == V_ENDED && v.state != V_ENDED) v.ended_at = gettime();
     v.state = state;
     if (message) v.message = message;
 }
@@ -135,6 +137,7 @@ static void step_session(void) {
         // A release DOL only runs with the GBA patch of the same release.
         SYS_Report("PH5 RELEASE mismatch host=%u client=%u\n", GCX_RELEASE, v.link.client.release);
         host_bye(&v.link, BYE_HOST_EXIT);
+        v.hold_end = true;
         snprintf(v.ended_text, sizeof(v.ended_text), "Version mismatch: GBA patch r%u, companion.dol r%u (%s)",
                  v.link.client.release, GCX_RELEASE, GCX_RELEASE_NAME);
         set_state(V_ENDED, v.ended_text);
@@ -159,6 +162,8 @@ static void step_session(void) {
         v.check_sum_us = 0;
         SYS_Report("PH5 LINK CHECK release=%u build=%08x protocol=%u\n", v.link.client.release,
                    v.link.client.build_id, v.link.client.version);
+        // The GBA shows its own check screen once the session is READY.
+        if (!set_phase(PHASE_READY, 0, 0)) { lost("SET_PHASE"); return; }
         set_state(V_LINK_CHECK, NULL);
         return;
     }
@@ -348,7 +353,12 @@ void party_view_update(bool start_pressed, bool a_pressed, bool z_pressed) {
     case V_ACTIVE: step_active(start_pressed); break;
     case V_LINK_CHECK: step_link_check(start_pressed); break;
     case V_ENDED:
-        if (a_pressed) { v.probe_wait = 0; set_state(V_PROBE, "Waiting for GBA (GC Extension Mode)"); }
+        // Wait for the next session on its own after 3 s, or at once with A.
+        if (a_pressed || (!v.hold_end && ticks_to_millisecs(gettime() - v.ended_at) > 3000)) {
+            v.probe_wait = 0;
+            v.hold_end = false;
+            set_state(V_PROBE, "Waiting for GBA (GC Extension Mode)");
+        }
         break;
     }
 }
@@ -459,7 +469,7 @@ void party_view_draw(void) {
     render_texture(ui_art(ART_LINK_CREST), 12, 7, 30, 30, WHITE);
     const bool party_screen = v.state == V_PARTY || v.state == V_ASSETS || v.state == V_ACTIVE;
     render_text(52, 10, 1.5f, UI_INK, "%s", party_screen ? "PARTY ROSTER" : "LINK PLAZA");
-    render_text(530, 30, 1, DIM, "r%u %s", GCX_RELEASE, GCX_RELEASE_NAME);
+    render_text(504, 30, 1, DIM, "r%u %s", GCX_RELEASE, GCX_RELEASE_NAME);
     render_text(288, 14, 1, DIM, "%s", state_names[v.state]);
     if (party_screen)
         render_text(404, 14, 1, DIM, "%.4s build %08x", (const char *)v.link.client.tag, v.link.client.build_id);
