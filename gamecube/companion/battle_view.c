@@ -11,6 +11,7 @@
 #include "render.h"
 #include "../presentation/assets.h"
 #include "../presentation/scene.h"
+#include "../presentation/animation.h"
 
 #define MAX_PLAN (2 * BATTLE_MAX_PER_SIDE * (1 + 1 + 4))
 #define WHITE RGBA(242, 249, 255, 255)
@@ -344,15 +345,21 @@ static BattleViewStatus step_result(void) {
                        r.player[i].hp, r.opponent_hp[i], r.player[i].pp[0], r.player[i].pp[1], r.player[i].pp[2], r.player[i].pp[3]);
     SYS_Report("BATTLE PERF core_peak_us=%u event_peak=%u play_poll_gap_peak_us=%u\n",
                b.peak_core_us, b.peak_events, b.peak_play_gap_us);
+    diag_battle_end(r.outcome, r.turns);
+    DiagGbaStats gba;
+    host_ping(b.link, &gba);
+    diag_dump("battle end", &b.link->session);
     set_bstate(B_WAIT_EXIT);
     return BV_RUNNING;
 }
 
 static void resolve_turn(const Action *actions, unsigned count) {
     const uint64_t start = gettime();
+    const unsigned turn = b.battle.turn + 1u;
     battle_run_turn(&b.battle, actions, count, &b.log);
     const uint32_t elapsed = us_since(start);
     if (elapsed > b.peak_core_us) b.peak_core_us = elapsed;
+    diag_core(elapsed, b.log.count, BC_MAX_EVENTS, turn);
 }
 
 static BattleViewStatus play_turn(unsigned turn) {
@@ -366,6 +373,7 @@ static BattleViewStatus play_turn(unsigned turn) {
     }
     if (!send_state(BPHASE_WAIT)) return BV_LOST;
     battle_scene_play(&b.log);
+    diag_animation(battle_scene_steps(), ANIMATION_STEPS, turn);
     set_bstate(B_PLAY);
     return BV_RUNNING;
 }
@@ -437,6 +445,8 @@ static BattleViewStatus step_multi_choose(void) {
         b.choosing = 0;
         b.reserved = 0;
         b.turn_started = gettime();
+        DiagGbaStats gba;
+        if (!host_ping(b.link, &gba)) return BV_LOST;
         for (unsigned i = 0; i < count; ++i) {
             const BattleActionState state = battle_action_state(&b.battle, actors[i]);
             Action forced;
@@ -546,6 +556,7 @@ static BattleViewStatus step_replacement(void) {
 BattleViewStatus battle_view_update(bool start_pressed, const char **message) {
     if (start_pressed && b.state != B_WAIT_EXIT) {
         SYS_Report("PH3 BATTLE aborted from the GameCube in %s (no result sent)\n", bstate_names[b.state]);
+        diag_dump("aborted", &b.link->session);
         *message = host_bye(b.link, BYE_HOST_EXIT) ? "Battle aborted from the GameCube" : "Battle aborted (BYE lost)";
         return BV_ENDED;
     }
@@ -605,6 +616,7 @@ BattleViewStatus battle_view_update(bool start_pressed, const char **message) {
     case B_START: {
         const uint32_t seed = (uint32_t)gettime() ^ b.request.battle_id;
         b.init_error = battle_init(&b.battle, &b.request, seed);
+        diag_battle_begin(b.request.battle_id);
         SYS_Report("PH3 CORE init=%d (%s) seed=%08x\n", b.init_error, battle_init_error_name(b.init_error), seed);
         if (!set_phase(PHASE_READY, b.plan_count, b.plan_count)) return BV_LOST;
         if (b.init_error != BI_OK) {
@@ -661,7 +673,9 @@ void battle_view_draw(void) {
     render_begin();
     render_rect(0, 0, 640, 480, RGBA(12, 21, 34, 255));
     if (b.state >= B_START && b.init_error == BI_OK) {
+        const uint64_t start = gettime();
         battle_scene_draw();
+        diag_presentation(us_since(start));
     } else if (b.init_error != BI_OK) {
         render_text(24, 220, 1.25f, WHITE, "Battle cannot run: %s", battle_init_error_name(b.init_error));
     } else {

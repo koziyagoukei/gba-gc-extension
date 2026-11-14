@@ -2,6 +2,7 @@
 #define COMPANION_HOST_H
 #include "message.h"
 #include "../session.h"
+#include "diag.h"
 
 // Generic message-layer host: session open (HELLO + CAPS), APP requests,
 // chunked asset fetch and BYE. Game protocols build on these calls.
@@ -36,6 +37,8 @@ bool host_open(HostLink *link);  // after the raw JoyBus handshake
 bool host_app(HostLink *link, uint16_t opcode, const uint8_t *args, unsigned length,
               const uint8_t **data, unsigned *data_length, uint16_t *status);
 bool host_bye(HostLink *link, uint16_t reason);
+// PING: the GBA answers with its own JoyBus counters (diagnostics).
+bool host_ping(HostLink *link, DiagGbaStats *gba);
 // MODE (message layer v3). Clients without CAP_MODE run GC_MODE_PARTY_VIEW.
 bool host_mode(HostLink *link, ModeInfo *mode);
 // Sends a RESULT for the current mode; *status receives the client's ResultStatus.

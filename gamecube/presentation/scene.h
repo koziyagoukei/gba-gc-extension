@@ -13,4 +13,6 @@ void battle_scene_choose_reserve(unsigned turn, Position user);
 void battle_scene_play(const EventLog *log);
 bool battle_scene_tick(void);
 void battle_scene_draw(void);
+// Steps queued for the current animation (diagnostics).
+unsigned battle_scene_steps(void);
 #endif

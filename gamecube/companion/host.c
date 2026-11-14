@@ -3,21 +3,30 @@
 #include <ogc/lwp_watchdog.h>
 #include <string.h>
 #include "pkmn_protocol.h"
+#include "diag.h"
 
 static Frame reply;
+
+static bool exchange(HostLink *link, Frame *request) {
+    const uint8_t type = request->type;
+    const uint32_t retries = link->session.stats.retries;
+    const bool ok = session_request(&link->session, request, &reply, NO_FAULT);
+    diag_exchange(ok, type, &link->session, retries);
+    return ok;
+}
 
 bool host_open(HostLink *link) {
     Frame request = {.type = HELLO};
     memset(link, 0, sizeof(*link));
     link->session.timeout_ms = HOST_REPLY_TIMEOUT_MS;
-    if (!session_request(&link->session, &request, &reply, NO_FAULT) || reply.len != 0) return false;
+    if (!exchange(link, &request) || reply.len != 0) return false;
     const Caps caps = {MSG_PROTOCOL_VERSION, PEER_GC_HOST, HOST_BUILD_ID,
                        CAP_APP | CAP_ASSETS | CAP_BYE | CAP_MODE | CAP_RESULT | CAP_RLE,
                        WIRE_PAYLOAD, APP_POKEMON, PKMN_APP_VERSION, GCX_RELEASE, {'G', 'C', 'X', 'H'}};
     request.type = CAPS;
     request.len = (uint16_t)caps_encode(&caps, request.payload);
     // A Phase 1 PoC client NACKs CAPS; session_request then fails after retries.
-    if (!session_request(&link->session, &request, &reply, NO_FAULT)) return false;
+    if (!exchange(link, &request)) return false;
     if (!caps_decode(reply.payload, reply.len, &link->client) || link->client.version < MSG_PROTOCOL_MIN_VERSION)
         return false;
     SYS_Report("PH2 CAPS peer=%u build=%08x caps=%x app=%04x v%u max=%u tag=%.4s release=%u (host %u)\n",
@@ -40,7 +49,7 @@ bool host_app_to(HostLink *link, uint16_t app_id, uint16_t opcode, const uint8_t
     msg_put16(request.payload + 2, opcode);
     memcpy(request.payload + APP_REQUEST_HEADER, args, length);
     request.len = (uint16_t)(APP_REQUEST_HEADER + length);
-    if (!session_request(&link->session, &request, &reply, NO_FAULT) || reply.len < APP_REPLY_HEADER ||
+    if (!exchange(link, &request) || reply.len < APP_REPLY_HEADER ||
         msg_get16(reply.payload + 2) != opcode)
         return false;
     *status = msg_get16(reply.payload + 4);
@@ -55,7 +64,7 @@ bool host_mode(HostLink *link, ModeInfo *mode) {
         *mode = (ModeInfo){.mode_id = GC_MODE_PARTY_VIEW, .mode_version = 1};
         return true;
     }
-    if (!session_request(&link->session, &request, &reply, NO_FAULT) || !mode_info_decode(reply.payload, reply.len, mode))
+    if (!exchange(link, &request) || !mode_info_decode(reply.payload, reply.len, mode))
         return false;
     SYS_Report("PH3 MODE id=%u v%u app=%04x v%u request=%u crc=%08x nonce=%08x\n", mode->mode_id, mode->mode_version,
                mode->app_id, mode->app_version, mode->request_length, mode->request_crc, mode->nonce);
@@ -71,15 +80,26 @@ bool host_result(HostLink *link, uint16_t mode_id, uint16_t version, uint32_t re
     wire_put32(request.payload + 4, result_id);
     memcpy(request.payload + RESULT_HEADER_BYTES, payload, length);
     request.len = (uint16_t)(RESULT_HEADER_BYTES + length);
-    if (!session_request(&link->session, &request, &reply, NO_FAULT) || reply.len < 2) return false;
+    if (!exchange(link, &request) || reply.len < 2) return false;
     *status = msg_get16(reply.payload);
+    return true;
+}
+
+bool host_ping(HostLink *link, DiagGbaStats *gba) {
+    Frame request = {.type = PING, .len = 4};
+    wire_put32(request.payload, link->session.seq);
+    // The GBA echoes the 4 bytes and appends its JoyBus counters.
+    if (!exchange(link, &request) || reply.len < 20 || memcmp(reply.payload, request.payload, 4)) return false;
+    *gba = (DiagGbaStats){true, wire_get32(reply.payload + 4), wire_get32(reply.payload + 8),
+                          wire_get32(reply.payload + 12), wire_get32(reply.payload + 16)};
+    diag_gba(gba);
     return true;
 }
 
 bool host_bye(HostLink *link, uint16_t reason) {
     Frame request = {.type = BYE, .len = 2};
     msg_put16(request.payload, reason);
-    return session_request(&link->session, &request, &reply, NO_FAULT);
+    return exchange(link, &request);
 }
 
 void fetch_start(AssetFetch *fetch, const AssetKey *key) {
@@ -101,7 +121,7 @@ enum FetchResult fetch_step(HostLink *link, AssetFetch *fetch) {
     if (!fetch->have_info) {
         request.type = ASSET_INFO;
         request.len = (uint16_t)asset_key_encode(&fetch->key, request.payload);
-        if (!session_request(&link->session, &request, &reply, NO_FAULT) ||
+        if (!exchange(link, &request) ||
             !asset_info_decode(reply.payload, reply.len, &fetch->info)) {
             fetch->active = false;
             return FETCH_FAILED;
@@ -124,7 +144,7 @@ enum FetchResult fetch_step(HostLink *link, AssetFetch *fetch) {
     asset_key_encode(&fetch->key, request.payload);
     wire_put32(request.payload + ASSET_KEY_BYTES, fetch->offset);
     wire_put32(request.payload + ASSET_KEY_BYTES + 4, length);
-    if (!session_request(&link->session, &request, &reply, NO_FAULT) || reply.len != length) {
+    if (!exchange(link, &request) || reply.len != length) {
         fetch->active = false;
         return FETCH_FAILED;
     }

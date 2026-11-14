@@ -58,6 +58,7 @@ void battle_scene_play(const EventLog *log) {
 }
 
 bool battle_scene_tick(void) { return animation_tick(&scene.animation, scene.layout); }
+unsigned battle_scene_steps(void) { return scene.animation.count; }
 
 static void rect(ScreenRect r, uint32_t color) { render_rect(r.x, r.y, r.w, r.h, color); }
 static void art(UiArt a, ScreenRect r, uint32_t color) {

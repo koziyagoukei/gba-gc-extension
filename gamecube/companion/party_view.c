@@ -54,6 +54,8 @@ static void set_state(enum ViewState state, const char *message) {
 }
 
 static void lost(const char *why) {
+    diag_note(DIAG_LINK_LOST, (uint16_t)v.state, v.link.session.seq, 0);
+    diag_dump(why, &v.link.session);
     SYS_Report("PH2 LINK LOST during %s (%s) seq=%u retries=%u timeouts=%u nacks=%u bad_headers=%u crc=%u si_errors=%u last=%s\n", state_names[v.state], why,
                v.link.session.seq, v.link.session.stats.retries, v.link.session.stats.timeouts,
                v.link.session.stats.nacks, v.link.session.stats.bad_headers, v.link.session.stats.crc_errors,
@@ -149,6 +151,9 @@ static void step_session(void) {
         return;
     }
     ++v.sessions;
+    diag_session_open(v.sessions);
+    DiagGbaStats gba;
+    host_ping(&v.link, &gba);  // a baseline of the GBA's counters; old clients may not answer
     ModeInfo mode;
     if (!host_mode(&v.link, &mode)) { lost("MODE"); return; }
     if (mode.mode_id == GC_MODE_BATTLE && mode.mode_version == BATTLE_MODE_VERSION && mode.app_id == APP_GC_BATTLE &&
