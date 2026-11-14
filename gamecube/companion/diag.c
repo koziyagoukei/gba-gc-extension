@@ -28,6 +28,8 @@ void diag_session_open(uint32_t session) {
 void diag_exchange(bool ok, uint8_t type, const Session *s, uint32_t retries_before) {
     const uint64_t t = gettime();
     ++d.requests;
+    // HELLO opens a session: the time since the previous session is idle, not a poll gap.
+    if (type == HELLO) d.last_request = 0;
     if (d.last_request) {
         const uint32_t gap = us_between(d.last_request, t);
         if (gap > d.max_poll_us) d.max_poll_us = gap;

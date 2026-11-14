@@ -251,8 +251,9 @@ static bool advance(BattleAnimation *a, const BattleLayout *layout, const Animat
         break;
     }
     case ANIM_HIT:
-        actor->blink = (f / 4) % 2 == 0 && f < 24;
-        actor->offset.x = f < 24 ? ((f / 2) % 2 ? 4 : -4) : 0;
+        // Any length of hit ends with the battler visible and in place.
+        actor->blink = (f / 4) % 2 == 0 && f < 24 && f + 1 < s->frames;
+        actor->offset.x = f < 24 && f + 1 < s->frames ? ((f / 2) % 2 ? 4 : -4) : 0;
         a->effect_visible = f < 12;
         a->effect = battle_layout_anchor(layout, s->target)->hit_center;
         break;
