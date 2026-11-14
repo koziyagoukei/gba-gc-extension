@@ -55,3 +55,14 @@ Use a Frontier non-release ROM with the vendored battle protocol and a copy of a
 save. In the GBA Utilities debug menu, choose **GC Double (test)**, **GC Triple
 (test)** or **GC Rotation (test)**. The mode allocates test teams for both sides
 and uses display-only results. See [multi-format mechanics and test cases](multiformat.md).
+
+## Milestone 3.5 checks
+
+The Cube Tester battles are the V9 volatile fixtures. The debug menu adds
+**GC Double V8 (effects)** (the Milestone 3 fixtures) and **GC Double V9
+(endurance)** (level-5 foes, non-damaging player moves, for 20+ turn runs;
+end it with B to forfeit). During a battle, the GC pad's Z button makes the
+host silent for 3 s to force a link loss; the battle restarts from its
+request after the reconnect. Each session prints `DIAG` lines (link
+counters, peaks, the GBA's PING counters and a ring buffer of anomalies)
+at battle end, on a GC-side abort and on link loss.

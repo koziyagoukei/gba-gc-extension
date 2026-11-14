@@ -39,3 +39,11 @@
 - After a session, the GC waits for the next one on its own after 3 seconds (A does it at once). A version mismatch stays on screen until A.
 - A link loss during a battle restarts the battle from its request (turn 1, original HP/PP).
 - The Frontier test suite (`make check`) reports 2,455 failing tests; the same failures occur on `frontier-hack` before the GC integration and are not caused by it.
+
+## Milestone 3.5 (release 3, development only)
+
+- The Cube Tester battles use the V9 volatile fixtures (level 23 against level 23). The V8 fixtures are under the debug menu entry **GC Double V8 (effects)**; **GC Double V9 (endurance)** runs the V9 fixtures against level-5 foes for long battles.
+- GC battles have no weather or terrain: Solar Beam always takes two turns, and Earthquake is never weakened by Grassy Terrain.
+- Not supported yet (the move is refused, never sent incomplete): Dive, Phantom Force, Shadow Force, Sky Drop, Skull Bash's charge-turn boost, self-confusing moves (Thrash, Outrage), and any move whose effect list would need more than six descriptors.
+- Frontier sessions often show 1–3 CRC errors seen by the GBA, answered with NACK and recovered by a host retry (up to about 0.55 s), mostly while the battle UI loads. The cause is not known; no request has failed because of it. The `DIAG` lines in the Dolphin log show the counters.
+- Opening the Frontier debug menu changes in-memory party, flag and variable data between sessions (seen as a different digest at the next session start). It does not happen between Cube Tester sessions, does not touch the save file, and is not caused by the GC code: every GC session ends with the same digest it started with.

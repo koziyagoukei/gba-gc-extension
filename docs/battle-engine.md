@@ -531,3 +531,194 @@ Volatile states (flinch, confusion, substitute, two-turn and recharge
 moves) use the same effect list with new kinds and per-battler volatile
 storage. Abilities and held items then hook into the stages named above:
 before accuracy, on damage, after a hit and at the end of the turn.
+
+## Milestone 3.5 — volatile status, multi-turn actions and link diagnostics
+
+Request/APP V9 (release 3, `m3.5-dev`) adds five effect kinds, five move
+flags and a rules block, and gives every battler a volatile state with one
+lifetime table. The GameCube still never asks the GBA during a turn.
+
+### Volatile state
+
+`BattlerVolatiles` (`battle_core.h`) holds what lives only while a
+Pokemon is on the field, apart from HP/PP/major status (the Pokemon) and
+stat stages: confusion counter, substitute HP, charging move slot and
+stored target, semi-invulnerable state, recharge counter, flinch, "acted
+this turn", and the Protect state that Milestone 3 kept on the battler.
+All transitions go through `bc_volatiles_on`:
+
+| | turn end | switch / drag / pivot | Triple Shift | Rotation | faint | new battle (reconnect) |
+| --- | --- | --- | --- | --- | --- | --- |
+| confusion | keep | clear | keep | keep | clear | clear |
+| substitute | keep | clear | keep | keep | clear | clear |
+| charge, semi-invulnerable | keep | clear | keep | front cannot rotate | clear | clear |
+| recharge | ticks down | clear | keep | front cannot rotate | clear | clear |
+| flinch | clear | clear | keep | keep | clear | clear |
+| Protect this turn | (cleared at turn start) | clear | keep | keep | clear | clear |
+
+Rotation follows Gen 5 behaviour, studied (not copied) from the Black/White
+decompilation: a rotation does not run the switch-out reset, so wings keep
+their volatiles (`ProcRotation` vs `ProcMemberOutCore` in the server flow),
+and a Pokemon with a forced action skips action selection entirely
+(`IsActionForced` / `StepSelectAction` in the client), so a charging or
+recharging front can neither choose nor rotate. Behaviour not confirmed
+there was left out rather than guessed. A battle restarted after a link
+loss runs `battle_init` again, so no volatile survives a reconnect.
+
+### Action states
+
+`battle_action_state` reports READY, CHARGING, SEMI_INVULNERABLE,
+RECHARGING, FAINTED or EMPTY for a position; within a turn every queued
+action is PENDING, DONE, SKIPPED (the actor fainted first) or INTERRUPTED.
+A locked position (charging, semi-invulnerable or recharging) is not
+prompted: `battle_forced_action` supplies its action, `battle_run_turn`
+ignores any command for it, and the AI path returns the same action. When
+every player position is locked, the turn runs without a GBA prompt.
+Forfeit still works while locked. Pivot resumption is unchanged.
+
+Before each action, in order: recharge (the turn is spent), sleep/freeze,
+flinch, confusion (counter down; at 0 it ends and the Pokemon acts; else a
+self-hit by the rules' chance, which replaces the move and spends no PP),
+paralysis. Any lost action resets the Protect chain and cancels a charging
+move (`EV_CHARGE_END`, PP already spent stays spent).
+
+### Effect handlers (V9)
+
+| Kind | Behaviour |
+| --- | --- |
+| FLINCH | Secondary effect of a hit; only on a target that has not acted this turn and that was struck itself (not its substitute) |
+| CONFUSE | Status move or secondary; counter = min..max from the rules; fails (NO_EFFECT) if already confused |
+| SUBSTITUTE | Costs max HP / divisor (at least 1); fails if one exists or HP ≤ cost; status and stat moves aimed at the Pokemon then fail unless the move ignores substitutes; damage goes to the substitute first |
+| CHARGE | Must lead the list, before DAMAGE. First turn: PP, MOVE_USED, CHARGE (with AIR/UNDERGROUND), target stored; second turn: forced, no PP, stored target (retargeted by the normal rules if it is gone) |
+| RECHARGE | After a hit that landed: the next action is a forced recharge; not after a miss, a Protect block or the user's faint; after a KO only if the rules do not skip it |
+
+Move flags: ignores substitute; hits / doubles against an airborne target;
+hits / doubles against an underground target. A semi-invulnerable target
+is missed by everything else (EV_MISS), except a sure hit (Toxic from a
+Poison type under the always-hits rule). Drain and recoil count the HP the
+substitute lost; a multi-hit move keeps hitting after the substitute breaks
+when the rules say so; Dragon Tail does not drag a Pokemon whose substitute
+took the hit, while U-turn still pivots; the confusion self-hit ignores the
+user's own substitute.
+
+### Wire format (V9)
+
+The V8 effect lists are unchanged; the new kinds are 11–15 and the new
+move flags are bits 1–5 (`BMF_V9_MASK`). An 8-byte `BattleVolatileRules`
+block follows the effect lists: flags (multi-hit continues after a
+substitute, recharge skipped after a KO, burn halves the confusion
+self-hit), self-hit percent, confusion min/max, self-hit power, substitute
+divisor, two reserved zero bytes. The decoder refuses out-of-range values
+and nonzero reserved bytes. APP V9 state = the V7 condition state + one
+`BVF_*` byte per field position (confused, substitute, charging,
+semi-invulnerable, recharging, locked). V9 kinds and flags are refused in a
+V8 request, and V8 requests encode and decode exactly as before.
+
+### GBA exporter (Frontier)
+
+| Game data | Descriptor |
+| --- | --- |
+| `MOVE_EFFECT_FLINCH` (Bite, Rock Slide, Air Slash, Twister …) | FLINCH with the move's chance |
+| `EFFECT_CONFUSE` (Confuse Ray, Supersonic), `MOVE_EFFECT_CONFUSION` | CONFUSE |
+| `EFFECT_SWAGGER` | STAT Attack +2, then CONFUSE |
+| `EFFECT_SUBSTITUTE` | SUBSTITUTE |
+| `EFFECT_SOLAR_BEAM`, `EFFECT_TWO_TURNS_ATTACK` | CHARGE (none) + DAMAGE |
+| `EFFECT_SEMI_INVULNERABLE` with `STATE_ON_AIR` / `STATE_UNDERGROUND` (Fly, Bounce, Dig) | CHARGE (air / underground) + DAMAGE |
+| `MOVE_EFFECT_RECHARGE` (Hyper Beam, Giga Impact) | RECHARGE |
+| `EFFECT_EARTHQUAKE` | plain hit (its only extra is Grassy Terrain) |
+| `ignoresSubstitute`, `damagesAirborne`, `damagesAirborneDoubleDamage`, `damagesUnderground` | move flags (underground hits double in this build) |
+
+No battle script is passed; anything that cannot be expressed exactly stays
+unsupported: underwater, Phantom Force and Sky Drop states, charge-turn
+effects (Skull Bash), self-confusion (Thrash), and any list that would need
+more than six descriptors (refused, never truncated). GC battles have no
+weather, so Solar Beam always charges and is never weakened.
+
+The rules come from this build's code and config, not fixed guesses:
+confusion lasts 2..`B_CONFUSION_TURNS` (5), self-hit 33% with
+`B_CONFUSION_SELF_DMG_CHANCE` ≥ Gen 7 (else 50%), 40 power, typeless, no
+random factor, and halved by burn (the self-hit uses `MOVE_NONE`, which is
+physical); Substitute costs max HP / 4 and fails at HP ≤ cost; a multi-hit
+move only stops on a faint (`MoveEndMultihitMove`); the recharge is
+skipped after a KO only when `B_SKIP_RECHARGE == GEN_1`.
+
+The GBA shows `c` (confused), `s` (substitute), `!` (charging / out of
+reach) and `r` (recharging) after each position's HP, and CNF/SUB for the
+acting Pokemon. The GameCube shows SUB/CNF/CHG badges, hides a
+semi-invulnerable sprite, and has messages for every new event.
+
+### Link diagnostics
+
+`gamecube/companion/diag.c` sees every request through one `exchange()`
+and records: requests and failures, time since the last good exchange,
+the longest gap between requests (idle time before a new HELLO excluded),
+new SI errors, retries, peak core time per turn, peak presentation (draw)
+time, event-log and animation-queue use (and whether either filled), the
+session number and battle ID. The GBA's own JoyBus counters (resets,
+overflows, CRC errors, duplicates) are read from its existing PING reply
+at session start and once per turn, so the connector did not change.
+Anomalies go into a 64-entry ring buffer; counters, peaks and the ring are
+printed as `DIAG` lines on link loss, on a GC-side abort and at battle end.
+
+### Verification
+
+Native suite: V9 codec and rejections (reserved bytes, ranges, truncation,
+structure), V8 compatibility, flinch order in Single and Double, confusion
+duration distribution, end, 33% self-hit over 600 seeds with exact damage,
+no PP on a self-hit and the burn rule, substitute cost/failure/blocking/
+bypass, multi-hit with and without the continue rule, drain and recoil
+through a substitute, Dragon Tail and U-turn, Solar Beam / Fly / Dig
+(PP once, forced second turn, ignored command, interruption by flinch and
+sleep, air/underground reach and doubling, sure-hit Toxic, retargeting
+after the stored target fainted, a locked Triple position), recharge
+(forced turn, no PP, miss, KO rule, Rotation front), lifetimes through
+Shift, faint and a fresh init, forfeit while locked, and a 25-turn
+volatile-heavy deterministic replay. Mutating eight key conditions in the
+engine makes the suite fail. Clean with `-Wall -Wextra -Werror`, at -O2,
+and under ASan + UBSan.
+
+Dolphin 2609b, release-3 pair (Cube Tester V9 fixtures, equal levels):
+
+| Format | Observed |
+| --- | --- |
+| Single | Substitute 13 of 54 HP, Bite into it, substitute broken exactly; Confuse Ray, self-hit 18 with no move; Hyper Beam |
+| Double | Fly: Tackle and Supersonic missed it, sprite hidden, `L:54!` on the GBA; next turn not prompted (SEMI_INVULNERABLE) and Fly hit for 78; Giga Impact, then a forced RECHARGE turn without a prompt; Dig underground, Rock Slide missing it and hitting a substitute, Confuse Ray failing on the substitute, Dig with no effect on a Flying type, second Substitute failing; forfeit → CANCELLED |
+| Triple | Hyper Beam, Dig and Solar Beam on turn 1; turn 2 had all three positions locked and ran with no prompt; a confused Pokemon passing its check and firing Solar Beam; WIN on turn 4 |
+| Rotation | Charging front locked (no prompt, no rotation) while the foe rotated; the beam hit the new foe front (position target); a confused foe rotated to a wing and kept `c`; Dig locked the front and released for a KO |
+
+Endurance (debug menu **GC Double V9 (endurance)**): 24 turns with
+Protect chains, 7 confusions, 18 confusion checks, 15 substitute hits,
+32 failed moves; then a forced 3 s host silence: one request failed after
+retries, `LINK LOST` printed the DIAG dump, the GBA reconnected, the same
+request was replayed from the asset cache and the battle restarted at turn
+1 with clean volatiles; forfeit and return to the field. An 18-turn V9 and
+a 21-turn V7 battle also completed. The GBA save kept its SHA-256 through
+every run, and every session's start and end state digests matched.
+
+Regression: Phase 1 normal and fault injection (10,000 pings, bulk up to
+64 KiB, GX), Phase 2 party viewer with a forced silence and 42/42 cache
+hits on reconnect, Phase 3 apply (PP 20 → 19 → 18), V2 reserve, V6
+pivot, V7 conditions, V8 effects (debug menu **GC Double V8 (effects)**)
+and the link check (both sides release 3). Frontier `make check`: 3,890
+passed / 2,455 failed, the same 2,408 distinct failing tests as before
+the GC work.
+
+Observed but not fixed (cause not found, recovered by design): in most
+Frontier sessions the GBA saw 1–3 CRC errors in incoming frames, answered
+with NACKs, and the host retried (1–3 timeouts, peak gap about 0.55 s),
+mostly during `ASSET_INFO` at session start and once in a while on a turn
+poll. No request failed except during the intentional silence. The Phase 1
+PoC link had none of these.
+
+| Build | Milestone 3 | Milestone 3.5 |
+| --- | ---: | ---: |
+| GC DOL | 269,952 B | 286,368 B |
+| GC ELF text / data / BSS | 216,782 / 52,876 / 2,797,824 B | 230,358 / 55,740 / 2,850,240 B |
+| Frontier linked ROM | 26,326,480 B | 26,329,800 B |
+| Frontier EWRAM | 231,984 B | 231,984 B |
+
+### Next
+
+Abilities and held items (Milestone 4) hook into the same stages: before
+the action (e.g. Inner Focus, Own Tempo), before accuracy, on damage
+(substitute-aware), after a hit and at the end of the turn.
