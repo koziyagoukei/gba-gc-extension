@@ -33,7 +33,13 @@ bool bc_move_has_effect(const BattleMove *move, uint8_t kind);
 bool bc_effects_supported(const BattleRequest *request, const BattleMove *move);
 // Executes one move (PP, targets, effects); returns true if a pivot switch is due.
 bool bc_execute_move(Battle *battle, Position user, uint8_t move_slot, Position selected, EventLog *log);
-// Turn bookkeeping for per-turn volatile state (Protect).
+// Volatile lifetimes (table in battle_core.h).
+typedef enum { VOL_TURN_START, VOL_TURN_END, VOL_SWITCH_OUT, VOL_SHIFT, VOL_ROTATE, VOL_FAINT } VolatileEvent;
+void bc_volatiles_on(Battler *mon, VolatileEvent event);
 void bc_effects_begin_turn(Battle *battle);
+void bc_effects_end_turn(Battle *battle);
 void bc_effects_reset_volatiles(Battler *mon);
+void bc_cancel_charge(Battle *battle, Position user, EventLog *log);
+// Confusion check before an action; true if the battler hurt itself instead.
+bool bc_confusion_check(Battle *battle, Position user, EventLog *log);
 #endif

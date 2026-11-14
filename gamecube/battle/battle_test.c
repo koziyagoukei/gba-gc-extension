@@ -1558,21 +1558,21 @@ static void test_effect_priority_protect(void) {
         run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
         run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
         second += find(&log, EV_PROTECT) != NULL;
-        if (find(&log, EV_PROTECT)) assert(battle_active(&b, 0)->protect_uses == 2);
-        else assert(find(&log, EV_FAIL) && battle_active(&b, 0)->protect_uses == 0);
+        if (find(&log, EV_PROTECT)) assert(battle_active(&b, 0)->vol.protect_uses == 2);
+        else assert(find(&log, EV_FAIL) && battle_active(&b, 0)->vol.protect_uses == 0);
     }
     assert(second > 240 && second < 360);
     // Protect fails when the user is the last to move.
     assert(battle_init(&b, &r, 1) == BI_OK);
     battle_run_turn(&b, (Action[]){move(0, 0, 0)}, 1, &log);
-    assert(find(&log, EV_FAIL) && !battle_active(&b, 0)->protected_turn);
+    assert(find(&log, EV_FAIL) && !battle_active(&b, 0)->vol.protected_turn);
     // A move that ignores Protect goes through; the flag is gone next turn.
     r.opponent[0].mon.moves[0].move_flags = BMF_IGNORES_PROTECT;
     assert(battle_init(&b, &r, 1) == BI_OK);
     run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
     assert(find(&log, EV_PROTECT) && find(&log, EV_DAMAGE));
     battle_run_turn(&b, (Action[]){move(1, 0, 0)}, 1, &log);
-    assert(!battle_active(&b, 0)->protected_turn && find(&log, EV_DAMAGE));
+    assert(!battle_active(&b, 0)->vol.protected_turn && find(&log, EV_DAMAGE));
 }
 
 static void test_effect_formats(void) {

@@ -16,6 +16,7 @@ void animation_init(BattleAnimation *a, const Battle *battle) {
             frame->max_hp = b->max_hp;
             if (battle->request->version >= BATTLE_REQUEST_VERSION_CONDITIONS)
                 frame->condition = BATTLE_CONDITION_KIND(b->status);
+            frame->volatiles = battle_volatile_flags(battle, (Position){side, slot}) & (uint8_t)~BVF_LOCKED;
         }
     }
 }
@@ -31,6 +32,10 @@ static void wait(BattleAnimation *a, unsigned frames) {
 static void message(BattleAnimation *a, SceneMessage msg, unsigned hold) {
     add(a, (AnimationStep){.kind = ANIM_MESSAGE, .message = msg});
     if (hold) wait(a, hold);
+}
+
+static void volatile_step(BattleAnimation *a, Position target, uint8_t set, uint8_t clear) {
+    add(a, (AnimationStep){.kind = ANIM_VOLATILE, .target = target, .vol_set = set, .vol_clear = clear});
 }
 
 static void reset_steps(BattleAnimation *a) {
@@ -63,6 +68,8 @@ void animation_play(BattleAnimation *a, const BattleLayout *layout, const EventL
         switch (e->kind) {
         case EV_MOVE_USED:
             if (!battle_layout_anchor(layout, e->user)) break;
+            // A charged move comes back into view as it is released.
+            volatile_step(a, e->user, 0, BVF_CHARGING | BVF_SEMI_INVULNERABLE);
             message(a, (SceneMessage){.kind = MSG_MOVE, .subject = e->user, .move = e->move_id}, 0);
             if (battle_layout_anchor(layout, e->target))
                 add(a, (AnimationStep){.kind = ANIM_ATTACK, .source = e->user, .target = e->target,
@@ -83,6 +90,7 @@ void animation_play(BattleAnimation *a, const BattleLayout *layout, const EventL
             message(a, (SceneMessage){.kind = MSG_IMMUNE, .subject = e->target}, 50);
             break;
         case EV_FAINT:
+            volatile_step(a, e->target, 0, 0xff);
             add(a, (AnimationStep){.kind = ANIM_FAINT, .target = e->target, .frames = 24});
             message(a, (SceneMessage){.kind = MSG_FAINT, .subject = e->target}, 60);
             break;
@@ -111,6 +119,7 @@ void animation_play(BattleAnimation *a, const BattleLayout *layout, const EventL
             if (!battle_layout_anchor(layout, e->target)) break;
             message(a, (SceneMessage){.kind = e->kind == EV_DRAG_OUT ? MSG_DRAG_OUT : MSG_WITHDRAW,
                                       .subject = e->target}, 0);
+            volatile_step(a, e->target, 0, 0xff);
             add(a, (AnimationStep){.kind = ANIM_WITHDRAW, .target = e->target, .frames = 18});
             break;
         case EV_SEND_OUT:
@@ -160,6 +169,52 @@ void animation_play(BattleAnimation *a, const BattleLayout *layout, const EventL
         case EV_MULTI_HIT:
             message(a, (SceneMessage){.kind = MSG_MULTI_HIT, .subject = e->target, .stage = (int8_t)e->amount}, 30);
             break;
+        case EV_FLINCH:
+            message(a, (SceneMessage){.kind = MSG_FLINCH, .subject = e->user}, 32);
+            break;
+        case EV_CONFUSE:
+            volatile_step(a, e->target, BVF_CONFUSED, 0);
+            message(a, (SceneMessage){.kind = MSG_CONFUSE, .subject = e->target}, 32);
+            break;
+        case EV_CONFUSED:
+            message(a, (SceneMessage){.kind = MSG_CONFUSED, .subject = e->user}, 24);
+            break;
+        case EV_CONFUSION_HIT:
+            message(a, (SceneMessage){.kind = MSG_CONFUSION_HIT, .subject = e->target}, 0);
+            add(a, (AnimationStep){.kind = ANIM_HIT, .target = e->target, .frames = single ? 28 : 16});
+            add(a, (AnimationStep){.kind = ANIM_HP, .target = e->target, .hp = e->hp_after});
+            wait(a, 18);
+            break;
+        case EV_CONFUSION_END:
+            volatile_step(a, e->target, 0, BVF_CONFUSED);
+            message(a, (SceneMessage){.kind = MSG_CONFUSION_END, .subject = e->target}, 32);
+            break;
+        case EV_SUBSTITUTE:
+            message(a, (SceneMessage){.kind = MSG_SUBSTITUTE, .subject = e->target}, 0);
+            add(a, (AnimationStep){.kind = ANIM_HP, .target = e->target, .hp = e->hp_after});
+            volatile_step(a, e->target, BVF_SUBSTITUTE, 0);
+            wait(a, 24);
+            break;
+        case EV_SUBSTITUTE_HIT:
+            add(a, (AnimationStep){.kind = ANIM_HIT, .target = e->target, .frames = single ? 20 : 12});
+            message(a, (SceneMessage){.kind = MSG_SUBSTITUTE_HIT, .subject = e->target}, 28);
+            break;
+        case EV_SUBSTITUTE_BREAK:
+            volatile_step(a, e->target, 0, BVF_SUBSTITUTE);
+            message(a, (SceneMessage){.kind = MSG_SUBSTITUTE_BREAK, .subject = e->target}, 32);
+            break;
+        case EV_CHARGE:
+            message(a, (SceneMessage){.kind = MSG_CHARGE, .subject = e->user, .stage = (int8_t)e->condition}, 0);
+            volatile_step(a, e->user, BVF_CHARGING | (e->condition ? BVF_SEMI_INVULNERABLE : 0), 0);
+            wait(a, 32);
+            break;
+        case EV_CHARGE_END:
+            volatile_step(a, e->user, 0, BVF_CHARGING | BVF_SEMI_INVULNERABLE);
+            message(a, (SceneMessage){.kind = MSG_CHARGE_END, .subject = e->user}, 28);
+            break;
+        case EV_RECHARGE:
+            message(a, (SceneMessage){.kind = MSG_RECHARGE, .subject = e->user}, 32);
+            break;
         case EV_END:
             if (e->outcome == OUTCOME_WIN || e->outcome == OUTCOME_LOSE || e->outcome == OUTCOME_DRAW)
                 message(a, (SceneMessage){.kind = MSG_RESULT, .outcome = e->outcome}, 30);
@@ -175,6 +230,7 @@ static bool advance(BattleAnimation *a, const BattleLayout *layout, const Animat
     case ANIM_MESSAGE: a->message = s->message; return true;
     case ANIM_WAIT: break;
     case ANIM_CONDITION: actor->condition = s->condition; return true;
+    case ANIM_VOLATILE: actor->volatiles = (uint8_t)((actor->volatiles & ~s->vol_clear) | s->vol_set); return true;
     case ANIM_FADE: a->fade = 1 - t; break;
     case ANIM_ENTER:
         if (!f && s->entrant)

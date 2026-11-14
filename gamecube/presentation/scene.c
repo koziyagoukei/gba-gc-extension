@@ -77,7 +77,7 @@ static void draw_field(const BattleLayout *layout) {
 
 static void draw_battler(Position pos, const BattlerAnchor *anchor, const ActorFrame *frame, const Battler *b) {
     art(ART_STAGE, anchor->platform, 0xffffffffu);
-    if (!frame->visible || frame->blink || !b) return;
+    if (!frame->visible || frame->blink || !b || (frame->volatiles & BVF_SEMI_INVULNERABLE)) return;
     CacheEntry *sprite = battle_sprite(scene.build, &b->entry->record, pos);
     if (!sprite || !sprite->frame_bottom) return;
     const float size = anchor->sprite_size * frame->scale;
@@ -125,6 +125,11 @@ static void draw_hud(Position pos, const BattlerAnchor *a, const ActorFrame *f, 
                     ratio > 0.5f ? UI_MINT : ratio > 0.2f ? UI_GOLD : RGBA(248, 112, 112, 255));
     }
     render_text(a->hp_text.x, a->hp_text.y, 1, UI_INK, "HP %u/%u", hp, b->max_hp);
+    // Volatile badges (text only; no official art).
+    const uint8_t v = f->volatiles;
+    if (v & (BVF_SUBSTITUTE | BVF_CONFUSED | BVF_CHARGING))
+        render_text(a->hud.x + a->hud.w - (compact ? 116 : 150), a->hp_text.y, 0.8f, UI_ROSE, "%s%s%s",
+                    v & BVF_SUBSTITUTE ? "SUB " : "", v & BVF_CONFUSED ? "CNF " : "", v & BVF_CHARGING ? "CHG" : "");
     const bool legacy_status = scene.battle->request->version < BATTLE_REQUEST_VERSION_CONDITIONS && b->status;
     if (f->condition || legacy_status) {
         art(ART_STATUS, (ScreenRect){a->status.x, a->status.y, 12, 12}, UI_GOLD);
@@ -177,6 +182,18 @@ static const char *message_text(const SceneMessage *msg) {
     case MSG_PROTECTED: return "The attack was blocked!";
     case MSG_FAIL: return "But it failed!";
     case MSG_MULTI_HIT: return "Hit multiple times!";
+    case MSG_FLINCH: return "Flinched and couldn't move!";
+    case MSG_CONFUSE: return "Became confused!";
+    case MSG_CONFUSED: return "Is confused!";
+    case MSG_CONFUSION_HIT: return "Hurt itself in its confusion!";
+    case MSG_CONFUSION_END: return "Snapped out of confusion!";
+    case MSG_SUBSTITUTE: return "Put in a substitute!";
+    case MSG_SUBSTITUTE_HIT: return "The substitute took the hit!";
+    case MSG_SUBSTITUTE_BREAK: return "The substitute faded!";
+    case MSG_CHARGE: return msg->stage == BSEMI_AIR ? "Flew up high!" :
+                            msg->stage == BSEMI_UNDERGROUND ? "Dug underground!" : "Is charging power!";
+    case MSG_CHARGE_END: return "The charged move was lost.";
+    case MSG_RECHARGE: return "Must recharge!";
     case MSG_NONE: return "";
     }
     return "";
@@ -193,7 +210,7 @@ static void draw_message(const BattleLayout *layout) {
     render_text(x, y, 1.25f, UI_INK, "%s", message_text(msg));
     if (msg->kind == MSG_ENTER || msg->kind == MSG_MOVE || msg->kind == MSG_FAINT ||
         msg->kind == MSG_SHIFT || msg->kind == MSG_ROTATE || msg->kind == MSG_WITHDRAW || msg->kind == MSG_DRAG_OUT ||
-        (msg->kind >= MSG_STAGE && msg->kind <= MSG_MULTI_HIT)) {
+        (msg->kind >= MSG_STAGE && msg->kind <= MSG_RECHARGE)) {
         const Battler *b = battler_at(msg->subject);
         CacheEntry *name = b ? battle_label(scene.build, &b->entry->record) : NULL;
         if (name) draw_label(name, x, y + 27, 190, 23);

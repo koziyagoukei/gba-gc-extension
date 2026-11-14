@@ -97,6 +97,7 @@ static void load_battler(Battler *out, const BattleEntry *e) {
         out->max_pp[i] = r->max_pp[i];
     }
     out->fainted = r->hp == 0;
+    out->vol.charge_slot = BATTLE_SLOT_NONE;
 }
 
 unsigned battle_formation_size(uint8_t format) {
@@ -227,8 +228,10 @@ int battle_init(Battle *b, const BattleRequest *r, uint32_t seed) {
     b->rng = seed ? seed : 0x9e3779b9u;
     const unsigned active = battle_formation_size(r->format);
     if (!active || r->active_per_side != active ||
-        r->version > BATTLE_REQUEST_VERSION_EFFECTS)
+        r->version > BATTLE_REQUEST_VERSION_VOLATILES)
         return BI_FORMAT;
+    if (r->version >= BATTLE_REQUEST_VERSION_VOLATILES && !battle_volatile_rules_valid(&r->volatiles))
+        return BI_CONDITIONS;
     if (!r->type_count || r->type_count > BATTLE_MAX_TYPES) return BI_BAD_TYPES;
     if (r->version >= BATTLE_REQUEST_VERSION_STRUGGLE &&
         (!r->struggle_power || r->struggle_accuracy > 100 ||
@@ -320,6 +323,7 @@ uint8_t bc_first_target(uint8_t mask) {
 }
 
 void battle_choose_at(Battle *b, Position user, Action *out) {
+    if (battle_forced_action(b, user, out)) return;
     Action choices[4 * BC_MAX_ACTIVE];
     unsigned n = 0;
     const unsigned rotations = rotation_battle(b) ? 3 : 1;
@@ -474,8 +478,10 @@ static void rotate(Battle *b, uint8_t side, uint8_t rotation, EventLog *log) {
     uint8_t *slots = b->sides[side].active;
     uint8_t old[BC_MAX_ACTIVE];
     memcpy(old, slots, sizeof(old));
-    for (uint8_t slot = 0; slot < BC_MAX_ACTIVE; ++slot)
+    for (uint8_t slot = 0; slot < BC_MAX_ACTIVE; ++slot) {
         slots[slot] = old[battle_rotation_origin(rotation, slot)];
+        if (slots[slot] < BATTLE_MAX_PER_SIDE) bc_volatiles_on(&b->sides[side].battlers[slots[slot]], VOL_ROTATE);
+    }
     bc_emit(log, (BattleEvent){.kind = EV_ROTATE, .user = {side, battle_rotation_slot(rotation)},
                             .target = {side, BPOS_CENTER}, .rotation = rotation});
 }
@@ -569,9 +575,11 @@ void bc_cure_status(Battler *mon, BattleEvent ev, EventLog *log) {
     bc_emit(log, ev);
 }
 
-static bool blocked_by_status(Battle *b, Position user, EventLog *log) {
+// paralysis: false for the sleep/freeze check, true for the paralysis check.
+static bool blocked_by_status(Battle *b, Position user, bool paralysis, EventLog *log) {
     Battler *mon = bc_mutable_at(b, user);
     const uint8_t kind = bc_status_kind(b, mon);
+    if (paralysis != (kind == BST_PARALYSIS)) return false;
     const BattleConditionRules *rules = &b->request->conditions;
     const BattleEvent ev = {.kind = EV_STATUS_BLOCK, .user = user, .target = user, .condition = kind};
     if (kind == BST_SLEEP) {
@@ -614,6 +622,7 @@ void bc_apply_damage(Battle *b, BattleEvent ev, uint16_t damage, EventLog *log) 
     if (!mon->hp) {
         mon->fainted = true;
         memset(mon->stat_stages, 0, sizeof(mon->stat_stages));
+        bc_volatiles_on(mon, VOL_FAINT);
         bc_emit(log, (BattleEvent){.kind = EV_FAINT, .target = ev.target});
     }
 }
@@ -667,6 +676,45 @@ static void execute_struggle(Battle *b, Position user, EventLog *log) {
     const unsigned rounding = rules->struggle_recoil == BSTRUGGLE_MAX_HP_NEAREST ? 2 : 0;
     const uint16_t recoil = (max_hp + rounding) / 4u;
     bc_apply_damage(b, (BattleEvent){.kind = EV_RECOIL, .user = user, .target = user}, recoil ? recoil : 1, log);
+}
+
+BattleActionState battle_action_state(const Battle *b, Position p) {
+    const Battler *mon = battle_at(b, p);
+    if (!mon) return BAS_EMPTY;
+    if (mon->fainted) return BAS_FAINTED;
+    if (mon->vol.recharge) return BAS_RECHARGING;
+    if (mon->vol.charge_slot != BATTLE_SLOT_NONE)
+        return mon->vol.semi_invulnerable ? BAS_SEMI_INVULNERABLE : BAS_CHARGING;
+    return BAS_READY;
+}
+
+bool battle_forced_action(const Battle *b, Position p, Action *out) {
+    const BattleActionState state = battle_action_state(b, p);
+    const Battler *mon = battle_at(b, p);
+    if (state == BAS_RECHARGING) {
+        *out = (Action){.kind = ACT_RECHARGE, .user = p};
+        return true;
+    }
+    if (state == BAS_CHARGING || state == BAS_SEMI_INVULNERABLE) {
+        *out = (Action){.kind = ACT_MOVE, .user = p, .move_slot = mon->vol.charge_slot,
+                        .target = {mon->vol.charge_target}};
+        return true;
+    }
+    return false;
+}
+
+uint8_t battle_volatile_flags(const Battle *b, Position p) {
+    const Battler *mon = battle_at(b, p);
+    if (!mon || mon->fainted) return 0;
+    uint8_t flags = 0;
+    if (mon->vol.confusion) flags |= BVF_CONFUSED;
+    if (mon->vol.substitute_hp) flags |= BVF_SUBSTITUTE;
+    if (mon->vol.charge_slot != BATTLE_SLOT_NONE) flags |= BVF_CHARGING;
+    if (mon->vol.semi_invulnerable) flags |= BVF_SEMI_INVULNERABLE;
+    if (mon->vol.recharge) flags |= BVF_RECHARGING;
+    Action forced;
+    if (battle_forced_action(b, p, &forced)) flags |= BVF_LOCKED;
+    return flags;
 }
 
 bool battle_pending_pivot(const Battle *b, Position *position) {
@@ -744,22 +792,36 @@ static void continue_turn(Battle *b, EventLog *log) {
         update_action_order(b);
         const TurnAction *action = &turn->actions[turn->next++];
         const Position user = locate(b, action->action.user.side, action->battler);
+        TurnAction *current = &turn->actions[turn->next - 1];
         const Battler *actor = battle_at(b, user);
-        if (!actor || actor->fainted) continue;
-        if (action->action.kind == ACT_SHIFT) {
-            if (battle_can_shift(b, user)) shift(b, user, log);
+        if (!actor || actor->fainted) {
+            current->status = TA_SKIPPED;
             continue;
         }
-        if (blocked_by_status(b, user, log)) {
-            bc_mutable_at(b, user)->protect_uses = 0;  // a turn without a move breaks a Protect chain
+        Battler *mon = bc_mutable_at(b, user);
+        mon->vol.acted = true;
+        if (action->action.kind == ACT_SHIFT) {
+            if (battle_can_shift(b, user)) shift(b, user, log);
+            current->status = TA_DONE;
             continue;
         }
         bool pivot = false;
-        if (action->action.kind == ACT_STRUGGLE) {
-            bc_mutable_at(b, user)->protect_uses = 0;
+        current->status = TA_INTERRUPTED;
+        if (mon->vol.recharge) {
+            bc_emit(log, (BattleEvent){.kind = EV_RECHARGE, .user = user, .target = user});
+        } else if (blocked_by_status(b, user, false, log) ||
+                   (mon->vol.flinched && (bc_emit(log, (BattleEvent){.kind = EV_FLINCH, .user = user, .target = user}), true)) ||
+                   bc_confusion_check(b, user, log) || blocked_by_status(b, user, true, log)) {
+            // A lost action breaks a Protect chain and cancels a charging move.
+            mon->vol.protect_uses = 0;
+            bc_cancel_charge(b, user, log);
+        } else if (action->action.kind == ACT_STRUGGLE) {
+            mon->vol.protect_uses = 0;
             execute_struggle(b, user, log);
+            current->status = TA_DONE;
         } else {
             pivot = bc_execute_move(b, user, action->action.move_slot, action->action.target.pos, log);
+            current->status = TA_DONE;
         }
         const bool player_lost = side_defeated(b, 0), foe_lost = side_defeated(b, 1);
         if (player_lost || foe_lost) {
@@ -778,6 +840,7 @@ static void continue_turn(Battle *b, EventLog *log) {
         bc_execute_switch(b, user, random_reserve(b, reserves), EV_WITHDRAW, log);
     }
     resolve_end_of_turn(b, log);
+    bc_effects_end_turn(b);
     ++b->turn;
     clear_fainted_positions(b);
     const bool player_lost = side_defeated(b, 0), foe_lost = side_defeated(b, 1);
@@ -821,6 +884,8 @@ void battle_run_turn(Battle *b, const Action *in, unsigned count, EventLog *log)
             finish(b, OUTCOME_UNSUPPORTED, log);
             return;
         }
+        Action forced;
+        if (battle_forced_action(b, a->user, &forced)) continue;  // a locked position acts below
         if (!battle_validate_action(b, a) || (seen[a->user.side] & (1u << a->user.slot))) continue;
         if (a->kind == ACT_SWITCH) {
             const uint8_t bit = 1u << a->reserve;
@@ -832,7 +897,22 @@ void battle_run_turn(Battle *b, const Action *in, unsigned count, EventLog *log)
         const uint8_t index = b->sides[a->user.side].active[slot];
         const Battler *x = &b->sides[a->user.side].battlers[index];
         order[n++] = (TurnAction){*a, index, a->kind == ACT_MOVE ? x->moves[a->move_slot].priority : 0,
-                                 speed(b, x), bc_next_random(b)};
+                                 speed(b, x), bc_next_random(b), TA_PENDING};
+    }
+    // Locked positions (charging, recharging) act without a command. In
+    // Rotation only the front acts, and a locked front cannot rotate.
+    for (uint8_t side = 0; side < 2 && n < BC_MAX_ACTIONS; ++side) {
+        Position actors[BC_MAX_ACTIVE];
+        const unsigned count = battle_collect_actors(b, side, actors);
+        for (unsigned i = 0; i < count && n < BC_MAX_ACTIONS; ++i) {
+            Action forced;
+            if ((seen[side] & (1u << actors[i].slot)) || !battle_forced_action(b, actors[i], &forced)) continue;
+            seen[side] |= 1u << actors[i].slot;
+            const uint8_t index = b->sides[side].active[actors[i].slot];
+            const Battler *x = &b->sides[side].battlers[index];
+            order[n++] = (TurnAction){forced, index, forced.kind == ACT_MOVE ? x->moves[forced.move_slot].priority : 0,
+                                     speed(b, x), bc_next_random(b), TA_PENDING};
+        }
     }
     sort_actions(b, order, 0, n);
     unsigned first = 0;
