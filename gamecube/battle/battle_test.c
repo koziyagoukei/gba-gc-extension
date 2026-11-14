@@ -1689,6 +1689,553 @@ static void test_effect_lifecycle(void) {
     }
 }
 
+// ---------------------------------------------------------------- V9 volatiles and multi-turn actions
+
+static void make_volatiles(BattleRequest *r, uint8_t format) {
+    make_effects(r, format);
+    r->version = BATTLE_REQUEST_VERSION_VOLATILES;
+    r->volatiles = (BattleVolatileRules){
+        .flags = BVR_SUBSTITUTE_MULTI_HIT_CONTINUES, .confusion_hit_percent = 33,
+        .confusion_min = 2, .confusion_max = 5, .confusion_power = 40, .substitute_divisor = 4,
+    };
+}
+
+static BattleMove effect_move(uint8_t target, uint8_t accuracy, BattleEffect e) {
+    BattleMove m = status_move(target, accuracy);
+    push(&m, e);
+    return m;
+}
+
+static BattleMove charge_move(uint16_t power, uint8_t semi) {
+    BattleMove m = damaging(power, T_NORMAL, 0);
+    m.effects[0] = fx(BEFF_CHARGE, BWHO_USER, 0, semi, 0, 0);
+    push(&m, DAMAGE1);
+    return m;
+}
+
+static Action slot_move(uint8_t side, uint8_t source, uint8_t target, uint8_t slot) {
+    Action a = move(side, source, target);
+    a.move_slot = slot;
+    return a;
+}
+
+static void test_volatile_wire(void) {
+    static BattleRequest r, d, bad_rules;
+    static uint8_t bytes[4096];
+    make_volatiles(&r, BATTLE_FORMAT_DOUBLE);
+    BattleMove fly = charge_move(90, BSEMI_AIR);
+    fly.move_flags = BMF_IGNORES_SUBSTITUTE | BMF_DOUBLE_AIRBORNE;
+    set_move(&r.player[0], 1, 19, fly, 15);
+    const uint32_t n = battle_request_encode(&r, bytes, sizeof(bytes));
+    assert(n && n == battle_request_size(&r) && battle_request_decode(bytes, n, &d));
+    assert(d.volatiles.confusion_max == 5 && d.volatiles.substitute_divisor == 4 && d.volatiles.confusion_power == 40);
+    const BattleMove *dm = &d.player[0].mon.moves[1];
+    assert(dm->effects[0].kind == BEFF_CHARGE && dm->effects[0].arg0 == BSEMI_AIR && dm->effects[1].kind == BEFF_DAMAGE);
+    assert(dm->move_flags == (BMF_IGNORES_SUBSTITUTE | BMF_DOUBLE_AIRBORNE));
+    // Rules: reserved bytes and out-of-range values are refused, as is truncation.
+    bytes[n - 1] = 1;
+    assert(!battle_request_decode(bytes, n, &d));
+    bytes[n - 1] = 0;
+    bytes[n - 3] = 1;                                   // substitute divisor 1
+    assert(!battle_request_decode(bytes, n, &d));
+    bytes[n - 3] = 4;
+    bytes[n - 6] = 6;                                   // confusion min 6 > max 5
+    assert(!battle_request_decode(bytes, n, &d));
+    bytes[n - 6] = 2;
+    assert(battle_request_decode(bytes, n, &d));
+    assert(!battle_request_decode(bytes, n - 1, &d));
+    bad_rules = r;
+    bad_rules.volatiles.confusion_hit_percent = 0;
+    Battle b;
+    assert(battle_init(&b, &bad_rules, 1) == BI_CONDITIONS);
+    // Structure: CHARGE leads and is followed by DAMAGE; Substitute stands alone on a status move.
+    BattleMove bad = damaging(120, T_NORMAL, 100);
+    push(&bad, fx(BEFF_CHARGE, BWHO_USER, 0, BSEMI_NONE, 0, 0));
+    assert(!battle_move_effects_valid(&bad));
+    bad = effect_move(BTARGET_SELF, 0, fx(BEFF_SUBSTITUTE, BWHO_USER, 0, 0, 0, 0));
+    assert(battle_move_effects_valid(&bad));
+    push(&bad, fx(BEFF_STAT, BWHO_TARGET, 0, BSTAT_ATK, 1, 0));
+    assert(!battle_move_effects_valid(&bad));
+    bad = effect_move(BTARGET_SINGLE, 0, fx(BEFF_FLINCH, BWHO_TARGET, 0, 0, 0, 0));
+    assert(!battle_move_effects_valid(&bad));           // flinch only rides on a hit
+    // A V8 request cannot use V9 kinds or flags: such moves are not usable.
+    make_effects(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove bite = damaging(60, T_NORMAL, 0);
+    push(&bite, fx(BEFF_FLINCH, BWHO_TARGET, 30, 0, 0, 0));
+    set_move(&r.player[0], 1, 44, bite, 25);
+    BattleMove gust = damaging(40, T_NORMAL, 0);
+    gust.move_flags = BMF_DOUBLE_AIRBORNE;
+    set_move(&r.player[0], 2, 16, gust, 35);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    assert((battle_usable_moves(&b, battle_active(&b, 0)) & 6) == 0);
+    // V8 requests still encode and decode unchanged (no rules block).
+    const uint32_t v8 = battle_request_encode(&r, bytes, sizeof(bytes));
+    assert(v8 == battle_request_size(&r) && battle_request_decode(bytes, v8, &d) && d.version == BATTLE_REQUEST_VERSION_EFFECTS);
+    // State: one volatile byte per position.
+    BattleRosterState s = {.field_state = {.phase = BPHASE_CHOOSE, .token = 9},
+                           .volatiles = {[0][1] = BVF_CHARGING | BVF_LOCKED, [1][0] = BVF_SUBSTITUTE}};
+    BattleRosterState back;
+    const unsigned len = battle_volatile_state_encode(&s, bytes);
+    assert(len == BATTLE_VOLATILE_STATE_BYTES && len + APP_REQUEST_HEADER <= WIRE_PAYLOAD);
+    assert(battle_volatile_state_decode(bytes, len, &back) && back.volatiles[0][1] == (BVF_CHARGING | BVF_LOCKED) &&
+           back.volatiles[1][0] == BVF_SUBSTITUTE && back.field_state.token == 9);
+    assert(!battle_volatile_state_decode(bytes, len - 1, &back));
+    bytes[len - 1] = 0x80;                              // unknown flag
+    assert(!battle_volatile_state_decode(bytes, len, &back));
+}
+
+static void test_flinch(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_volatiles(&r, BATTLE_FORMAT_SINGLE);       // the foe (70) is faster than the player (60)
+    BattleMove bite = damaging(10, T_NORMAL, 0);
+    push(&bite, fx(BEFF_FLINCH, BWHO_TARGET, 100, 0, 0, 0));
+    set_move(&r.opponent[0], 0, 44, bite, 25);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    assert(event_count(&log, EV_FLINCH) == 1 && event_count(&log, EV_MOVE_USED) == 1);
+    assert(!battle_active(&b, 0)->vol.flinched && battle_active(&b, 0)->pp[0] == 20);   // cleared; no PP for a lost turn
+    // A 1% roll rarely flinches.
+    r.opponent[0].mon.moves[0].effects[1].chance = 1;
+    unsigned flinches = 0;
+    for (uint32_t seed = 1; seed <= 300; ++seed) {
+        assert(battle_init(&b, &r, seed) == BI_OK);
+        run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+        flinches += event_count(&log, EV_FLINCH);
+    }
+    assert(flinches < 12);
+    // A slower user cannot flinch a target that already acted.
+    make_volatiles(&r, BATTLE_FORMAT_SINGLE);
+    set_move(&r.player[0], 0, 44, bite, 25);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    assert(!event_count(&log, EV_FLINCH) && event_count(&log, EV_MOVE_USED) == 2);
+    // Double: the spread hit flinches only the foe that has not moved yet.
+    // Speeds: foe 1 (90) > player 1 (80) > foe 0 (70) > player 0 (60).
+    make_volatiles(&r, BATTLE_FORMAT_DOUBLE);
+    BattleMove slide = damaging(10, T_NORMAL, 0);
+    slide.target = BTARGET_ALL_FOES;
+    push(&slide, fx(BEFF_FLINCH, BWHO_TARGET, 100, 0, 0, 0));
+    set_move(&r.player[1], 0, 157, slide, 10);
+    assert(battle_init(&b, &r, 2) == BI_OK);
+    const Action turn[] = {move(0, 0, 0), move(0, 1, 0), move(1, 0, 0), move(1, 1, 0)};
+    battle_run_turn(&b, turn, 4, &log);
+    const BattleEvent *f = find(&log, EV_FLINCH);
+    assert(event_count(&log, EV_FLINCH) == 1 && f->user.side == 1 && f->user.slot == 0);
+    assert(event_count(&log, EV_MOVE_USED) == 3);
+}
+
+static void test_confusion(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_volatiles(&r, BATTLE_FORMAT_SINGLE);
+    set_move(&r.player[0], 1, 109, effect_move(BTARGET_SINGLE, 0, fx(BEFF_CONFUSE, BWHO_TARGET, 0, 0, 0, 0)), 10);
+    const Action ray = slot_move(0, 0, 0, 1), tackle = move(1, 0, 0);
+    unsigned hits = 0, counters[6] = {0};
+    for (uint32_t seed = 1; seed <= 600; ++seed) {
+        assert(battle_init(&b, &r, seed) == BI_OK);
+        battle_run_turn(&b, &ray, 1, &log);
+        const uint8_t counter = battle_active(&b, 1)->vol.confusion;
+        assert(find(&log, EV_CONFUSE) && counter >= 2 && counter <= 5);
+        ++counters[counter];
+        battle_run_turn(&b, &ray, 1, &log);           // already confused: no effect
+        assert(find(&log, EV_NO_EFFECT) && battle_active(&b, 1)->vol.confusion == counter);
+        const uint8_t pp = battle_active(&b, 1)->pp[0];
+        const uint16_t hp = battle_active(&b, 1)->hp;
+        battle_run_turn(&b, &tackle, 1, &log);
+        assert(find(&log, EV_CONFUSED) && battle_active(&b, 1)->vol.confusion == counter - 1);
+        if (find(&log, EV_CONFUSION_HIT)) {
+            ++hits;
+            // The self-hit replaces the move: no PP, no move event.
+            assert(battle_active(&b, 1)->pp[0] == pp && !find(&log, EV_MOVE_USED));
+            // Level 50, power 40, 60/60: (22*40*60/60)/50 + 2 = 19.
+            assert(find(&log, EV_CONFUSION_HIT)->amount == 19 && battle_active(&b, 1)->hp == hp - 19);
+        } else {
+            assert(battle_active(&b, 1)->pp[0] == pp - 1 && find(&log, EV_MOVE_USED));
+        }
+    }
+    assert(hits > 150 && hits < 250);
+    for (unsigned c = 2; c <= 5; ++c) assert(counters[c] > 100);
+    // The counter runs out: the confusion ends and the Pokemon acts.
+    assert(battle_init(&b, &r, 3) == BI_OK);
+    battle_active(&b, 1)->vol.confusion = 1;
+    battle_run_turn(&b, &tackle, 1, &log);
+    assert(find(&log, EV_CONFUSION_END) && find(&log, EV_MOVE_USED) && !battle_active(&b, 1)->vol.confusion);
+    // The self-hit ignores the user's own substitute and is halved by burn only under the rule.
+    r.volatiles.confusion_hit_percent = 100;
+    r.volatiles.flags |= BVR_CONFUSION_BURN;
+    assert(battle_init(&b, &r, 3) == BI_OK);
+    Battler *foe = battle_active(&b, 1);
+    foe->vol.confusion = 5;
+    foe->vol.substitute_hp = 50;
+    foe->status = BATTLE_CONDITION(BST_BURN, 0);
+    battle_run_turn(&b, &tackle, 1, &log);
+    assert(find(&log, EV_CONFUSION_HIT)->amount == 9 && foe->vol.substitute_hp == 50);
+    r.volatiles.flags &= (uint8_t)~BVR_CONFUSION_BURN;
+    assert(battle_init(&b, &r, 3) == BI_OK);
+    foe = battle_active(&b, 1);
+    foe->vol.confusion = 5;
+    foe->status = BATTLE_CONDITION(BST_BURN, 0);
+    battle_run_turn(&b, &tackle, 1, &log);
+    assert(find(&log, EV_CONFUSION_HIT)->amount == 19);
+    // A switch clears it; Rotation keeps it on a wing.
+    make_volatiles(&r, BATTLE_FORMAT_ROTATION);
+    assert(battle_init(&b, &r, 3) == BI_OK);
+    const uint8_t front = b.sides[0].active[BPOS_CENTER];
+    b.sides[0].battlers[front].vol.confusion = 4;
+    Action rotate_left = move(0, BPOS_CENTER, BPOS_CENTER);
+    rotate_left.rotation = BROT_LEFT;
+    battle_run_turn(&b, &rotate_left, 1, &log);
+    assert(b.sides[0].active[BPOS_CENTER] != front && b.sides[0].battlers[front].vol.confusion == 4);
+    make_volatiles(&r, BATTLE_FORMAT_SINGLE);
+    add_reserve(&r, 0);
+    assert(battle_init(&b, &r, 3) == BI_OK);
+    battle_active(&b, 0)->vol.confusion = 4;
+    const Action sw = {.kind = ACT_SWITCH, .user = {0, 0}, .reserve = 1};
+    battle_run_turn(&b, &sw, 1, &log);
+    assert(find(&log, EV_WITHDRAW) && b.sides[0].battlers[0].vol.confusion == 0);
+}
+
+static void test_substitute(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_volatiles(&r, BATTLE_FORMAT_SINGLE);
+    set_move(&r.player[0], 1, 164, effect_move(BTARGET_SELF, 0, fx(BEFF_SUBSTITUTE, BWHO_USER, 0, 0, 0, 0)), 10);
+    const Action sub = slot_move(0, 0, 0, 1);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, &sub, 1, &log);
+    Battler *p = battle_active(&b, 0);
+    assert(find(&log, EV_SUBSTITUTE)->amount == 50 && p->hp == 150 && p->vol.substitute_hp == 50);   // 200 / 4
+    assert(battle_volatile_flags(&b, (Position){0, 0}) == BVF_SUBSTITUTE);
+    battle_run_turn(&b, &sub, 1, &log);                      // only one at a time
+    assert(find(&log, EV_FAIL) && p->hp == 150 && p->pp[1] == 8);
+    p->vol.substitute_hp = 0;
+    p->hp = 50;                                               // HP must exceed the cost
+    battle_run_turn(&b, &sub, 1, &log);
+    assert(find(&log, EV_FAIL) && p->hp == 50 && !p->vol.substitute_hp);
+
+    // Damage goes to the substitute; status and stat moves fail against it
+    // unless the move bypasses substitutes (sound moves in Gen 6+, as data).
+    make_volatiles(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove growl = effect_move(BTARGET_SINGLE, 0, fx(BEFF_STAT, BWHO_TARGET, 0, BSTAT_ATK, -1, 0));
+    set_move(&r.opponent[0], 1, 45, growl, 40);
+    growl.move_flags = BMF_IGNORES_SUBSTITUTE;
+    set_move(&r.opponent[0], 2, 48, growl, 40);
+    BattleMove poison = effect_move(BTARGET_SINGLE, 0, fx(BEFF_STATUS, BWHO_TARGET, 0, BST_POISON, 0, 0));
+    set_move(&r.opponent[0], 3, 77, poison, 35);
+    set_move(&r.player[0], 2, 14, effect_move(BTARGET_SELF, 0, fx(BEFF_STAT, BWHO_TARGET, 0, BSTAT_ATK, 2, 0)), 20);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    p = battle_active(&b, 0);
+    p->vol.substitute_hp = 30;
+    battle_run_turn(&b, (Action[]){slot_move(1, 0, 0, 1)}, 1, &log);
+    assert(find(&log, EV_FAIL) && p->stat_stages[BSTAT_ATK] == 0);
+    battle_run_turn(&b, (Action[]){slot_move(1, 0, 0, 3)}, 1, &log);
+    assert(find(&log, EV_FAIL) && !p->status);
+    battle_run_turn(&b, (Action[]){slot_move(1, 0, 0, 2)}, 1, &log);
+    assert(find(&log, EV_STAGE) && p->stat_stages[BSTAT_ATK] == -1);
+    const uint16_t hp = p->hp;
+    battle_run_turn(&b, (Action[]){move(1, 0, 0)}, 1, &log);
+    const BattleEvent *taken = find(&log, EV_SUBSTITUTE_HIT);
+    assert(taken && !find(&log, EV_DAMAGE) && p->hp == hp && p->vol.substitute_hp == 30 - taken->amount);
+    // The user's own self-targeting moves are not blocked by its substitute.
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 2)}, 1, &log);
+    assert(find(&log, EV_STAGE) && p->stat_stages[BSTAT_ATK] == 1);
+
+    // Multi-hit: with the rule set, hits after the break strike the Pokemon;
+    // without it the move stops at the break.
+    make_volatiles(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove kicks = damaging(40, T_NORMAL, 0);
+    kicks.effects[0] = fx(BEFF_DAMAGE, BWHO_TARGET, 0, 5, 0, 5);
+    set_move(&r.opponent[0], 0, 24, kicks, 30);
+    assert(battle_init(&b, &r, 4) == BI_OK);
+    p = battle_active(&b, 0);
+    p->vol.substitute_hp = 1;
+    battle_run_turn(&b, (Action[]){move(1, 0, 0)}, 1, &log);
+    assert(find(&log, EV_SUBSTITUTE_BREAK) && event_count(&log, EV_DAMAGE) == 4 && !p->vol.substitute_hp);
+    assert(find(&log, EV_MULTI_HIT)->amount == 5);
+    r.volatiles.flags = 0;
+    assert(battle_init(&b, &r, 4) == BI_OK);
+    battle_active(&b, 0)->vol.substitute_hp = 1;
+    battle_run_turn(&b, (Action[]){move(1, 0, 0)}, 1, &log);
+    assert(find(&log, EV_SUBSTITUTE_BREAK) && !event_count(&log, EV_DAMAGE) && find(&log, EV_MULTI_HIT)->amount == 1);
+
+    // Drain and recoil count what the substitute lost; a flinch needs the Pokemon itself.
+    make_volatiles(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove drain = damaging(60, T_NORMAL, 0);
+    push(&drain, fx(BEFF_DRAIN, BWHO_USER, 0, 50, 0, 0));
+    push(&drain, fx(BEFF_FLINCH, BWHO_TARGET, 100, 0, 0, 0));
+    set_move(&r.player[0], 0, 202, drain, 10);
+    BattleMove edge = damaging(60, T_NORMAL, 0);
+    push(&edge, fx(BEFF_RECOIL, BWHO_USER, 0, 50, 0, 0));
+    set_move(&r.player[0], 1, 38, edge, 10);
+    r.player[0].record.speed = 200;                           // acts first: a flinch could land
+    assert(battle_init(&b, &r, 5) == BI_OK);
+    battle_active(&b, 0)->hp = 150;
+    battle_active(&b, 1)->vol.substitute_hp = 4;
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    assert(find(&log, EV_SUBSTITUTE_BREAK) && find(&log, EV_DRAIN)->amount == 2);   // 50% of the 4 HP it had
+    assert(!find(&log, EV_FLINCH) && event_count(&log, EV_MOVE_USED) == 2);
+    battle_active(&b, 1)->vol.substitute_hp = 6;
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(find(&log, EV_RECOIL)->amount == 3 && !find(&log, EV_DAMAGE));
+
+    // Dragon Tail does not drag a Pokemon whose substitute took the hit; U-turn still pivots,
+    // and the switch clears the user's own substitute while the foe keeps its.
+    make_volatiles(&r, BATTLE_FORMAT_SINGLE);
+    add_reserve(&r, 0);
+    add_reserve(&r, 1);
+    BattleMove tail = damaging(10, T_NORMAL, 0), uturn = damaging(10, T_NORMAL, 0);
+    push(&tail, fx(BEFF_FORCE_OUT, BWHO_TARGET, 0, 0, 0, 0));
+    push(&uturn, fx(BEFF_PIVOT, BWHO_TARGET, 0, 0, 0, 0));
+    set_move(&r.player[0], 0, 525, tail, 10);
+    set_move(&r.player[0], 1, 369, uturn, 10);
+    assert(battle_init(&b, &r, 6) == BI_OK);
+    battle_active(&b, 1)->vol.substitute_hp = 50;
+    battle_run_turn(&b, (Action[]){move(0, 0, 0)}, 1, &log);
+    assert(find(&log, EV_SUBSTITUTE_HIT) && !find(&log, EV_DRAG_OUT));
+    b.sides[0].battlers[0].vol.substitute_hp = 10;
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(find(&log, EV_SUBSTITUTE_HIT) && battle_pending_pivot(&b, NULL));
+    assert(battle_resume_pivot(&b, 1, &log));
+    assert(b.sides[0].battlers[0].vol.substitute_hp == 0 && battle_active(&b, 1)->vol.substitute_hp > 0);
+}
+
+static void test_charge(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    const Position me = {0, 0};
+    // Solar Beam: turn 1 charges (PP spent once), turn 2 is forced and fires at the stored target.
+    make_volatiles(&r, BATTLE_FORMAT_SINGLE);
+    set_move(&r.player[0], 1, 76, charge_move(120, BSEMI_NONE), 10);
+    const Action solar = slot_move(0, 0, 0, 1);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, &solar, 1, &log);
+    Battler *p = battle_active(&b, 0);
+    assert(find(&log, EV_CHARGE) && !find(&log, EV_DAMAGE) && p->pp[1] == 9);
+    assert(battle_action_state(&b, me) == BAS_CHARGING);
+    assert(battle_volatile_flags(&b, me) == (BVF_CHARGING | BVF_LOCKED));
+    Action forced, chosen;
+    assert(battle_forced_action(&b, me, &forced) && forced.kind == ACT_MOVE && forced.move_slot == 1);
+    battle_choose_at(&b, me, &chosen);                        // the AI path returns the locked move too
+    assert(chosen.kind == ACT_MOVE && chosen.move_slot == 1);
+    battle_run_turn(&b, (Action[]){move(0, 0, 0)}, 1, &log);   // a different command is ignored
+    assert(find(&log, EV_DAMAGE) && find(&log, EV_MOVE_USED)->move_id == 76 && p->pp[1] == 9 && p->pp[0] == 20);
+    assert(battle_action_state(&b, me) == BAS_READY && !battle_forced_action(&b, me, &forced));
+    // No command at all still runs the locked move.
+    battle_run_turn(&b, &solar, 1, &log);
+    battle_run_turn(&b, NULL, 0, &log);
+    assert(find(&log, EV_DAMAGE) && battle_action_state(&b, me) == BAS_READY);
+    // Interrupted on the release turn (flinch, sleep): the charge is lost, no PP refund.
+    battle_run_turn(&b, &solar, 1, &log);
+    p->vol.flinched = true;
+    battle_run_turn(&b, &solar, 1, &log);
+    assert(find(&log, EV_FLINCH) && find(&log, EV_CHARGE_END) && !find(&log, EV_DAMAGE));
+    assert(battle_action_state(&b, me) == BAS_READY && p->pp[1] == 7);
+    battle_run_turn(&b, &solar, 1, &log);
+    p->status = BATTLE_CONDITION(BST_SLEEP, 3);
+    battle_run_turn(&b, &solar, 1, &log);
+    assert(find(&log, EV_CHARGE_END) && battle_action_state(&b, me) == BAS_READY);
+
+    // Fly: out of reach except for moves flagged for the air (Gust doubles).
+    make_volatiles(&r, BATTLE_FORMAT_SINGLE);
+    set_move(&r.player[0], 1, 19, charge_move(90, BSEMI_AIR), 15);
+    BattleMove gust = damaging(40, T_NORMAL, 0);
+    gust.move_flags = BMF_DOUBLE_AIRBORNE;
+    set_move(&r.opponent[0], 1, 16, gust, 35);
+    r.opponent[0].record.speed = 1;
+    const Action f = slot_move(0, 0, 0, 1), g = slot_move(1, 0, 0, 1);
+    assert(battle_init(&b, &r, 2) == BI_OK);
+    run1(&b, f, move(1, 0, 0), &log);
+    assert(find(&log, EV_CHARGE)->condition == BSEMI_AIR && find(&log, EV_MISS) && battle_active(&b, 0)->hp == 200);
+    assert(battle_action_state(&b, me) == BAS_SEMI_INVULNERABLE);
+    assert(battle_volatile_flags(&b, me) == (BVF_CHARGING | BVF_SEMI_INVULNERABLE | BVF_LOCKED));
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);             // lands, then Tackle hits normally
+    assert(event_count(&log, EV_DAMAGE) == 2 && battle_action_state(&b, me) == BAS_READY);
+    assert(battle_init(&b, &r, 2) == BI_OK);
+    run1(&b, f, g, &log);
+    const BattleEvent *hit_in_air = find(&log, EV_DAMAGE);
+    uint8_t eff;
+    const Battler *foe = battle_active(&b, 1), *mon = battle_active(&b, 0);
+    assert(hit_in_air && hit_in_air->target.side == 0);
+    assert(hit_in_air->amount >= 2 * battle_damage(&b, foe, &gust, mon, 85, &eff) &&
+           hit_in_air->amount <= 2 * battle_damage(&b, foe, &gust, mon, 100, &eff));
+    // Dig: Earthquake-style moves reach and double; Gust does not reach underground.
+    make_volatiles(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove quake = damaging(100, T_NORMAL, 0);
+    quake.move_flags = BMF_DOUBLE_UNDERGROUND;
+    set_move(&r.player[0], 1, 91, charge_move(80, BSEMI_UNDERGROUND), 10);
+    set_move(&r.opponent[0], 1, 89, quake, 10);
+    set_move(&r.opponent[0], 2, 16, gust, 35);
+    r.opponent[0].record.speed = 1;
+    assert(battle_init(&b, &r, 3) == BI_OK);
+    run1(&b, slot_move(0, 0, 0, 1), slot_move(1, 0, 0, 2), &log);
+    assert(find(&log, EV_MISS) && battle_action_state(&b, me) == BAS_SEMI_INVULNERABLE);
+    assert(battle_init(&b, &r, 3) == BI_OK);
+    run1(&b, slot_move(0, 0, 0, 1), slot_move(1, 0, 0, 1), &log);
+    assert(find(&log, EV_DAMAGE) && find(&log, EV_DAMAGE)->target.side == 0);
+
+    // Double: the stored target fainted meanwhile -> the other foe is hit.
+    make_volatiles(&r, BATTLE_FORMAT_DOUBLE);
+    set_move(&r.player[0], 1, 76, charge_move(120, BSEMI_NONE), 10);
+    assert(battle_init(&b, &r, 4) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(battle_action_state(&b, me) == BAS_CHARGING);
+    set_fainted(&b, 1, b.sides[1].active[0]);
+    battle_run_turn(&b, NULL, 0, &log);
+    const BattleEvent *used = find(&log, EV_MOVE_USED), *dmg = find(&log, EV_DAMAGE);
+    assert(used && used->move_id == 76 && dmg && dmg->target.side == 1 && dmg->target.slot == 1);
+
+    // Triple: a locked position ignores its command and the others still act.
+    make_volatiles(&r, BATTLE_FORMAT_TRIPLE);
+    set_move(&r.player[1], 1, 19, charge_move(90, BSEMI_AIR), 15);
+    assert(battle_init(&b, &r, 5) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 1, 1, 1)}, 1, &log);
+    assert(battle_action_state(&b, (Position){0, 1}) == BAS_SEMI_INVULNERABLE);
+    const Action triple[] = {move(0, 0, 0), move(0, 1, 2), move(0, 2, 2)};
+    battle_run_turn(&b, triple, 3, &log);
+    unsigned center_moves = 0;
+    for (unsigned i = 0; i < log.count; ++i)
+        if (log.events[i].kind == EV_MOVE_USED && log.events[i].user.side == 0 && log.events[i].user.slot == 1) {
+            ++center_moves;
+            assert(log.events[i].move_id == 19);
+        }
+    assert(center_moves == 1 && event_count(&log, EV_MOVE_USED) == 3);
+}
+
+static void test_recharge(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    const Position me = {0, 0};
+    make_volatiles(&r, BATTLE_FORMAT_SINGLE);
+    r.opponent[0].record.hp = r.opponent[0].record.max_hp = 999;
+    BattleMove beam = damaging(150, T_NORMAL, 0);
+    push(&beam, fx(BEFF_RECHARGE, BWHO_USER, 0, 0, 0, 0));
+    set_move(&r.player[0], 1, 63, beam, 5);
+    const Action hb = slot_move(0, 0, 0, 1);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, &hb, 1, &log);
+    assert(find(&log, EV_DAMAGE) && battle_action_state(&b, me) == BAS_RECHARGING);
+    assert(battle_volatile_flags(&b, me) == (BVF_RECHARGING | BVF_LOCKED));
+    Action forced;
+    assert(battle_forced_action(&b, me, &forced) && forced.kind == ACT_RECHARGE);
+    battle_run_turn(&b, &hb, 1, &log);                          // forced recharge, no PP
+    assert(find(&log, EV_RECHARGE) && !find(&log, EV_MOVE_USED) && battle_active(&b, 0)->pp[1] == 4);
+    assert(battle_action_state(&b, me) == BAS_READY);
+    battle_run_turn(&b, &hb, 1, &log);
+    assert(find(&log, EV_DAMAGE));
+    // The recharge turn comes first: a flinch on it is not reported on top.
+    battle_active(&b, 0)->vol.flinched = true;
+    battle_run_turn(&b, NULL, 0, &log);
+    assert(find(&log, EV_RECHARGE) && !find(&log, EV_FLINCH) && battle_action_state(&b, me) == BAS_READY);
+    // A miss means no recharge.
+    r.player[0].mon.moves[1].accuracy = 1;
+    bool missed = false;
+    for (uint32_t seed = 1; seed <= 20 && !missed; ++seed) {
+        assert(battle_init(&b, &r, seed) == BI_OK);
+        battle_run_turn(&b, &hb, 1, &log);
+        missed = find(&log, EV_MISS) != NULL;
+    }
+    assert(missed && battle_action_state(&b, me) == BAS_READY);
+    // Knocking the target out: recharge by default, none under the Gen 1 rule.
+    r.player[0].mon.moves[1].accuracy = 0;
+    r.opponent[0].record.hp = 1;
+    add_reserve(&r, 1);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, &hb, 1, &log);
+    assert(find(&log, EV_FAINT) && battle_active(&b, 0)->vol.recharge);
+    r.volatiles.flags |= BVR_RECHARGE_SKIP_ON_KO;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, &hb, 1, &log);
+    assert(find(&log, EV_FAINT) && !battle_active(&b, 0)->vol.recharge);
+    // Rotation: a recharging front cannot rotate; the rotation request is ignored.
+    make_volatiles(&r, BATTLE_FORMAT_ROTATION);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    const uint8_t front = b.sides[0].active[BPOS_CENTER];
+    b.sides[0].battlers[front].vol.recharge = 1;
+    Action rot = move(0, BPOS_CENTER, BPOS_CENTER);
+    rot.rotation = BROT_LEFT;
+    battle_run_turn(&b, &rot, 1, &log);
+    assert(find(&log, EV_RECHARGE) && !find(&log, EV_ROTATE) && b.sides[0].active[BPOS_CENTER] == front);
+    battle_run_turn(&b, &rot, 1, &log);
+    assert(find(&log, EV_ROTATE) && b.sides[0].active[BPOS_CENTER] != front);
+}
+
+static void test_volatile_lifecycle(void) {
+    static BattleRequest r;
+    Battle b;
+    EventLog log;
+    // Triple Shift keeps volatiles; faint clears them; a fresh init (reconnect) starts clean.
+    make_volatiles(&r, BATTLE_FORMAT_TRIPLE);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    Battler *left = (Battler *)battle_at(&b, (Position){0, BPOS_LEFT});
+    left->vol.confusion = 3;
+    left->vol.substitute_hp = 20;
+    battle_run_turn(&b, (Action[]){{.kind = ACT_SHIFT, .user = {0, BPOS_LEFT}}}, 1, &log);
+    assert(battle_at(&b, (Position){0, BPOS_CENTER}) == left && left->vol.substitute_hp == 20 && left->vol.confusion == 3);
+    left->vol.substitute_hp = 0;
+    left->hp = 1;
+    battle_run_turn(&b, (Action[]){move(1, BPOS_CENTER, BPOS_CENTER)}, 1, &log);
+    assert(left->fainted && !left->vol.confusion && left->vol.charge_slot == BATTLE_SLOT_NONE);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    for (unsigned side = 0; side < 2; ++side)
+        for (unsigned i = 0; i < b.sides[side].count; ++i) {
+            const BattlerVolatiles *v = &b.sides[side].battlers[i].vol;
+            assert(!v->confusion && !v->substitute_hp && !v->recharge && !v->flinched &&
+                   v->charge_slot == BATTLE_SLOT_NONE && !v->semi_invulnerable);
+        }
+    // Forfeit while locked ends the battle cleanly.
+    make_volatiles(&r, BATTLE_FORMAT_SINGLE);
+    set_move(&r.player[0], 1, 76, charge_move(120, BSEMI_NONE), 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    battle_run_turn(&b, (Action[]){{.kind = ACT_FORFEIT}}, 1, &log);
+    assert(b.outcome == OUTCOME_CANCELLED);
+    // Same seed and inputs, same log, across 25 volatile-heavy turns.
+    make_volatiles(&r, BATTLE_FORMAT_DOUBLE);
+    for (unsigned i = 0; i < 2; ++i) {
+        r.player[i].record.hp = r.player[i].record.max_hp = 900;
+        r.opponent[i].record.hp = r.opponent[i].record.max_hp = 900;
+    }
+    BattleMove hurricane = damaging(30, T_NORMAL, 70);
+    push(&hurricane, fx(BEFF_CONFUSE, BWHO_TARGET, 30, 0, 0, 0));
+    push(&hurricane, fx(BEFF_FLINCH, BWHO_TARGET, 30, 0, 0, 0));
+    set_move(&r.player[0], 0, 542, hurricane, 40);
+    set_move(&r.opponent[0], 0, 542, hurricane, 40);
+    set_move(&r.player[1], 1, 19, charge_move(30, BSEMI_AIR), 40);
+    BattleMove beam = damaging(30, T_NORMAL, 0);
+    push(&beam, fx(BEFF_RECHARGE, BWHO_USER, 0, 0, 0, 0));
+    set_move(&r.opponent[1], 1, 63, beam, 40);
+    set_move(&r.opponent[1], 2, 164, effect_move(BTARGET_SELF, 0, fx(BEFF_SUBSTITUTE, BWHO_USER, 0, 0, 0, 0)), 40);
+    static EventLog first[25], again[25];
+    const Action turn[] = {move(0, 0, 1), slot_move(0, 1, 0, 1), move(1, 0, 0), slot_move(1, 1, 1, 1)};
+    const Action turn2[] = {move(0, 0, 1), move(0, 1, 1), move(1, 0, 1), slot_move(1, 1, 1, 2)};
+    unsigned played = 0;
+    for (unsigned pass = 0; pass < 2; ++pass) {
+        assert(battle_init(&b, &r, 91) == BI_OK);
+        unsigned t = 0;
+        for (; t < 25 && !b.outcome; ++t) battle_run_turn(&b, t % 2 ? turn2 : turn, 4, pass ? &again[t] : &first[t]);
+        if (!pass) played = t;
+        else assert(t == played);
+    }
+    assert(played >= 20);
+    unsigned kinds[EV_RECHARGE + 1] = {0};
+    for (unsigned t = 0; t < played; ++t) {
+        assert(first[t].count == again[t].count);
+        for (unsigned i = 0; i < first[t].count; ++i) {
+            const BattleEvent *x = &first[t].events[i], *y = &again[t].events[i];
+            assert(x->kind == y->kind && x->amount == y->amount && x->hp_after == y->hp_after &&
+                   x->target.side == y->target.side && x->target.slot == y->target.slot);
+            if (x->kind <= EV_RECHARGE) ++kinds[x->kind];
+        }
+    }
+    assert(kinds[EV_CONFUSE] && kinds[EV_FLINCH] && kinds[EV_CHARGE] && kinds[EV_RECHARGE] && kinds[EV_SUBSTITUTE]);
+}
+
 int main(void) {
     test_request_roundtrip();
     test_messages();
@@ -1724,6 +2271,13 @@ int main(void) {
     test_effect_priority_protect();
     test_effect_formats();
     test_effect_lifecycle();
+    test_volatile_wire();
+    test_flinch();
+    test_confusion();
+    test_substitute();
+    test_charge();
+    test_recharge();
+    test_volatile_lifecycle();
     puts("battle tests passed");
     return 0;
 }
