@@ -111,6 +111,7 @@ static bool send_multi_state(uint8_t phase) {
             m->hp = x->hp;
             m->max_hp = x->max_hp;
             extended.status[side][slot] = BATTLE_CONDITION_KIND(x->status);
+            extended.volatiles[side][slot] = battle_volatile_flags(&b.battle, pos);
             memcpy(extended.stages[side][slot], x->stat_stages, sizeof(x->stat_stages));
             if (side != 0) continue;
             memcpy(state->pp[slot], x->pp, sizeof(state->pp[slot]));
@@ -118,7 +119,7 @@ static bool send_multi_state(uint8_t phase) {
             for (unsigned move = 0; move < 4; ++move)
                 state->targets[slot][move] = battle_command_targets(&b.battle, pos, move);
         }
-    uint8_t bytes[BATTLE_CONDITION_STATE_BYTES];
+    uint8_t bytes[BATTLE_VOLATILE_STATE_BYTES];
     uint16_t status;
     unsigned size;
     const uint16_t opcode = roster() ? BATTLE_OP_STATE_ROSTER : BATTLE_OP_STATE_MULTI;
@@ -130,7 +131,9 @@ static bool send_multi_state(uint8_t phase) {
                                                   mon ? mon->hp : record ? record->hp : 0,
                                                   record ? record->max_hp : 0};
         }
-        if (b.mode.app_version >= BATTLE_APP_VERSION_CONDITIONS)  // V8 keeps the V7 state layout
+        if (b.mode.app_version >= BATTLE_APP_VERSION_VOLATILES)
+            size = battle_volatile_state_encode(&extended, bytes);
+        else if (b.mode.app_version >= BATTLE_APP_VERSION_CONDITIONS)  // V8 keeps the V7 state layout
             size = battle_condition_state_encode(&extended, bytes);
         else if (b.mode.app_version >= BATTLE_APP_VERSION_STRUGGLE)
             size = battle_struggle_state_encode(&extended, bytes);
@@ -187,6 +190,7 @@ static bool poll_multi_action(BattleMultiAction *a) {
     if (!host_app_to(b.link, b.mode.app_id, opcode, NULL, 0, &d, &n, &status)) return false;
     if (status == APP_OK) {
         switch (b.mode.app_version) {
+        case BATTLE_APP_VERSION_VOLATILES:  // V9 keeps the V6 action layout
         case BATTLE_APP_VERSION_EFFECTS:
         case BATTLE_APP_VERSION_CONDITIONS:
         case BATTLE_APP_VERSION_PIVOT: return battle_pivot_action_decode(d, n, a);
@@ -411,13 +415,39 @@ static bool player_can_act(Position user) {
     return false;
 }
 
+// All player commands are in (or every player position is locked): the AI
+// picks for the opponents and the turn runs.
+static BattleViewStatus finish_choice(uint8_t turn) {
+    Position opponents[BC_MAX_ACTIVE];
+    const unsigned count = battle_collect_actors(&b.battle, 1, opponents);
+    for (unsigned i = 0; i < count; ++i)
+        battle_choose_at(&b.battle, opponents[i], &b.actions[b.player_commands + i]);
+    resolve_turn(b.actions, b.player_commands + count);
+    b.player_commands = 0;
+    return play_turn(turn);
+}
+
 static BattleViewStatus step_multi_choose(void) {
     const uint8_t turn = (uint8_t)(b.battle.turn + 1);
     if (!b.player_commands) {
-        b.player_commands = battle_collect_actors(&b.battle, 0, b.players);
+        // Charging or recharging positions act without a command (the core
+        // supplies their move); they are not prompted on the GBA.
+        Position actors[BC_MAX_ACTIVE];
+        const unsigned count = battle_collect_actors(&b.battle, 0, actors);
         b.choosing = 0;
         b.reserved = 0;
         b.turn_started = gettime();
+        for (unsigned i = 0; i < count; ++i) {
+            const BattleActionState state = battle_action_state(&b.battle, actors[i]);
+            Action forced;
+            if (battle_forced_action(&b.battle, actors[i], &forced)) {
+                SYS_Report("MULTI LOCKED turn=%u actor=%u state=%u kind=%u move_slot=%u\n", turn, actors[i].slot,
+                           state, forced.kind, forced.move_slot);
+                continue;
+            }
+            b.players[b.player_commands++] = actors[i];
+        }
+        if (!b.player_commands) return finish_choice(turn);
     }
     const Position user = b.players[b.choosing];
     if (!b.state_sent) {
@@ -459,13 +489,7 @@ static BattleViewStatus step_multi_choose(void) {
     b.actions[b.choosing++] = act;
     b.state_sent = false;
     if (b.choosing < b.player_commands) return BV_RUNNING;
-    Position opponents[BC_MAX_ACTIVE];
-    const unsigned count = battle_collect_actors(&b.battle, 1, opponents);
-    for (unsigned i = 0; i < count; ++i)
-        battle_choose_at(&b.battle, opponents[i], &b.actions[b.player_commands + i]);
-    resolve_turn(b.actions, b.player_commands + count);
-    b.player_commands = 0;
-    return play_turn(turn);
+    return finish_choice(turn);
 }
 
 static void next_prompt(void) {
@@ -549,6 +573,12 @@ BattleViewStatus battle_view_update(bool start_pressed, const char **message) {
                    b.request.format, b.request.rules, b.request.trainer_id, b.request.trainer_class,
                    b.request.environment, b.request.result_policy, b.request.type_count, b.request.battle_id,
                    fetch.info.length, fetch.wire_length, b.request_us);
+        if (b.request.version >= BATTLE_REQUEST_VERSION_VOLATILES) {
+            const BattleVolatileRules *v = &b.request.volatiles;
+            SYS_Report("PH7 VOLATILE rules flags=%02x confusion=%u%%/%u-%u/power %u substitute=1/%u\n", v->flags,
+                       v->confusion_hit_percent, v->confusion_min, v->confusion_max, v->confusion_power,
+                       v->substitute_divisor);
+        }
         for (unsigned i = 0; i < b.request.player_count; ++i) log_entry("PLAYER", &b.request.player[i]);
         for (unsigned i = 0; i < b.request.opponent_count; ++i) log_entry("OPPONENT", &b.request.opponent[i]);
         build_plan();
