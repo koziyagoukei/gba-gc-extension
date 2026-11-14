@@ -2077,6 +2077,17 @@ static void test_charge(void) {
     assert(battle_init(&b, &r, 3) == BI_OK);
     run1(&b, slot_move(0, 0, 0, 1), slot_move(1, 0, 0, 1), &log);
     assert(find(&log, EV_DAMAGE) && find(&log, EV_DAMAGE)->target.side == 0);
+    // A Poison type's Toxic is a sure hit and reaches a semi-invulnerable target (rule).
+    BattleMove toxic = effect_move(BTARGET_SINGLE, 90, fx(BEFF_STATUS, BWHO_TARGET, 0, BST_TOXIC, 0, 0));
+    set_move(&r.opponent[0], 3, 92, toxic, 10);
+    r.opponent[0].mon.types[0] = r.opponent[0].mon.types[1] = T_GHOST;   // poison_type in these rules
+    assert(battle_init(&b, &r, 3) == BI_OK);
+    run1(&b, slot_move(0, 0, 0, 1), slot_move(1, 0, 0, 3), &log);
+    assert(find(&log, EV_STATUS) && BATTLE_CONDITION_KIND(battle_active(&b, 0)->status) == BST_TOXIC);
+    r.opponent[0].mon.types[0] = r.opponent[0].mon.types[1] = T_NORMAL;
+    assert(battle_init(&b, &r, 3) == BI_OK);
+    run1(&b, slot_move(0, 0, 0, 1), slot_move(1, 0, 0, 3), &log);
+    assert(find(&log, EV_MISS) && !battle_active(&b, 0)->status);
 
     // Double: the stored target fainted meanwhile -> the other foe is hit.
     make_volatiles(&r, BATTLE_FORMAT_DOUBLE);

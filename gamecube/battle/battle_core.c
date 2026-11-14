@@ -551,17 +551,21 @@ bool bc_drag_out(Battle *b, Position target, EventLog *log) {
     return true;
 }
 
+bool bc_sure_hit(const Battle *b, Position user, const BattleMove *move) {
+    if (!bc_conditions_enabled(b)) return false;
+    const bool toxic = move->effect == BATTLE_STATUS_EFFECT(BST_TOXIC) ||
+        (move->category == BCAT_STATUS && move->effect_count == 1 && move->effects[0].kind == BEFF_STATUS &&
+         move->effects[0].arg0 == BST_TOXIC);
+    return toxic && (b->request->conditions.flags & BCR_POISON_TOXIC_ALWAYS_HITS) &&
+           bc_has_type(battle_at(b, user), b->request->conditions.poison_type);
+}
+
 bool bc_missed(Battle *b, Position user, Position target, const BattleMove *move) {
     if (!move->accuracy) return false;
     unsigned accuracy = move->accuracy;
     if (bc_conditions_enabled(b)) {
         const Battler *a = battle_at(b, user), *d = battle_at(b, target);
-        const bool toxic = move->effect == BATTLE_STATUS_EFFECT(BST_TOXIC) ||
-            (move->category == BCAT_STATUS && move->effect_count == 1 && move->effects[0].kind == BEFF_STATUS &&
-             move->effects[0].arg0 == BST_TOXIC);
-        if (toxic &&
-            (b->request->conditions.flags & BCR_POISON_TOXIC_ALWAYS_HITS) &&
-            bc_has_type(a, b->request->conditions.poison_type)) return false;
+        if (bc_sure_hit(b, user, move)) return false;
         accuracy = bc_stage_scale(accuracy, a->stat_stages[BSTAT_ACC] - d->stat_stages[BSTAT_EVA], 3);
     }
     return bc_next_random(b) % 100u >= accuracy;

@@ -19,6 +19,9 @@ void bc_emit(EventLog *log, BattleEvent event);
 void bc_execute_switch(Battle *battle, Position user, uint8_t index, EventKind reason, EventLog *log);
 bool bc_drag_out(Battle *battle, Position target, EventLog *log);
 bool bc_missed(Battle *battle, Position user, Position target, const BattleMove *move);
+// A move that cannot miss for this user (Toxic from a Poison type under the rule); it also
+// reaches semi-invulnerable targets.
+bool bc_sure_hit(const Battle *battle, Position user, const BattleMove *move);
 void bc_cure_status(Battler *mon, BattleEvent event, EventLog *log);
 bool bc_immune_to_status(const BattleConditionRules *rules, const Battler *mon, uint8_t kind);
 void bc_apply_damage(Battle *battle, BattleEvent event, uint16_t damage, EventLog *log);

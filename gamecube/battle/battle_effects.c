@@ -333,7 +333,7 @@ static bool behind_substitute(const MoveContext *c, Position target) {
 
 // Semi-invulnerable targets: only moves flagged for that state reach them.
 static bool out_of_reach(const MoveContext *c, Position target) {
-    if (same(target, c->user)) return false;
+    if (same(target, c->user) || bc_sure_hit(c->b, c->user, c->move)) return false;
     switch (battle_at(c->b, target)->vol.semi_invulnerable) {
     case BSEMI_AIR: return !(c->move->move_flags & (BMF_HITS_AIRBORNE | BMF_DOUBLE_AIRBORNE));
     case BSEMI_UNDERGROUND: return !(c->move->move_flags & (BMF_HITS_UNDERGROUND | BMF_DOUBLE_UNDERGROUND));
