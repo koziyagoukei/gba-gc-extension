@@ -631,34 +631,6 @@ void bc_apply_damage(Battle *b, BattleEvent ev, uint16_t damage, EventLog *log) 
     }
 }
 
-static bool hit(Battle *b, Position user, Position target, const BattleMove *m, uint16_t id,
-                bool spread, bool typeless, EventLog *log) {
-    BattleEvent ev = {.user = user, .target = target, .move_id = id};
-    if (bc_missed(b, user, target, m)) {
-        ev.kind = EV_MISS;
-        bc_emit(log, ev);
-        return false;
-    }
-    const Battler *defender = battle_at(b, target);
-    uint16_t damage = bc_calculate_damage(b, battle_at(b, user), m, defender,
-                                       85u + bc_next_random(b) % 16u, typeless, &ev.effectiveness);
-    if (!ev.effectiveness) {
-        ev.kind = EV_NO_EFFECT;
-        bc_emit(log, ev);
-        return false;
-    }
-    if (spread) {
-        damage = damage * 3u / 4u;
-        if (!damage) damage = 1;
-    }
-    ev.kind = EV_DAMAGE;
-    bc_apply_damage(b, ev, damage, log);
-    if (!typeless && !defender->fainted && bc_status_kind(b, defender) == BST_FREEZE &&
-        (b->request->conditions.flags & BCR_THAW_ON_FIRE_HIT) && m->type == b->request->conditions.fire_type)
-        bc_cure_status(bc_mutable_at(b, target), ev, log);
-    return true;
-}
-
 static void execute_struggle(Battle *b, Position user, EventLog *log) {
     const BattleRequest *rules = b->request;
     const uint8_t foe = 1 - user.side;
@@ -675,7 +647,9 @@ static void execute_struggle(Battle *b, Position user, EventLog *log) {
     }
     const BattleMove move = {.power = rules->struggle_power, .category = BCAT_PHYSICAL,
                              .accuracy = rules->struggle_accuracy, .target = BTARGET_SINGLE};
-    if (!hit(b, user, target, &move, BATTLE_MOVE_STRUGGLE, false, true, log)) return;
+    // Protect, semi-invulnerable states and substitutes apply as to any hit;
+    // the recoil follows only a hit that landed (a substitute hit counts).
+    if (!bc_struggle_strike(b, user, target, &move, log)) return;
     const unsigned max_hp = battle_at(b, user)->max_hp;
     const unsigned rounding = rules->struggle_recoil == BSTRUGGLE_MAX_HP_NEAREST ? 2 : 0;
     const uint16_t recoil = (max_hp + rounding) / 4u;

@@ -36,6 +36,9 @@ bool bc_move_has_effect(const BattleMove *move, uint8_t kind);
 bool bc_effects_supported(const BattleRequest *request, const BattleMove *move);
 // Executes one move (PP, targets, effects); returns true if a pivot switch is due.
 bool bc_execute_move(Battle *battle, Position user, uint8_t move_slot, Position selected, EventLog *log);
+// Struggle's hit through the shared target checks (Protect, semi-invulnerable,
+// accuracy, substitute); typeless. True if it landed (recoil is then due).
+bool bc_struggle_strike(Battle *battle, Position user, Position target, const BattleMove *move, EventLog *log);
 // Volatile lifetimes (table in battle_core.h).
 typedef enum { VOL_TURN_START, VOL_TURN_END, VOL_SWITCH_OUT, VOL_SHIFT, VOL_ROTATE, VOL_FAINT } VolatileEvent;
 void bc_volatiles_on(Battler *mon, VolatileEvent event);

@@ -190,6 +190,7 @@ typedef struct {
     bool landed;     // any target was hit
     bool pivot;
     bool per_use_done;  // BETIME_PER_USE effects already ran for this use
+    bool typeless;      // Struggle: no type chart, no thaw
 } MoveContext;
 
 static Position subject(const MoveContext *c, const BattleEffect *e, Position target) {
@@ -394,7 +395,7 @@ static unsigned strike(MoveContext *c, const BattleEffect *damage, Position targ
     for (unsigned h = 0; ; ++h) {
         const Battler *defender = battle_at(b, target);
         uint16_t amount = bc_calculate_damage(b, battle_at(b, c->user), c->move, defender,
-                                              85u + bc_next_random(b) % 16u, false, &ev.effectiveness);
+                                              85u + bc_next_random(b) % 16u, c->typeless, &ev.effectiveness);
         if (!ev.effectiveness) {
             ev.kind = EV_NO_EFFECT;
             bc_emit(c->log, ev);
@@ -435,7 +436,7 @@ static unsigned strike(MoveContext *c, const BattleEffect *damage, Position targ
         bc_emit(c->log, (BattleEvent){.kind = EV_MULTI_HIT, .user = c->user, .target = target, .move_id = c->id,
                                       .amount = (uint16_t)hits});
     const Battler *defender = battle_at(b, target);
-    if (*struck && !defender->fainted && bc_status_kind(b, defender) == BST_FREEZE &&
+    if (*struck && !c->typeless && !defender->fainted && bc_status_kind(b, defender) == BST_FREEZE &&
         (b->request->conditions.flags & BCR_THAW_ON_FIRE_HIT) && c->move->type == b->request->conditions.fire_type)
         bc_cure_status(bc_mutable_at(b, target), ev, c->log);
     return lost;
@@ -530,6 +531,15 @@ static void protect(MoveContext *c, const BattleEffect *e) {
     ++mon->vol.protect_uses;
     mon->vol.protected_turn = true;
     bc_emit(c->log, (BattleEvent){.kind = EV_PROTECT, .user = c->user, .target = c->user, .move_id = c->id});
+}
+
+bool bc_struggle_strike(Battle *b, Position user, Position target, const BattleMove *move, EventLog *log) {
+    MoveContext c = {.b = b, .log = log, .user = user, .move = move, .id = BATTLE_MOVE_STRUGGLE, .typeless = true};
+    const BattleEffect damage = {.kind = BEFF_DAMAGE, .who = BWHO_TARGET, .arg0 = 1, .arg2 = 1};
+    if (blocked_by_protect(&c, target) || evaded(&c, target)) return false;
+    bool landed, struck;
+    strike(&c, &damage, target, &landed, &struck);
+    return landed;
 }
 
 bool bc_execute_move(Battle *b, Position user, uint8_t slot, Position selected, EventLog *log) {

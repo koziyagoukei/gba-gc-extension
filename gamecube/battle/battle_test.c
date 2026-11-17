@@ -2437,6 +2437,68 @@ static void test_effect_timing_units(void) {
     assert(event_count(&log, EV_RECOIL) == 1 && event_count(&log, EV_STAGE) == 1);
 }
 
+// ---------------------------------------------------------------- Struggle through the shared hit checks (audit B-02)
+
+static void test_struggle_shared_checks(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    const Action struggle = {.kind = ACT_STRUGGLE, .user = {0, 0}};
+    make_volatiles(&r, BATTLE_FORMAT_SINGLE);    // the foe (speed 70) acts before the player (60)
+    r.player[0].record.pp[0] = 0;
+    BattleMove guard = status_move(BTARGET_SELF, 0);
+    guard.priority = 4;
+    push(&guard, fx(BEFF_PROTECT, BWHO_USER, 0, 3, 0, 0));
+    set_move(&r.opponent[0], 1, 182, guard, 10);
+    set_move(&r.opponent[0], 2, 19, charge_move(90, BSEMI_AIR), 15);
+    set_move(&r.opponent[0], 3, 164, effect_move(BTARGET_SELF, 0, fx(BEFF_SUBSTITUTE, BWHO_USER, 0, 0, 0, 0)), 10);
+    // Protect blocks Struggle: no damage and no recoil (the audit's case: 200 -> 179 HP before).
+    assert(battle_init(&b, &r, 1) == BI_OK && battle_validate_action(&b, &struggle));
+    battle_run_turn(&b, (Action[]){struggle, slot_move(1, 0, 0, 1)}, 2, &log);
+    assert(find(&log, EV_PROTECT) && find(&log, EV_PROTECTED) && !find(&log, EV_DAMAGE) && !find(&log, EV_RECOIL));
+    assert(battle_active(&b, 0)->hp == 200 && battle_active(&b, 1)->hp == 200);
+    assert(find(&log, EV_MOVE_USED)->move_id == 182);
+    // A Pokemon in the air is out of reach: a miss, no recoil.
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){struggle, slot_move(1, 0, 0, 2)}, 2, &log);
+    assert(find(&log, EV_CHARGE) && find(&log, EV_MISS) && !find(&log, EV_RECOIL) && battle_active(&b, 0)->hp == 200);
+    // A substitute takes the hit; the recoil still follows (max HP / 4, nearest).
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){struggle, slot_move(1, 0, 0, 3)}, 2, &log);
+    assert(find(&log, EV_SUBSTITUTE) && find(&log, EV_SUBSTITUTE_HIT) && !find(&log, EV_DAMAGE));
+    assert(find(&log, EV_RECOIL)->amount == 50 && battle_active(&b, 0)->hp == 150 && battle_active(&b, 1)->hp == 150);
+    // Still typeless (hits a Ghost type, neutral), no PP, recoil after a normal hit.
+    r.opponent[0].mon.types[0] = r.opponent[0].mon.types[1] = T_GHOST;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, &struggle, 1, &log);
+    const BattleEvent *hit_event = find(&log, EV_DAMAGE);
+    assert(hit_event && hit_event->effectiveness == 4 && find(&log, EV_RECOIL)->amount == 50);
+    assert(battle_active(&b, 0)->pp[0] == 0);
+    // Double: the random target choice is kept; a protected foe still blocks it.
+    make_volatiles(&r, BATTLE_FORMAT_DOUBLE);
+    r.player[0].record.pp[0] = 0;
+    set_move(&r.opponent[0], 1, 182, guard, 10);
+    set_move(&r.opponent[1], 1, 182, guard, 10);
+    unsigned blocked = 0, left = 0;
+    for (uint32_t seed = 1; seed <= 60; ++seed) {
+        assert(battle_init(&b, &r, seed) == BI_OK);
+        const Action turn[] = {struggle, slot_move(1, 0, 0, 1)};
+        battle_run_turn(&b, turn, 2, &log);
+        const BattleEvent *used = NULL;
+        for (unsigned i = 0; i < log.count; ++i)
+            if (log.events[i].kind == EV_MOVE_USED && log.events[i].move_id == BATTLE_MOVE_STRUGGLE) used = &log.events[i];
+        assert(used);
+        left += used->target.slot == 0;
+        if (used->target.slot == 0) {
+            assert(find(&log, EV_PROTECTED) && !find(&log, EV_RECOIL));
+            ++blocked;
+        } else {
+            assert(find(&log, EV_DAMAGE) && find(&log, EV_RECOIL));
+        }
+    }
+    assert(left > 10 && left < 50 && blocked == left);
+}
+
 int main(void) {
     test_request_roundtrip();
     test_messages();
@@ -2481,6 +2543,7 @@ int main(void) {
     test_volatile_lifecycle();
     test_effect_timing_spread_self();
     test_effect_timing_units();
+    test_struggle_shared_checks();
     puts("battle tests passed");
     return 0;
 }
