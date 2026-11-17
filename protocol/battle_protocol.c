@@ -1,4 +1,5 @@
 #include "battle_protocol.h"
+#include <string.h>
 
 static void move_encode(const BattleMove *m, uint8_t *p) {
     msg_put16(p, m->power);
@@ -548,7 +549,11 @@ static bool decode_roster_state(const uint8_t *p, unsigned n, BattleRosterState 
         !decode_multi_state(p, BATTLE_MULTI_STATE_BYTES, &s->field_state, max_phase))
         return false;
     const uint8_t *q = p + BATTLE_MULTI_STATE_BYTES;
+    // Fields of later APP versions start empty; their decoders fill them in.
     s->struggle_mask = 0;
+    memset(s->status, 0, sizeof(s->status));
+    memset(s->stages, 0, sizeof(s->stages));
+    memset(s->volatiles, 0, sizeof(s->volatiles));
     s->reserves = *q++;
     if (s->reserves >= (1u << BATTLE_MAX_PER_SIDE) ||
         (s->field_state.phase >= BPHASE_REPLACE && !s->reserves))

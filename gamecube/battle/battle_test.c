@@ -2592,6 +2592,40 @@ static void test_auto_target_normalized(void) {
     assert(!battle_validate_action(&b, &bad));
 }
 
+// ---------------------------------------------------------------- older states leave newer fields empty (audit P-01)
+
+static void test_state_decode_defaults(void) {
+    static BattleRosterState s, out;
+    static uint8_t bytes[256];
+    memset(&s, 0, sizeof(s));
+    s.field_state = (BattleMultiState){.phase = BPHASE_CHOOSE, .token = 5};
+    for (unsigned side = 0; side < 2; ++side)
+        for (unsigned slot = 0; slot < BATTLE_FIELD_SLOTS; ++slot) s.field_state.field[side][slot].party_slot = BATTLE_SLOT_NONE;
+    for (unsigned i = 0; i < BATTLE_MAX_PER_SIDE; ++i) s.player[i].party_slot = BATTLE_SLOT_NONE;
+    s.status[1][0] = BST_BURN;
+    s.stages[0][1][BSTAT_ATK] = 2;
+    unsigned n;
+    // Decode each older layout into a receiver full of stale bytes (the GBA's stack variable).
+    memset(&out, 0xA5, sizeof(out));
+    n = battle_condition_state_encode(&s, bytes);                           // V7 / V8
+    assert(battle_condition_state_decode(bytes, n, &out));
+    assert(out.status[1][0] == BST_BURN && out.stages[0][1][BSTAT_ATK] == 2);
+    for (unsigned side = 0; side < 2; ++side)
+        for (unsigned slot = 0; slot < BATTLE_FIELD_SLOTS; ++slot) assert(out.volatiles[side][slot] == 0);
+    memset(&out, 0xA5, sizeof(out));
+    n = battle_struggle_state_encode(&s, bytes);                            // V4-V6
+    assert(battle_pivot_state_decode(bytes, n, &out));
+    for (unsigned side = 0; side < 2; ++side)
+        for (unsigned slot = 0; slot < BATTLE_FIELD_SLOTS; ++slot) {
+            assert(!out.status[side][slot] && !out.volatiles[side][slot]);
+            for (unsigned k = 0; k < BSTAT_COUNT; ++k) assert(!out.stages[side][slot][k]);
+        }
+    memset(&out, 0xA5, sizeof(out));
+    n = battle_roster_state_encode(&s, bytes);                              // V2-V3
+    assert(battle_roster_state_decode(bytes, n, &out));
+    assert(!out.struggle_mask && !out.status[1][0] && !out.volatiles[0][0]);
+}
+
 int main(void) {
     test_request_roundtrip();
     test_messages();
@@ -2639,6 +2673,7 @@ int main(void) {
     test_struggle_shared_checks();
     test_refused_turn_keeps_state();
     test_auto_target_normalized();
+    test_state_decode_defaults();
     puts("battle tests passed");
     return 0;
 }
