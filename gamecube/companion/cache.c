@@ -1,6 +1,7 @@
 #include "cache.h"
 #include "render.h"
 #include "pkmn_protocol.h"
+#include "asset_check.h"
 #include <ogc/cache.h>
 
 static uint8_t arena[CACHE_ARENA_BYTES] __attribute__((aligned(32)));
@@ -19,11 +20,11 @@ void cache_count_hit(void) { ++hits; }
 // PIXEL_4BPP_TILEMAP: a GBA text BG (tilemap + tiles + palette banks).
 static bool convert_tilemap(const uint8_t *d, uint32_t length, unsigned width, unsigned height, uint16_t *out,
                             unsigned *visible) {
-    if (length < TILEMAP_HEADER_BYTES) return false;
-    const unsigned mw = d[0] | d[1] << 8, mh = d[2] | d[3] << 8, tiles = d[4] | d[5] << 8, banks = d[6];
-    const bool opaque = d[7] & TILEMAP_FLAG_OPAQUE;
-    const uint8_t *map = d + TILEMAP_HEADER_BYTES, *gfx = map + mw * mh * 2, *pal = gfx + tiles * 32;
-    if (mw * 8 != width || mh * 8 != height || !banks || pal + banks * 32 != d + length) return false;
+    TilemapLayout l;
+    if (!asset_tilemap_layout(d, length, width, height, &l)) return false;  // sizes before pointers
+    const unsigned mw = l.map_width, mh = l.map_height, tiles = l.tiles, banks = l.banks;
+    const bool opaque = l.opaque;
+    const uint8_t *map = d + l.map_offset, *gfx = d + l.tiles_offset, *pal = d + l.palette_offset;
     *visible = 0;
     for (unsigned ty = 0; ty < mh; ++ty)
         for (unsigned tx = 0; tx < mw; ++tx) {
@@ -58,15 +59,10 @@ static uint8_t sprite_bottom(const uint16_t *texels, unsigned width) {
 }
 
 CacheEntry *cache_insert(uint32_t build_id, const AssetInfo *info, const uint8_t *data) {
-    const uint32_t palette = asset_palette_bytes(info->palette_format);
+    uint32_t bytes;
+    if (!asset_texture_valid(info, &bytes)) return NULL;  // dimensions and length first (audit M-01)
     const uint32_t pixels = (uint32_t)info->width * info->height / 2;
-    const uint32_t bytes = ((uint32_t)info->width * info->height * 2 + 31) & ~31u;
-    if (count == CACHE_MAX_ENTRIES || used + bytes > CACHE_ARENA_BYTES) return NULL;
-    if (info->width % 8 || info->height % 8) return NULL;
-    if (info->pixel_format == PIXEL_4BPP_TILED &&
-        (info->palette_format != PALETTE_BGR555_16 || info->length != pixels + palette))
-        return NULL;
-    if (info->pixel_format != PIXEL_4BPP_TILED && info->pixel_format != PIXEL_4BPP_TILEMAP) return NULL;
+    if (count == CACHE_MAX_ENTRIES || bytes > CACHE_ARENA_BYTES - used) return NULL;
     CacheEntry *e = &entries[count];
     uint16_t *texels = (uint16_t *)(arena + used);
     e->build_id = build_id;
