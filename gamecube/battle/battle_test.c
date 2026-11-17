@@ -2543,6 +2543,55 @@ static void test_refused_turn_keeps_state(void) {
     assert(!log.count && !memcmp(&before, &b, sizeof(b)));
 }
 
+// ---------------------------------------------------------------- automatic targets ignore the raw field (audit B-04)
+
+static void test_auto_target_normalized(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_volatiles(&r, BATTLE_FORMAT_DOUBLE);
+    BattleMove growl = effect_move(BTARGET_ALL_FOES, 0, fx(BEFF_STAT, BWHO_TARGET, 0, BSTAT_ATK, -1, 0));
+    set_move(&r.player[0], 1, 45, growl, 40);
+    set_move(&r.player[0], 2, 14, effect_move(BTARGET_SELF, 0, fx(BEFF_STAT, BWHO_TARGET, 0, BSTAT_ATK, 2, 0)), 20);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    // Core API caller (AI, replay) leaves garbage in the target of an automatic-target move.
+    Action g = {.kind = ACT_MOVE, .user = {0, 0}, .move_slot = 1, .target = {{7, 200}}};
+    assert(battle_validate_action(&b, &g));
+    battle_run_turn(&b, &g, 1, &log);
+    assert(event_count(&log, EV_STAGE) == 2);
+    for (unsigned i = 0; i < log.count; ++i)
+        assert(log.events[i].target.side <= 1 && log.events[i].target.slot < BC_MAX_ACTIVE &&
+               log.events[i].user.side <= 1 && log.events[i].user.slot < BC_MAX_ACTIVE);
+    Action sd = {.kind = ACT_MOVE, .user = {0, 0}, .move_slot = 2, .target = {{255, 255}}};
+    assert(battle_validate_action(&b, &sd));
+    battle_run_turn(&b, &sd, 1, &log);
+    assert(find(&log, EV_STAGE)->target.side == 0 && find(&log, EV_STAGE)->target.slot == 0);
+    for (unsigned i = 0; i < log.count; ++i)
+        assert(log.events[i].target.side <= 1 && log.events[i].target.slot < BC_MAX_ACTIVE);
+    // No target left: both foes fainted earlier this turn (they still have a reserve).
+    make_volatiles(&r, BATTLE_FORMAT_DOUBLE);
+    add_reserve(&r, 1);
+    r.opponent[0].record.hp = r.opponent[1].record.hp = 1;
+    BattleMove surf = damaging(40, T_NORMAL, 0);
+    surf.target = BTARGET_ALL_FOES;
+    set_move(&r.player[1], 1, 57, surf, 15);                       // player 1 (speed 80) moves first
+    set_move(&r.player[0], 1, 45, growl, 40);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    const Action late[] = {{.kind = ACT_MOVE, .user = {0, 0}, .move_slot = 1, .target = {{7, 200}}},
+                           slot_move(0, 1, 0, 1)};
+    battle_run_turn(&b, late, 2, &log);
+    assert(event_count(&log, EV_FAINT) == 2 && b.outcome == OUTCOME_NONE);
+    const BattleEvent *none = NULL;
+    for (unsigned i = 0; i < log.count; ++i)
+        if (log.events[i].kind == EV_NO_EFFECT && log.events[i].move_id == 45) none = &log.events[i];
+    assert(none && none->target.side == 1 && none->target.slot < BC_MAX_ACTIVE);
+    // An explicit single target is still checked against side, slot and reach.
+    Action bad = {.kind = ACT_MOVE, .user = {0, 0}, .move_slot = 0, .target = {{0, 1}}};   // own ally
+    assert(!battle_validate_action(&b, &bad));
+    bad.target.pos = (Position){1, 3};
+    assert(!battle_validate_action(&b, &bad));
+}
+
 int main(void) {
     test_request_roundtrip();
     test_messages();
@@ -2589,6 +2638,7 @@ int main(void) {
     test_effect_timing_units();
     test_struggle_shared_checks();
     test_refused_turn_keeps_state();
+    test_auto_target_normalized();
     puts("battle tests passed");
     return 0;
 }

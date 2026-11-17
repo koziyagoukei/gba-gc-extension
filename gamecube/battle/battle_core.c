@@ -877,6 +877,13 @@ void battle_run_turn(Battle *b, const Action *in, unsigned count, EventLog *log)
         const Battler *x = &b->sides[a->user.side].battlers[index];
         order[n++] = (TurnAction){*a, index, a->kind == ACT_MOVE ? x->moves[a->move_slot].priority : 0,
                                  speed(b, x), bc_next_random(b), TA_PENDING};
+        // A move that picks its own targets ignores the command's target field:
+        // store a canonical in-range one so nothing downstream sees a raw value.
+        Action *queued = &order[n - 1].action;
+        const Position mover = {a->user.side, slot};
+        if (queued->kind == ACT_MOVE &&
+            (battle_command_targets(b, mover, queued->move_slot) & BATTLE_TARGET_AUTO))
+            queued->target.pos = (Position){(uint8_t)(1 - a->user.side), 0};
     }
     // Locked positions (charging, recharging) act without a command. In
     // Rotation only the front acts, and a locked front cannot rotate.

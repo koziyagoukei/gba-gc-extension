@@ -550,6 +550,7 @@ bool bc_execute_move(Battle *b, Position user, uint8_t slot, Position selected, 
     const BattleEffect *charge = find_effect(m, BEFF_CHARGE);
     const bool releasing = charge && a->vol.charge_slot == slot;
     if (!bc_move_has_effect(m, BEFF_PROTECT)) a->vol.protect_uses = 0;
+    if (selected.side > 1 || selected.slot >= BC_MAX_ACTIVE) selected = (Position){foe, 0};  // defensive
     if (releasing) {  // second turn: the stored target, no PP
         selected = a->vol.charge_target;
         a->vol.charge_slot = BATTLE_SLOT_NONE;
