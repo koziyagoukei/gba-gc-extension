@@ -846,9 +846,10 @@ void battle_run_turn(Battle *b, const Action *in, unsigned count, EventLog *log)
     unsigned n = 0;
     log->count = 0;
     if (b->outcome != OUTCOME_NONE) return;
-    bc_effects_begin_turn(b);
+    // A turn refused while a pivot or replacement is pending changes nothing.
     if ((battle_pending_pivot(b, NULL) || battle_pending_replacement(b, NULL)) &&
         !(count == 1 && in[0].kind == ACT_FORFEIT && battle_validate_action(b, in))) return;
+    bc_effects_begin_turn(b);
     for (unsigned i = 0; i < count && n < BC_MAX_ACTIONS; ++i) {
         const Action *a = &in[i];
         if (a->kind == ACT_FORFEIT && battle_validate_action(b, a)) {

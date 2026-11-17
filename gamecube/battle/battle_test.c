@@ -2499,6 +2499,50 @@ static void test_struggle_shared_checks(void) {
     assert(left > 10 && left < 50 && blocked == left);
 }
 
+// ---------------------------------------------------------------- refused turns change nothing (audit B-03)
+
+static void test_refused_turn_keeps_state(void) {
+    static BattleRequest r;
+    static Battle b, before;
+    EventLog log;
+    make_volatiles(&r, BATTLE_FORMAT_DOUBLE);
+    add_reserve(&r, 0);
+    BattleMove guard = status_move(BTARGET_SELF, 0);
+    guard.priority = 4;
+    push(&guard, fx(BEFF_PROTECT, BWHO_USER, 0, 3, 0, 0));
+    set_move(&r.player[0], 1, 182, guard, 10);
+    BattleMove uturn = damaging(10, T_NORMAL, 0);
+    push(&uturn, fx(BEFF_PIVOT, BWHO_TARGET, 0, 0, 0, 0));
+    set_move(&r.player[1], 1, 369, uturn, 20);
+    assert(battle_init(&b, &r, 3) == BI_OK);
+    const Action turn[] = {slot_move(0, 0, 0, 1), slot_move(0, 1, 0, 1), move(1, 0, 0), move(1, 1, 1)};
+    battle_run_turn(&b, turn, 4, &log);
+    Position pivot;
+    assert(battle_pending_pivot(&b, &pivot) && pivot.slot == 1);
+    assert(battle_active(&b, 0)->vol.protected_turn && battle_active(&b, 0)->vol.acted);
+    before = b;
+    battle_run_turn(&b, NULL, 0, &log);                    // the audit's call: refused
+    assert(!log.count && !memcmp(&before, &b, sizeof(b)));
+    battle_run_turn(&b, turn, 4, &log);                    // a full turn is refused as well
+    assert(!log.count && !memcmp(&before, &b, sizeof(b)));
+    assert(battle_resume_pivot(&b, 2, &log));
+    assert(find(&log, EV_WITHDRAW) && find(&log, EV_SEND_OUT));
+    // The rest of the turn ran with Protect still up: the slower foe's attack on slot 0 is blocked.
+    assert(find(&log, EV_PROTECTED) && find(&log, EV_PROTECTED)->target.slot == 0);
+    // Pending replacement after a faint: refused turns keep the state too.
+    make_volatiles(&r, BATTLE_FORMAT_SINGLE);
+    add_reserve(&r, 0);
+    r.player[0].record.hp = 1;
+    assert(battle_init(&b, &r, 3) == BI_OK);
+    battle_active(&b, 0)->vol.confusion = 3;
+    battle_run_turn(&b, (Action[]){move(1, 0, 0)}, 1, &log);
+    Position replace;
+    assert(find(&log, EV_FAINT) && battle_pending_replacement(&b, &replace));
+    before = b;
+    battle_run_turn(&b, (Action[]){move(1, 0, 0)}, 1, &log);
+    assert(!log.count && !memcmp(&before, &b, sizeof(b)));
+}
+
 int main(void) {
     test_request_roundtrip();
     test_messages();
@@ -2544,6 +2588,7 @@ int main(void) {
     test_effect_timing_spread_self();
     test_effect_timing_units();
     test_struggle_shared_checks();
+    test_refused_turn_keeps_state();
     puts("battle tests passed");
     return 0;
 }
