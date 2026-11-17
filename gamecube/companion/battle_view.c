@@ -191,7 +191,8 @@ static bool poll_multi_action(BattleMultiAction *a) {
     if (!host_app_to(b.link, b.mode.app_id, opcode, NULL, 0, &d, &n, &status)) return false;
     if (status == APP_OK) {
         switch (b.mode.app_version) {
-        case BATTLE_APP_VERSION_VOLATILES:  // V9 keeps the V6 action layout
+        case BATTLE_APP_VERSION_TIMING:     // V10 and V9 keep the V6 action layout
+        case BATTLE_APP_VERSION_VOLATILES:
         case BATTLE_APP_VERSION_EFFECTS:
         case BATTLE_APP_VERSION_CONDITIONS:
         case BATTLE_APP_VERSION_PIVOT: return battle_pivot_action_decode(d, n, a);
@@ -333,7 +334,8 @@ static BattleViewStatus step_result(void) {
         r.opponent_hp[i] = b.init_error == BI_OK ? b.battle.sides[1].battlers[i].hp : b.request.opponent[i].record.hp;
     const unsigned n = battle_result_encode(&r, bytes);
     if (!send_state(BPHASE_ENDED)) return BV_LOST;
-    if (!host_result(b.link, GC_MODE_BATTLE, BATTLE_RESULT_VERSION, r.battle_id, bytes, n, &b.result_status))
+    // The result id is the nonce of the mode start it answers (message.h).
+    if (!host_result(b.link, GC_MODE_BATTLE, BATTLE_RESULT_VERSION, b.mode.nonce, bytes, n, &b.result_status))
         return BV_LOST;
     SYS_Report("PH3 RESULT outcome=%u turns=%u player_hp=%u/%u opponent_hp=%u/%u pp=%u,%u,%u,%u battle=%08x status=%u total_us=%u format=%u\n",
                r.outcome, r.turns, r.player[0].hp, b.request.player[0].record.max_hp, r.opponent_hp[0],
@@ -656,7 +658,16 @@ BattleViewStatus battle_view_update(bool start_pressed, const char **message) {
         if (!keepalive(&exit)) return BV_LOST;
         if (exit) {
             log_digest("end");
-            *message = host_bye(b.link, BYE_CLIENT_EXIT) ? "Battle finished" : "Battle finished (BYE lost)";
+            // Say what the GBA did with the result, not just that the battle ended.
+            static const char *const texts[] = {
+                [RESULT_ACCEPTED] = "Battle finished",
+                [RESULT_DUPLICATE] = "Battle finished (result already recorded)",
+                [RESULT_REJECTED] = "Battle finished (the GBA refused the result)",
+                [RESULT_UNSUPPORTED] = "Battle finished (the GBA cannot take this result)",
+            };
+            const char *text = b.result_status <= RESULT_UNSUPPORTED ? texts[b.result_status]
+                                                                    : "Battle finished (unknown result status)";
+            *message = host_bye(b.link, BYE_CLIENT_EXIT) ? text : "Battle finished (BYE lost)";
             SYS_Report("PH3 BYE after battle\n");
             return BV_ENDED;
         }

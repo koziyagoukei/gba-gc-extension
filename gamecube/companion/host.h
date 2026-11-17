@@ -21,6 +21,8 @@
 #define GCX_RELEASE_NAME "m3-dev"
 #elif GCX_RELEASE == 3
 #define GCX_RELEASE_NAME "m3.5-dev"
+#elif GCX_RELEASE == 4
+#define GCX_RELEASE_NAME "m3.5-audit"
 #else
 #error "unknown GCX_RELEASE: add its name to host.h and docs/releases.md"
 #endif

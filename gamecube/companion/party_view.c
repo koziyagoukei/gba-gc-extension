@@ -157,7 +157,16 @@ static void step_session(void) {
     ModeInfo mode;
     if (!host_mode(&v.link, &mode)) { lost("MODE"); return; }
     if (mode.mode_id == GC_MODE_BATTLE && mode.mode_version == BATTLE_MODE_VERSION && mode.app_id == APP_GC_BATTLE &&
-        mode.app_version >= BATTLE_APP_VERSION && mode.app_version <= BATTLE_APP_VERSION_VOLATILES) {
+        mode.app_version >= BATTLE_APP_VERSION && mode.app_version <= BATTLE_APP_VERSION_TIMING) {
+        if (mode.flags & MODE_FLAG_RESULT_FINAL) {
+            // This battle already ended and the GBA accepted its result (e.g.
+            // the link dropped after RESULT): never run it a second time.
+            SYS_Report("PH3 MODE result already final (nonce=%08x); not restarting the battle\n", mode.nonce);
+            host_bye(&v.link, BYE_HOST_EXIT);
+            v.hold_end = true;
+            set_state(V_ENDED, "Battle already finished: the GBA has its result");
+            return;
+        }
         battle_view_begin(&v.link, &mode);
         set_state(V_BATTLE, "Battle");
         return;
