@@ -191,7 +191,8 @@ static bool poll_multi_action(BattleMultiAction *a) {
     if (!host_app_to(b.link, b.mode.app_id, opcode, NULL, 0, &d, &n, &status)) return false;
     if (status == APP_OK) {
         switch (b.mode.app_version) {
-        case BATTLE_APP_VERSION_ABILITIES:  // V11, V10 and V9 keep the V6 action layout
+        case BATTLE_APP_VERSION_ABILITY_HOOKS:  // V12, V11, V10 and V9 keep the V6 action layout
+        case BATTLE_APP_VERSION_ABILITIES:
         case BATTLE_APP_VERSION_TIMING:
         case BATTLE_APP_VERSION_VOLATILES:
         case BATTLE_APP_VERSION_EFFECTS:
@@ -238,7 +239,7 @@ static void build_plan(void) {
                 if (record->moves[m]) plan_add(battle_move_label_key(record->moves[m]));
             // V11: names of abilities that can be shown (acting or not simulated).
             if (b.request.version >= BATTLE_REQUEST_VERSION_ABILITIES && record->ability &&
-                entries[i].mon.ability.kind != BABIL_NONE)
+                entries[i].mon.ability.cls != BACLASS_NONE)
                 plan_add(battle_ability_label_key(record->ability));
         }
     }
@@ -302,10 +303,16 @@ static void log_entry(const char *side, const BattleEntry *e) {
                        e->mon.moves[m].unsupported);
     if (b.request.version >= BATTLE_REQUEST_VERSION_ABILITIES) {
         const BattleAbility *a = &e->mon.ability;
-        SYS_Report("PH8   ability id=%u %s args=%u,%d,%u chance=%u percent=%u%s\n", a->source,
-                   battle_ability_kind_name(a->kind), a->arg0, a->arg1, a->arg2, a->chance, a->percent,
-                   a->kind == BABIL_UNSUPPORTED ? " NOT SIMULATED" :
-                   (b.request.rules & RULE_IGNORE_ABILITIES) ? " (ignored by rule)" : "");
+        const char *note = a->cls == BACLASS_UNSUPPORTED ? " NOT SIMULATED" :
+                           (b.request.rules & RULE_IGNORE_ABILITIES) ? " (ignored by rule)" : "";
+        if (a->cls != BACLASS_HOOKS)
+            SYS_Report("PH8   ability id=%u %s%s\n", a->source, a->cls == BACLASS_NONE ? "none" : "unsupported", note);
+        for (unsigned i = 0; i < a->count && i < BATTLE_MAX_ABILITY_HOOKS; ++i) {
+            const BattleAbilityHook *h = &a->hooks[i];
+            SYS_Report("PH8   ability id=%u hook%u %s args=%u,%d,%u chance=%u/%u percent=%u flags=%02x%s\n", a->source, i,
+                       battle_ability_kind_name(h->kind), h->arg0, h->arg1, h->arg2, h->chance, h->chance_den,
+                       h->percent, h->flags, note);
+        }
     }
     if (b.request.version < BATTLE_REQUEST_VERSION_EFFECTS) return;
     // V8: the resolved effect list, and the game's effect id for unsupported moves.
@@ -387,6 +394,20 @@ static BattleViewStatus play_turn(unsigned turn) {
                    e->outcome, e->user.slot, e->target.slot, e->rotation, e->battler, e->condition, e->stat, e->stage,
                    e->ability);
     }
+    // V11+: the core's state after the events (what the result is built from).
+    if (b.request.version >= BATTLE_REQUEST_VERSION_ABILITIES)
+        for (uint8_t side = 0; side < 2; ++side)
+            for (uint8_t i = 0; i < b.battle.sides[side].count; ++i) {
+                const Battler *x = &b.battle.sides[side].battlers[i];
+                int8_t pos = -1;
+                for (uint8_t s = 0; s < b.battle.sides[side].active_count; ++s)
+                    if (b.battle.sides[side].active[s] == i) pos = (int8_t)s;
+                SYS_Report("PH8 STATE turn=%u side=%u entry=%u pos=%d hp=%u/%u status=%04x stages=%d,%d,%d,%d,%d,%d,%d"
+                           " sub=%u conf=%u state=%u%s\n", turn, side, i, pos, x->hp, x->max_hp, (unsigned)x->status,
+                           x->stat_stages[0], x->stat_stages[1], x->stat_stages[2], x->stat_stages[3], x->stat_stages[4],
+                           x->stat_stages[5], x->stat_stages[6], x->vol.substitute_hp, x->vol.confusion,
+                           x->vol.ability_state, x->fainted ? " fainted" : "");
+            }
     if (!send_state(BPHASE_WAIT)) return BV_LOST;
     battle_scene_play(&b.log);
     diag_animation(battle_scene_steps(), ANIMATION_STEPS, turn);
@@ -635,7 +656,9 @@ BattleViewStatus battle_view_update(bool start_pressed, const char **message) {
         return BV_RUNNING;
     }
     case B_START: {
-        const uint32_t seed = (uint32_t)gettime() ^ b.request.battle_id;
+        // RULE_FIXED_SEED (V12 test fixtures): the battle id is the seed, so a run repeats.
+        const uint32_t seed = (b.request.rules & RULE_FIXED_SEED) ? b.request.battle_id
+                                                                  : (uint32_t)gettime() ^ b.request.battle_id;
         b.init_error = battle_init(&b.battle, &b.request, seed);
         diag_battle_begin(b.request.battle_id);
         SYS_Report("PH3 CORE init=%d (%s) seed=%08x\n", b.init_error, battle_init_error_name(b.init_error), seed);
