@@ -305,9 +305,10 @@ static void log_entry(const char *side, const BattleEntry *e) {
                                            m, move->priority, move->move_flags, move->source_effect);
         for (unsigned i = 0; i < move->effect_count && used < sizeof(text); ++i) {
             const BattleEffect *x = &move->effects[i];
-            used += (unsigned)snprintf(text + used, sizeof(text) - used, " %s/%s/%u%%/%u,%d,%u",
+            static const char *const timings[] = {"", "@hit", "@target", "@damage", "@after", "@use", "@6", "@7"};
+            used += (unsigned)snprintf(text + used, sizeof(text) - used, " %s/%s/%u%%/%u,%d,%u%s",
                                        battle_effect_kind_name(x->kind), x->who ? "user" : "target", x->chance,
-                                       x->arg0, x->arg1, x->arg2);
+                                       x->arg0, x->arg1, x->arg2, timings[BATTLE_EFFECT_TIMING(x)]);
         }
         SYS_Report("%s\n", text);
     }
