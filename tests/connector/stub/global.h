@@ -19,4 +19,26 @@ typedef uint32_t bool32;
 #define EWRAM_DATA
 #define IWRAM_DATA
 #define ARRAY_COUNT(a) (sizeof(a) / sizeof((a)[0]))
+typedef volatile uint8_t vu8;
+typedef volatile uint16_t vu16;
+typedef volatile uint32_t vu32;
+typedef volatile uint8_t vbool8;
+
+// GBA IO registers as plain variables (tests/connector/link_test.c).
+struct StubIo {
+    uint16_t joycnt, joy_recv_l, joy_recv_h, joy_trans_l, joy_trans_h;
+    uint16_t ime, ie, if_, rcnt, intr_check;
+};
+extern struct StubIo gStubIo;
+#define REG_ADDR_JOYCNT ((uintptr_t)&gStubIo.joycnt)
+#define REG_ADDR_JOY_RECV_L ((uintptr_t)&gStubIo.joy_recv_l)
+#define REG_ADDR_JOY_RECV_H ((uintptr_t)&gStubIo.joy_recv_h)
+#define REG_ADDR_JOY_TRANS_L ((uintptr_t)&gStubIo.joy_trans_l)
+#define REG_ADDR_JOY_TRANS_H ((uintptr_t)&gStubIo.joy_trans_h)
+#define REG_IME gStubIo.ime
+#define REG_IE gStubIo.ie
+#define REG_IF gStubIo.if_
+#define REG_RCNT gStubIo.rcnt
+#define INTR_CHECK gStubIo.intr_check
+#define INTR_FLAG_SERIAL (1 << 7)
 #endif
