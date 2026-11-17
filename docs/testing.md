@@ -101,3 +101,20 @@ simulated). Debug menu: **GC Double V10 (endurance)** keeps V10, **GC
 Double V11 (abilities)** runs the V11 fixtures against level-5 foes. The
 Dolphin log prints each entry's descriptor as `PH8 ability ...` and the
 ability id with each `PH3 EVENT`.
+
+## Milestone 4-A2 (release 6)
+
+Native: `battle_test.c` adds the V12 tests (wire, Triple range, Guts /
+Marvel Scale / Adaptability equivalences, Moxie, Shed Skin, Flash Fire,
+Scrappy, Synchronize, strict mode, and a 4-format same-seed determinism
+run comparing two cores event by event). Each new hook and codec rule was
+mutation-checked.
+
+Dolphin: the Cube Tester battles are V12. Debug menu: **GC Double V11
+(abilities)** and **GC Double V12 (abilities)** (level-5 foes), and **GC
+Ability Lab...** with 20 fixed-seed fixtures (see
+[abilities](abilities.md), "Ability lab"). A fixture replays exactly with
+the same inputs: the log's `PH8 STATE` lines after each turn are the
+core's state. Inputs per turn: A (fight), the move (DOWN to the next one),
+A, then the target (RIGHT to the next legal foe) and A; spread and self
+moves have no target step.

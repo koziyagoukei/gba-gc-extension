@@ -86,3 +86,40 @@
   so opening it wrote past a heap allocation and garbled the first rows.
   This existed in every Frontier GC build with more than 21 entries
   (34 in public-alpha-r1, 37 in release 4); those builds are unchanged.
+
+## Milestone 4-A2 (release 6, development only)
+
+- Abilities run with V12 hooks; V11 requests keep the M4-A behaviour
+  (Intimidate reaches every Triple foe there). The new abilities are
+  UNSUPPORTED in a V11 request.
+- Still UNSUPPORTED (shown, inert): Mold Breaker and similar, Trace and
+  other ability changes, weather and terrain setters and the weather
+  abilities, Pressure, Lightning Rod / Storm Drain, Cute Charm, Effect
+  Spore, Poison Touch, Aftermath, Magic Guard, Wonder Guard, Early Bird,
+  Hustle, Super Luck, Steadfast, form changes, among others. The designs
+  for ability changes and Mold Breaker are in abilities.md, the weather and
+  terrain design in weather-terrain.md; none is implemented.
+- Guts', Marvel Scale's and Adaptability's multipliers are verified by the
+  native tests; in Dolphin the lab fixture only shows the battle running
+  with them (damage values alone do not isolate the multiplier).
+- Some lab fixtures depend on a chance (Static, Flame Body, Poison Point,
+  Serene Grace, Shed Skin): with the fixed seed they show the effect at the
+  turn recorded in the M4-A2 report; a code change that moves RNG draws can
+  move it to another turn.
+- The JoyBus first-word loss is unchanged: still recovered (stale drop,
+  NACK, one resend), still not explained. The cache eviction and nickname
+  label key (audit M-01) are still open.
+- Fixed on `frontier-gc-m4a2`: the Frontier request buffer
+  (`REQUEST_CAPACITY`) did not count the V9 volatile rules or the ability
+  blocks. A worst-case V12 request (every move with six effects, every
+  ability with four hooks) is 2,789 bytes against 2,565; the encoder would
+  have refused it and the battle would not have started (no overflow).
+  Requests built so far are about 1.7 KB, so no run was affected. The
+  buffer now counts both blocks at their maximum (+224 bytes, heap).
+- Decided after the M4-A2 design review (2026-11-18): V12 stays the base;
+  hooks, conditions and typed operations are to be consolidated step by
+  step. An independent rule engine, separate definition sets, a per-ROM
+  manifest and a rule RAM cache are on hold; GC memory card persistence is
+  deferred. Measured for that review: a battle request takes 0.40–0.63 s
+  over the link (about 1.4–2.2 KB/s effective), the battle sprites and
+  labels 1.1–4.0 s cold.

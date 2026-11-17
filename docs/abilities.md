@@ -177,12 +177,13 @@ condition holds. Abilities never draw from the RNG in V1–V10 requests.
 - Every ability not in the table is `UNSUPPORTED` (sent, shown, inert):
   Mold Breaker, weather and terrain setters, Trace, Pressure (no PP effect
   here), form changes, Moxie-like and HP-threshold abilities, Lightning Rod /
-  Storm Drain redirection, Flash Fire, Shed Skin, Synchronize, Cute Charm,
-  Effect Spore, Poison Touch, Aftermath, Magic Guard, Wonder Guard, …
+  Storm Drain redirection, Cute Charm, Effect Spore, Poison Touch,
+  Aftermath, Magic Guard, Wonder Guard, … (Moxie, Flash Fire, Shed Skin,
+  Synchronize and others became supported in V12, see below.)
 - Ability changes during battle (Skill Swap, Gastro Acid) do not exist.
-- Triple: Intimidate affects every standing foe on the field, as in the
-  reference code (which has no Triple rules). Whether a Gen 5 Triple Battle
-  limits it to adjacent foes is not confirmed here.
+- Triple (V11): Intimidate affects every standing foe on the field. V12
+  limits it to the adjacent foes (see "Ranges" below); V11 requests keep
+  the M4-A behaviour.
 - OHKO immunity of Sturdy is not reachable (OHKO moves are refused).
 
 ## Verification (release 5)
@@ -214,3 +215,190 @@ Not seen in Dolphin (native tests only): contact abilities, Sturdy,
 absorb, status/volatile immunity, Shield Dust, Serene Grace, Rock Head,
 Infiltrator, No Guard against a semi-invulnerable target. The automated
 Cube Tester inputs did not create those situations.
+
+# Milestone 4-A2 (request V12, release 6)
+
+## Why the descriptor changed
+
+The V11 descriptor (one kind, three arguments, a percent chance) covers
+simple modifiers and immunities. The M4-A2 abilities do not fit it:
+
+| Need | Example | V12 answer |
+|---|---|---|
+| Several hooks for one ability | Scrappy (type rule and Intimidate block), Guts (stat and burn rule), Flash Fire (absorb and boost) | an ability is a list of up to 4 hooks |
+| A chance that is not a percentage | Shed Skin 1/3, contact abilities 1/3 before Gen 4 | chance numerator / denominator |
+| A condition on the holder | Guts and Marvel Scale only while statused, Flash Fire's boost only after absorbing | hook flags `REQUIRES_STATUS`, `REQUIRES_STATE` |
+| State that lives with the battler | Flash Fire's boost | `ability_state` in the battler's volatiles: cleared on switch-out and faint, kept by Rotation and Triple Shift (the volatile lifetime table) |
+| A reach that depends on position | Intimidate in a Triple | a range argument checked by the shared `battle_in_range` |
+| An option for the game's generation | Synchronize's toxic rule, Flash Fire while frozen | hook flags set by the GBA from `B_*` |
+
+The GC still never reads a game ability id: the GBA lists hooks, the core
+runs hook kinds. V11 descriptors decode into the same structure (one hook,
+chance/100), so there is one code path; the V11 encoder refuses an ability
+it cannot express, and every V12-only field (kind, flag, second hook, rule
+bit) makes an earlier request malformed.
+
+```
+V12 ability block, per entry, after the move effect lists:
+  0 u8 class (NONE 0 / UNSUPPORTED 1 / HOOKS 2)   1 u8 hook count (0, or 1..4 for HOOKS)
+  2 u16 source ability id (= the record's ability id)
+  then count x 8 bytes: kind, arg0, s8 arg1, arg2, chance num, chance den (both 0 = certain), percent, flags
+```
+
+New hook kinds: `DEFENSE_MULT`, `IGNORE_BURN`, `STAB_MULT`, `KO_STAT`,
+`END_TURN_CURE`, `ABSORB_STATE`, `TYPE_PASS`, `STATUS_MIRROR`; `ATTACK_MULT`
+may apply to any category and to one type (`TYPE_FILTER`); `ENTRY_STAT` has
+a range. `BREAKABLE` is copied from the game's ability data for a later
+Mold Breaker and has no effect yet. The decoder refuses a block that claims
+more than four hooks before reading any of them (a safety bound: the later
+validity check also refuses it, so no test can tell the two apart).
+
+## Designed, not implemented (needs a review before it is built)
+
+| Topic | Design |
+|---|---|
+| Abilities that ignore others (Mold Breaker, Teravolt) | an attacker hook `IGNORE_BREAKABLE`: during that attacker's move, target hooks with `BREAKABLE` are skipped by the lookup (`bc_ability_next` gets the acting battler). No new wire field: the flag is already sent |
+| Abilities that change (Trace, Skill Swap, Role Play, Entrainment) | each battler gets an ability reference (an index into the request's ability blocks) instead of reading its own entry; a change copies the reference and clears `ability_state`. Abilities that come from a move (Worry Seed, Simple Beam) need their blocks in the request: a small "ability catalog" after the entries |
+| Suppression (Gastro Acid, Neutralizing Gas) | a volatile "ability suppressed" bit checked by the lookup; Neutralizing Gas is a field condition |
+| Order between battlers | hooks at one point run in the existing speed order (entry, end of turn) or in event order (per hit, per target); inside one ability, in hook list order |
+| Recursion | hooks that react to events (Synchronize now; later Color Change, Cursed Body) run with a guard so an effect they cause cannot trigger the same reaction again (`ability_mirroring` now; a depth counter when there are more) |
+| Lifetime | `ability_state` follows the volatile table (switch, drag, pivot, faint clear it; Shift and rotation keep it); an ability change clears it |
+
+## Ranges
+
+`battle_in_range(battle, holder, other, range)` is the one place that
+decides who an effect with several targets reaches. `BRANGE_ALL_FOES`:
+every foe on the field. `BRANGE_ADJACENT_FOES`: in a Triple, the foes
+adjacent to the holder (the same adjacency table moves use: left reaches
+left and center, center reaches all three, right reaches center and right);
+in Single, Double and Rotation every foe on the field (no change from
+M4-A). The Frontier exporter gives Intimidate the adjacent range in V12.
+
+Other abilities whose reach depends on position in a Triple (none of them
+implemented yet, all UNSUPPORTED): Supersweet Syrup, Frisk, Anticipation,
+Forewarn, Healer, Friend Guard, Flower Veil, Plus/Minus, Lightning Rod and
+Storm Drain redirection, Trace's choice of foe. They will use the same
+function with new range values.
+
+## Strict and development modes
+
+`NONE` means the ability does nothing in this model; `UNSUPPORTED` means it
+does something the core does not run. The request rule
+`RULE_STRICT_ABILITIES` (V12) makes `battle_init` refuse a battle in which
+any Pokemon has an UNSUPPORTED ability (`BI_UNSUPPORTED_ABILITY`, shown as
+"strict rules: an ability is not simulated"; the result is "unsupported"
+and nothing is applied). Without the rule (development, the Cube Tester and
+the debug fixtures) the battle runs with the notice, as before. A future
+public battle mode should send the strict rule; `NONE` never blocks.
+
+## New abilities (V12)
+
+| Ability | Hooks | Unit / order | Reference behaviour checked |
+|---|---|---|---|
+| Guts | `ATTACK_MULT` physical 150 while statused; `IGNORE_BURN` | per hit (damage) | Guts stat modifier; burn halving skipped, frostbite still halves special moves |
+| Marvel Scale | `DEFENSE_MULT` physical 150 while statused | per hit | defender modifier when Defense is used |
+| Adaptability | `STAB_MULT` 200 | per hit | same-type bonus 2.0; Struggle has none (typeless) |
+| Moxie | `KO_STAT` Atk +1 per knock-out | after the move, after recoil | every battler the move damaged (not a substitute) that is down, allies included; not when either side has no Pokemon left; not when the holder is down (no observable difference: stages reset on faint) |
+| Shed Skin | `END_TURN_CURE` any status, 1/3 (30% only under the Gen 4 setting) | end of turn, before residual damage | the first end-of-turn block, before poison and burn; the chance is drawn only when the holder has a status |
+| Flash Fire | `ABSORB_STATE` Fire; `ATTACK_MULT` any category 150 for Fire while the state is set | per target, before the substitute and accuracy (like Volt Absorb); boost per hit | absorbs every Fire move (status moves too), also when already boosted; a frozen holder too from Gen 5 (`B_FLASH_FIRE_FROZEN`); the boost leaves with the battler |
+| Scrappy | `TYPE_PASS` Normal and Fighting into Ghost; `VOLATILE_IMMUNE` Intimidate (Gen 8+) | per hit (effectiveness) | only the Ghost part of the multiplier becomes neutral |
+| Oblivious | `VOLATILE_IMMUNE` Intimidate (Gen 8+); NONE before Gen 8 | entry | its other effects (infatuation, Taunt, Captivate) belong to moves and abilities the GC refuses or runs inert, so nothing else can differ |
+| Synchronize | `STATUS_MIRROR` poison, bad poison, paralysis, burn | right after the status is set, at the effect's own unit | the source gets the same status if it can (type, existing status, its own immunity); the ability shows even when it cannot; bad poison stays bad poison from Gen 5 (`B_SYNCHRONIZE_TOXIC`); a status given back never reflects again (the game's synchronize state); a contact ability's holder is the source of its status |
+
+## Ability lab (Dolphin fixtures)
+
+Debug menu > Utilities > **GC Ability Lab...**: 20 fixtures with fixed
+species, ability slot, level, moves, HP and status. Each request carries
+`RULE_FIXED_SEED` and a fixed battle id (`0x4C4142nn`), which the GC uses as
+its RNG seed, so the same inputs replay the same battle. The Dolphin log
+prints every hook (`PH8 ability ... hookN`) and, after each turn, every
+battler's HP, status, stages, substitute, confusion and ability state
+(`PH8 STATE`), so a run is checked against the core's state, not only its
+events.
+
+| Fixture | Shows (fires / does not fire) |
+|---|---|
+| L01 Sturdy | 1 HP from full; next turn knocked out (not at full HP) |
+| L02 Sturdy multi-hit | the first Double Kick hit leaves 1 HP, the second knocks out |
+| L03 Rough Skin | once per contact hit (also on the knocking-out hit); knocks out an attacker at 5% HP; no damage for Water Gun |
+| L04 Static | paralysis from a contact hit; never for the Electric attacker |
+| L05 Flame Body | burn chance per contact hit; never for the Fire attacker |
+| L06 Poison Point | poison chance per contact hit; never for the Poison attacker |
+| L07 Volt / Water Absorb | heals 1/4; "no effect" at full HP; Surf hits the ally and the other foe |
+| L08 Limber | cured on entry; Thunder Wave blocked with a message; Body Slam's chance silent |
+| L09 Insomnia / Immunity / Water Veil | each blocks its status; Will-O-Wisp still burns the Immunity holder |
+| L10 Intimidate (Triple) | from the left: left foe blocked by Inner Focus, center −1, right untouched |
+| L11 Own Tempo / Oblivious / Scrappy | Intimidate blocked by both; Confuse Ray blocked; Scrappy's Tackle hits Gastly, another Tackle has no effect |
+| L12 Serene Grace / Shield Dust | 60% Body Slam paralysis; never on the Shield Dust holder |
+| L13 Rock Head | no Double-Edge recoil; the partner takes it |
+| L14 Infiltrator / No Guard | Bite through a substitute (the substitute keeps its HP); a 50% move hits a flying foe |
+| L15 Guts / Marvel Scale / Adaptability | runs; the multipliers are checked natively (damage equivalence tests) |
+| L16 Flash Fire | Ember absorbed each turn; the state is set |
+| L17 Moxie | +1 per knock-out; nothing after the last one |
+| L18 Shed Skin | cures before the burn damage |
+| L19 Synchronize | paralysis back to Machop; shown but not set on the Electric Pikachu |
+| L20 Strict rules | the GC refuses the battle (an UNSUPPORTED ability) |
+
+## Verification (release 6)
+
+Native (`-Wall -Wextra -Werror`, -O2 and ASan + UBSan): all suites, V1–V11
+unchanged and passing. V12 adds wire/validation tests, the Triple range,
+damage equivalences for Guts / Marvel Scale / Adaptability, Moxie, Shed
+Skin, Flash Fire, Scrappy, Synchronize, strict mode, and a same-seed
+determinism run (4 formats × 40 seeds, two cores compared event by event).
+Every new hook and codec rule was mutation-checked; the one survivor is the
+decoder's hook-count bound, which the validity check also enforces.
+
+Dolphin 2609b, release 6 GC + Frontier `frontier-gc-m4a2` (fixed seeds):
+
+| Fixture | Observed |
+|---|---|
+| L01 | Sturdy at 1/29 HP after a 28-damage hit; knocked out the next turn |
+| L02 | Double Kick: first hit Sturdy (1 HP), second hit knocks out (2 hits) |
+| L03 | Rough Skin after each of 2 contact hits (also the knocking-out one); Machop at 5% knocked out by it; replacement's Water Gun: none |
+| L04 | Static paralysed Machop on the first contact hit; no roll once paralysed; the Electric Raichu never |
+| L05 | Flame Body burned Hitmonlee on turn 4 (then burn damage each turn); the Fire Ponyta never |
+| L06 | Poison Point poisoned Hitmonlee on turn 2; the Poison Nidoran♂ never |
+| L07 | Volt Absorb +29 HP twice; Water Absorb at full HP "no effect"; Surf hit the ally Pikachu |
+| L08 | Limber cured paralysis on entry and blocked Thunder Wave with a message |
+| L09 | Insomnia, Immunity, Water Veil each blocked their status; Will-O-Wisp burned the Immunity Snorlax |
+| L10 | Triple Intimidate from the left: Inner Focus block (left), −1 (center), right foe untouched |
+| L11 | Intimidate blocked by Own Tempo and Oblivious; Confuse Ray blocked by Own Tempo; Scrappy Tackle hit Gastly (62→25 HP), Pikachu's Tackle had no effect |
+| L12 | Serene Grace Body Slam paralysed on turn 1; the Shield Dust Dustox never in 3 turns |
+| L13 | Rock Head: no Double-Edge recoil; the partner's recoil 10 HP |
+| L14 | Infiltrator Bite hit Crobat behind its substitute (substitute kept 31 HP); No Guard Zap Cannon hit Pidgeot in the air |
+| L15 | runs with the hooks; the multipliers are verified natively |
+| L16 | Flash Fire absorbed Ember on all 3 turns (state 1) |
+| L17 | Moxie +1 after each of two knock-outs, nothing after the last |
+| L18 | Shed Skin cured the burn at the end of turn 1, before the burn damage |
+| L19 | Synchronize: Machop paralysed back; shown but not set on the Electric Pikachu |
+| L20 | strict rules: the GC refused (init error, result "unsupported") |
+
+The same fixture run in two Dolphin sessions gave identical events and
+state lines (L05 turns 1–3, 48 lines). L04 was first run with a Hitmonlee
+attacker, whose Limber correctly stopped Static; the fixture now uses a
+Machop.
+
+Regressions (Dolphin, release 6): debug entries V12 and V11 ability
+endurance, V10 endurance, V9, V8, V7 conditions, V6 pivot, V5 drag, V4
+Struggle (run on its own: the 0-PP lead sends Struggle, hits for 9, the
+max-HP/4 recoil of 14 knocks out the 1-HP user; identical in two runs),
+V3 switch, V2 reserve, V1 show-only; Cube Tester V12 in all four formats
+(Single win in 3 turns, Double loss in 20, Triple loss in 8, Rotation win in 16; 12 ability events, no link loss); result contract on V12 (link cut on the result
+screen → "result already final … not restarting", GBA back to the field);
+Phase 2 party viewer on Frontier (42 assets, reconnect 42/42 cache hits)
+and on the generic connector (23/23); Phase 1 at 160 µs, with faults and at
+250 µs. Save SHA-256 unchanged after every run.
+
+Frontier `make check`: `frontier-gc-m4a` (a7e7d6cb9f, the M4-A2 parent)
+and `frontier-gc-m4a2` (f8c02476e1) both 3,890 passed / 2,455 failed of
+6,806, with the same 2,407 failing test names (no new failure).
+
+| Build | M4-A (release 5) | M4-A2 (release 6) |
+|---|---:|---:|
+| GC DOL | 306,880 B | 315,008 B |
+| GC ELF text / data / BSS | 246,766 / 59,816 / 2,988,544 B | 253,510 / 61,232 / 2,988,928 B |
+| GC `BattleRequest` / `Battle` / `EventLog` | 5,152 / 3,736 / 45,556 B | 5,488 / 3,784 / 45,556 B |
+| Frontier ROM used | 26,334,336 B | 26,340,772 B |
+| Frontier EWRAM (static) | 231,984 B | 231,984 B |
+| Frontier request buffer (heap) | 2,565 B | 2,789 B (see known issues) |

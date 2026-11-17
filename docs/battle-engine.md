@@ -754,3 +754,14 @@ the substitute and accuracy checks; entry abilities run on every send-out
 and at the battle start (`battle_begin`), Speed Boost after the residual
 damage. V1-V10 requests decode and run unchanged; a V11 request with
 `RULE_IGNORE_ABILITIES` runs no ability.
+
+## Milestone 4-A2 — hook-based abilities (release 6, request V12)
+
+An ability is now a list of hooks ([abilities](abilities.md), "Milestone
+4-A2"); V11 descriptors become one hook. New: Guts, Marvel Scale,
+Adaptability, Moxie, Shed Skin, Flash Fire, Scrappy, Oblivious,
+Synchronize; Intimidate reaches only adjacent foes in a Triple through the
+shared `battle_in_range`; `RULE_STRICT_ABILITIES` refuses battles with an
+UNSUPPORTED ability; `RULE_FIXED_SEED` makes test fixtures repeat. The
+weather and terrain design for M4-W / M4-T is in
+[weather-terrain](weather-terrain.md) (not implemented).
