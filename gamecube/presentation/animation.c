@@ -299,7 +299,9 @@ bool animation_tick(BattleAnimation *a, const BattleLayout *layout) {
         if (!advance(a, layout, s, a->frame++)) return false;
         a->frame = 0;
         ++a->index;
-        if (s->kind != ANIM_MESSAGE) return false;
+        // Messages and volatile badge changes are instant: they share the
+        // tick of the step that follows instead of taking one of their own.
+        if (s->kind != ANIM_MESSAGE && s->kind != ANIM_VOLATILE) return false;
     }
     return true;
 }

@@ -78,12 +78,35 @@ int main(void) {
         {.kind = EV_WITHDRAW, .target = {0, BPOS_LEFT}, .battler = 1},
         {.kind = EV_SEND_OUT, .target = {0, BPOS_LEFT}, .battler = 3, .amount = 90, .hp_after = 65},
     }, 2};
+    anim.actor[0][BPOS_LEFT].volatiles = BVF_SUBSTITUTE | BVF_CONFUSED;
     animation_play(&anim, triple, &entrant);
     for (unsigned i = 0; i < 18; ++i) animation_tick(&anim, triple);
+    // The withdraw takes its 18 frames (badge clearing adds none) and drops the old badges.
     assert(!anim.actor[0][BPOS_LEFT].visible && anim.actor[0][BPOS_LEFT].battler == 1);
+    assert(!anim.actor[0][BPOS_LEFT].volatiles);
     finish(&anim, triple);
     assert(anim.actor[0][BPOS_LEFT].visible && anim.actor[0][BPOS_LEFT].battler == 3);
+    assert(!anim.actor[0][BPOS_LEFT].volatiles);
     assert(anim.actor[0][BPOS_LEFT].hp == 65 && anim.actor[0][BPOS_LEFT].max_hp == 90);
+    // V9 badges: a substitute appears and breaks; a charge hides the sprite until the move is used.
+    const EventLog volatiles = {{
+        {.kind = EV_SUBSTITUTE, .user = {0, BPOS_LEFT}, .target = {0, BPOS_LEFT}, .amount = 22, .hp_after = 43},
+        {.kind = EV_CHARGE, .user = {0, BPOS_CENTER}, .target = {0, BPOS_CENTER}, .condition = BSEMI_AIR},
+    }, 2};
+    animation_play(&anim, triple, &volatiles);
+    finish(&anim, triple);
+    assert(anim.actor[0][BPOS_LEFT].volatiles == BVF_SUBSTITUTE && anim.actor[0][BPOS_LEFT].hp == 43);
+    assert(anim.actor[0][BPOS_CENTER].volatiles == (BVF_CHARGING | BVF_SEMI_INVULNERABLE));
+    const EventLog release = {{
+        {.kind = EV_MOVE_USED, .user = {0, BPOS_CENTER}, .target = {1, BPOS_CENTER}, .move_id = 19},
+        {.kind = EV_SUBSTITUTE_HIT, .user = {1, BPOS_CENTER}, .target = {0, BPOS_LEFT}, .amount = 22},
+        {.kind = EV_SUBSTITUTE_BREAK, .user = {1, BPOS_CENTER}, .target = {0, BPOS_LEFT}},
+    }, 3};
+    animation_play(&anim, triple, &release);
+    finish(&anim, triple);
+    assert(!anim.actor[0][BPOS_CENTER].volatiles && !anim.actor[0][BPOS_LEFT].volatiles);
+    assert(anim.actor[0][BPOS_LEFT].visible && !anim.actor[0][BPOS_LEFT].blink && anim.actor[0][BPOS_LEFT].offset.x == 0);
+    anim.actor[0][BPOS_LEFT].hp = 65;  // the status block below starts from the entrant's HP
     const EventLog condition = {{
         {.kind = EV_STATUS, .target = {0, BPOS_LEFT}, .condition = BST_BURN},
         {.kind = EV_RESIDUAL, .target = {0, BPOS_LEFT}, .condition = BST_BURN, .hp_after = 60},
