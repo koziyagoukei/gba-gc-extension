@@ -123,12 +123,12 @@ static void log_record(const PokemonRecord *r) {
     for (unsigned i = 0; i < r->nickname_length; ++i) sprintf(nick + 2 * i, "%02x", r->nickname[i]);
     SYS_Report("PH2 RECORD slot=%u species=%u dex=%u form=%u lv=%u hp=%u/%u atk=%u def=%u spe=%u spa=%u spd=%u "
                "moves=%u,%u,%u,%u pp=%u/%u,%u/%u,%u/%u,%u/%u ability=%u(slot %u) item=%u status=%08x nature=%u "
-               "tera=%u gender=%u flags=%x pid=%08x nick=%s sprite=%04x:%08x:%08x:%08x\n",
+               "tera=%u gender=%u flags=%x friendship=%u ot=%08x pid=%08x nick=%s sprite=%04x:%08x:%08x:%08x\n",
                r->slot, r->species, r->national_dex, r->form, r->level, r->hp, r->max_hp, r->attack, r->defense,
                r->speed, r->sp_attack, r->sp_defense, r->moves[0], r->moves[1], r->moves[2], r->moves[3],
                r->pp[0], r->max_pp[0], r->pp[1], r->max_pp[1], r->pp[2], r->max_pp[2], r->pp[3], r->max_pp[3],
                r->ability, r->ability_slot, r->held_item, r->status, r->nature, r->tera_type, r->gender, r->flags,
-               r->personality, nick, r->sprite.type, r->sprite.id, r->sprite.variant, r->sprite.extra);
+               r->friendship, r->ot_id, r->personality, nick, r->sprite.type, r->sprite.id, r->sprite.variant, r->sprite.extra);
 }
 
 static void step_session(void) {
