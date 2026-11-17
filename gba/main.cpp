@@ -144,8 +144,10 @@ int main() {
             Frame request{};
             switch (wire_feed(&parser, word, &request)) {
             case FRAME_OK: request_frame(request); break;
-            case BAD_CRC: ++crc_errors; nack(0); break;
-            case BAD_HEADER: nack(0); break;
+            // With a later frame start already buffered (a resend after a lost
+            // word) that candidate continues; otherwise ask for a resend.
+            case BAD_CRC: ++crc_errors; if (!parser.count) nack(0); break;
+            case BAD_HEADER: if (!parser.count) nack(0); break;
             default: break;
             }
         }
