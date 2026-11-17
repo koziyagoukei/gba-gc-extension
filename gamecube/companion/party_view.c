@@ -87,6 +87,32 @@ static bool log_digest(const char *when) {
     return true;
 }
 
+// Optional diagnostics (PKMN_STATE_DETAIL): which party slot and region a
+// digest change lies in. Older clients answer APP_UNKNOWN_OP; that is fine.
+static void log_detail(void) {
+    const uint8_t *d;
+    unsigned n;
+    uint16_t status;
+    if (!host_app(&v.link, PKMN_STATE_DETAIL, NULL, 0, &d, &n, &status) || status != APP_OK ||
+        n < STATE_DETAIL_BYTES)
+        return;
+    for (unsigned slot = 0; slot < STATE_DETAIL_SLOTS; ++slot) {
+        const uint8_t *q = d + 4 + slot * 16;
+        SYS_Report("PH2 DETAIL count=%u slot=%u header=%08x secure=%08x tail=%08x exp=%u\n", wire_get32(d), slot,
+                   wire_get32(q), wire_get32(q + 4), wire_get32(q + 8), wire_get32(q + 12));
+    }
+    // With a slot argument: that slot's hidden box fields (list in the client).
+    for (uint8_t slot = 0; slot < STATE_DETAIL_SLOTS; ++slot) {
+        if (!host_app(&v.link, PKMN_STATE_DETAIL, &slot, 1, &d, &n, &status) || status != APP_OK || n < 4) return;
+        char text[400];
+        unsigned used = (unsigned)snprintf(text, sizeof(text), "PH2 FIELDS slot=%u", slot);
+        const unsigned fields = wire_get32(d);
+        for (unsigned i = 0; i < fields && 4 + 4 * i + 4 <= n && used < sizeof(text); ++i)
+            used += (unsigned)snprintf(text + used, sizeof(text) - used, " %x", wire_get32(d + 4 + 4 * i));
+        SYS_Report("%s\n", text);
+    }
+}
+
 static AssetKey label(uint32_t kind, uint32_t value) {
     return (AssetKey){ASSET_TEXT_LABEL, LABEL_ID(kind, value), 0, 0};
 }
@@ -196,6 +222,7 @@ static void step_session(void) {
     if (v.ui.cursor >= v.count) v.ui.cursor = 0;
     SYS_Report("PH2 SESSION %u party=%u cursor=%u\n", v.sessions, v.count, v.ui.cursor);
     if (!log_digest("start")) { lost("DIGEST"); return; }
+    log_detail();
     memset(v.have_record, 0, sizeof(v.have_record));
     v.record_index = 0;
     v.party_started = gettime();
