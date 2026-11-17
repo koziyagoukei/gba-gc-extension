@@ -738,3 +738,19 @@ refused during a pivot or replacement leaves the battle state untouched;
 automatic-target moves store a canonical target; older roster states
 decode with cleared later-version fields; later-version effect fields in
 an older request make it malformed.
+
+## Milestone 4-A — abilities (release 5, request V11)
+
+Design, hook order, units and Substitute rules: [abilities](abilities.md).
+Request V11 adds one 8-byte ability descriptor per entry (after the move
+effect lists, before the volatile rules) and the move flag `BMF_CONTACT`.
+The GBA resolves each ability from its own code and configs into one of 20
+generic kinds or `UNSUPPORTED`; `battle_abilities.c` runs them. Hooks that
+change a move effect run inside that effect's handler and so keep the V10
+unit of the effect (per hit, per target, on damage, after move, per use);
+damage modifiers, Sturdy and contact abilities run per hit and only for a
+hit on the Pokemon itself; immunities and absorption run per target before
+the substitute and accuracy checks; entry abilities run on every send-out
+and at the battle start (`battle_begin`), Speed Boost after the residual
+damage. V1-V10 requests decode and run unchanged; a V11 request with
+`RULE_IGNORE_ABILITIES` runs no ability.

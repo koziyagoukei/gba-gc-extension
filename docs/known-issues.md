@@ -55,3 +55,34 @@
 - V8 and V9 requests keep the per-target effect behaviour (a spread move with a self stat change applies it per target). Only V10 carries the effect application unit.
 - The cache still has no eviction (128 entries or 2 MiB per power-on) and nickname label keys do not include the name text; left for a later milestone (audit M-01, second half).
 - A V7 battle where the opponent only has PP left in a move V7 cannot run (e.g. Ember) ends as unsupported; this is the existing limit, seen in a 36-turn regression run.
+
+## Milestone 4-A (release 5, development only)
+
+- Abilities run only in V11 requests. The core runs 20 generic kinds (see
+  [abilities](abilities.md)); the Frontier exporter maps 40 abilities to them
+  and 5 ids (none, Run Away, Pickup, Honey Gather, Ball Fetch) to NONE. Every other ability with a battle effect is sent as
+  UNSUPPORTED: the battle runs with it inert, the GC says "Ability not
+  simulated" with the Pokémon and ability names at the battle start, and
+  the Dolphin log marks it `NOT SIMULATED`. Examples: Guts, Pressure,
+  Mold Breaker, Trace, weather and terrain setters, Flash Fire,
+  Lightning Rod / Storm Drain, Shed Skin, Synchronize, Cute Charm, Moxie,
+  Magic Guard, Wonder Guard, Scrappy, Oblivious, Dry Skin, Magma Armor.
+- Silent modifiers (Huge Power, Technician, Thick Fat, pinch abilities,
+  Compound Eyes, Keen Eye's evasion rule, Serene Grace, Shield Dust,
+  Infiltrator) change numbers or skip effects without a message.
+- Intimidate affects every standing foe on the field, also in a Triple
+  Battle (the reference code has no Triple rules; whether a Gen 5 Triple
+  Battle limits it to adjacent foes is not confirmed here).
+- Static, Flame Body and Poison Point need the Gen 4+ 30% chance; with the
+  older 1/3 the exporter sends them as UNSUPPORTED. Sturdy needs the Gen 5
+  rule, Infiltrator the Gen 6 substitute rule (otherwise UNSUPPORTED).
+- Rotation: only the front Pokémon takes end-of-turn effects (as residual
+  damage already did), so Speed Boost works for the front only.
+- Unchanged from release 4: the first lost JoyBus word is still not
+  explained (diagnostics and regression runs kept); the asset cache still
+  has no eviction and nickname labels are keyed by id (audit M-01).
+- Fixed on the M4-A Frontier branch: the debug menu's Utilities list
+  (with the GC test entries) was longer than the menu's 21-entry arrays,
+  so opening it wrote past a heap allocation and garbled the first rows.
+  This existed in every Frontier GC build with more than 21 entries
+  (34 in public-alpha-r1, 37 in release 4); those builds are unchanged.

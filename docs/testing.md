@@ -83,3 +83,21 @@ To check the result contract, forfeit a battle and press GC Z (3 s
 silence) on the result screen: after the reconnect the GC must report
 "Battle already finished" and the GBA must return to the field.
 
+## Milestone 4-A (release 5, abilities)
+
+Native: `battle_test.c` adds `test_ability_*` (wire, damage modifiers,
+immunity/absorb, accuracy, Sturdy, contact per hit, effect-level hooks,
+entry, end of turn, not-simulated notices, and a 4-format random run of
+every representative ability checking HP/stage invariants and the event
+bound). Each hook was checked by mutation: removing or loosening it makes a
+test fail. `presentation_test.c` checks the ability messages.
+
+Dolphin: the Cube Tester battles are V11 (ability fixtures: Single
+Intimidate vs Sturdy; Double Serene Grace, No Guard, Speed Boost vs
+Levitate, Rough Skin, Own Tempo; Triple Technician, Huge Power, Compound
+Eyes vs Limber, Water Absorb, Shield Dust; Rotation Clear Body, Immunity,
+Infiltrator vs Static, Intimidate and Guts, which is shown as not
+simulated). Debug menu: **GC Double V10 (endurance)** keeps V10, **GC
+Double V11 (abilities)** runs the V11 fixtures against level-5 foes. The
+Dolphin log prints each entry's descriptor as `PH8 ability ...` and the
+ability id with each `PH3 EVENT`.
