@@ -2664,11 +2664,16 @@ static void make_abilities(BattleRequest *r, uint8_t format) {
     r->rules &= (uint16_t)~RULE_IGNORE_ABILITIES;
 }
 
+// One-hook ability (a V11 descriptor); NONE / UNSUPPORTED have no hooks.
 static BattleAbility ab(uint8_t kind, uint8_t arg0, int8_t arg1, uint8_t arg2, uint8_t chance, uint8_t percent,
                         uint16_t source) {
-    return (BattleAbility){.kind = kind, .arg0 = arg0, .arg1 = arg1, .arg2 = arg2, .chance = chance,
-                           .percent = percent, .source = source};
+    if (kind == BABIL_NONE || kind == BABIL_UNSUPPORTED)
+        return (BattleAbility){.cls = kind == BABIL_NONE ? BACLASS_NONE : BACLASS_UNSUPPORTED, .source = source};
+    return (BattleAbility){.cls = BACLASS_HOOKS, .count = 1, .source = source,
+                           .hooks = {{kind, arg0, arg1, arg2, chance, (uint8_t)(chance ? 100 : 0), percent, 0}}};
 }
+#define HOOK0(e) ((e).mon.ability.hooks[0])
+static bool hook_ok(BattleAbilityHook h) { return battle_ability_hook_valid(&h, NTYPES, BATTLE_REQUEST_VERSION_ABILITIES); }
 
 static void give(BattleEntry *e, BattleAbility a) {
     e->record.ability = a.source;
@@ -2722,10 +2727,10 @@ static void test_ability_wire(void) {
     r.player[0].mon.moves[0].move_flags |= BMF_CONTACT;
     uint32_t n = battle_request_encode(&r, bytes, sizeof(bytes));
     assert(n == battle_request_size(&r) && battle_request_decode(bytes, n, &d));
-    assert(d.player[0].mon.ability.kind == BABIL_ENTRY_STAT && d.player[0].mon.ability.arg1 == -1 &&
+    assert(HOOK0(d.player[0]).kind == BABIL_ENTRY_STAT && HOOK0(d.player[0]).arg1 == -1 &&
            d.player[0].mon.ability.source == 22);
-    assert(d.player[1].mon.ability.percent == 200 && d.opponent[0].mon.ability.kind == BABIL_UNSUPPORTED &&
-           d.opponent[1].mon.ability.arg2 == T_WATER && (d.player[0].mon.moves[0].move_flags & BMF_CONTACT));
+    assert(HOOK0(d.player[1]).percent == 200 && d.opponent[0].mon.ability.cls == BACLASS_UNSUPPORTED &&
+           HOOK0(d.opponent[1]).arg2 == T_WATER && (d.player[0].mon.moves[0].move_flags & BMF_CONTACT));
     // The block is 8 bytes per entry, between the effect lists and the volatile rules.
     static BattleRequest v10;
     v10 = r;
@@ -2750,19 +2755,20 @@ static void test_ability_wire(void) {
     bytes[0] = BATTLE_REQUEST_VERSION_TIMING;
     assert(!battle_request_decode(bytes, n, &d));
     n = battle_request_encode(&v10, bytes, sizeof(bytes));
-    assert(n && battle_request_decode(bytes, n, &d) && d.player[0].mon.ability.kind == BABIL_NONE &&
+    assert(n && battle_request_decode(bytes, n, &d) && d.player[0].mon.ability.cls == BACLASS_NONE &&
            d.player[0].mon.ability.source == 0);
     v10.player[0].mon.moves[0].move_flags |= BMF_CONTACT;
     n = battle_request_encode(&v10, bytes, sizeof(bytes));
     assert(n && !battle_request_decode(bytes, n, &d));
     // Descriptor validation.
     const BattleAbility valid_static = STATIC;
-    assert(battle_ability_valid(&valid_static, NTYPES));
-    assert(!battle_ability_valid(&(BattleAbility){.kind = BABIL_CONTACT_STATUS, .arg0 = BST_PARALYSIS}, NTYPES));
-    assert(!battle_ability_valid(&(BattleAbility){.kind = BABIL_TYPE_IMMUNE, .arg0 = NTYPES}, NTYPES));
-    assert(!battle_ability_valid(&(BattleAbility){.kind = BABIL_ACCURACY}, NTYPES));
-    assert(!battle_ability_valid(&(BattleAbility){.kind = BABIL_NONE, .percent = 1}, NTYPES));
-    assert(!battle_ability_valid(&(BattleAbility){.kind = BABIL_ENTRY_STAT, .arg0 = BSTAT_ATK}, NTYPES));
+    assert(battle_ability_valid(&valid_static, NTYPES, BATTLE_REQUEST_VERSION_ABILITIES));
+    assert(!hook_ok((BattleAbilityHook){.kind = BABIL_CONTACT_STATUS, .arg0 = BST_PARALYSIS}));
+    assert(!hook_ok((BattleAbilityHook){.kind = BABIL_TYPE_IMMUNE, .arg0 = NTYPES}));
+    assert(!hook_ok((BattleAbilityHook){.kind = BABIL_ACCURACY}));
+    assert(!battle_ability_valid(&(BattleAbility){.cls = BACLASS_NONE, .count = 1}, NTYPES,
+                                 BATTLE_REQUEST_VERSION_ABILITIES));
+    assert(!hook_ok((BattleAbilityHook){.kind = BABIL_ENTRY_STAT, .arg0 = BSTAT_ATK}));
     assert(strcmp(battle_ability_kind_name(BABIL_INFILTRATOR), "infiltrator") == 0);
 }
 
@@ -3221,7 +3227,7 @@ static void test_ability_unsupported(void) {
     add_reserve(&r, 1);
     give(&r.player[1], UNSUPPORTED(104));     // e.g. Mold Breaker
     give(&r.opponent[2], UNSUPPORTED(2));     // a reserve: still listed
-    give(&r.opponent[0], (BattleAbility){.kind = BABIL_NONE, .source = 50});  // no effect: silent
+    give(&r.opponent[0], (BattleAbility){.cls = BACLASS_NONE, .source = 50});  // no effect: silent
     assert(battle_init(&b, &r, 1) == BI_OK);
     battle_begin(&b, &log);
     assert(event_count(&log, EV_ABILITY_UNSUPPORTED) == 2 && log.count == 2);
@@ -3307,6 +3313,545 @@ static void test_ability_formats(void) {
     printf("ability formats: peak events %u of %u, ability events %u\n", peak, (unsigned)BC_MAX_EVENTS, abilities);
 }
 
+// ------------------------------------------------------------- V12 multi-hook abilities (Milestone 4-A2)
+
+static void make_hooks(BattleRequest *r, uint8_t format) {
+    make_abilities(r, format);
+    r->version = BATTLE_REQUEST_VERSION_ABILITY_HOOKS;
+}
+
+static BattleAbilityHook hk(uint8_t kind, uint8_t arg0, int8_t arg1, uint8_t arg2, uint8_t num, uint8_t den,
+                            uint8_t percent, uint8_t flags) {
+    return (BattleAbilityHook){kind, arg0, arg1, arg2, num, den, percent, flags};
+}
+
+static BattleAbility hooks(uint16_t source, unsigned n, const BattleAbilityHook *list) {
+    BattleAbility a = {.cls = BACLASS_HOOKS, .count = (uint8_t)n, .source = source};
+    for (unsigned i = 0; i < n; ++i) a.hooks[i] = list[i];
+    return a;
+}
+
+#define HOOKS(source, ...) hooks(source, sizeof((BattleAbilityHook[]){__VA_ARGS__}) / sizeof(BattleAbilityHook), \
+                                 (BattleAbilityHook[]){__VA_ARGS__})
+#define GUTS HOOKS(62, hk(BABIL_ATTACK_MULT, BCAT_PHYSICAL, 0, 0, 0, 0, 150, BAHF_REQUIRES_STATUS), \
+                       hk(BABIL_IGNORE_BURN, 0, 0, 0, 0, 0, 0, 0))
+#define MARVEL_SCALE HOOKS(63, hk(BABIL_DEFENSE_MULT, BCAT_PHYSICAL, 0, 0, 0, 0, 150, BAHF_REQUIRES_STATUS))
+#define ADAPTABILITY HOOKS(91, hk(BABIL_STAB_MULT, 0, 0, 0, 0, 0, 200, 0))
+#define MOXIE HOOKS(153, hk(BABIL_KO_STAT, BSTAT_ATK, 1, 0, 0, 0, 0, 0))
+#define SHED_SKIN HOOKS(61, hk(BABIL_END_TURN_CURE, 0xfe, 0, 0, 1, 3, 0, 0))
+#define FLASH_FIRE HOOKS(18, hk(BABIL_ABSORB_STATE, T_FIRE, 0, 0, 0, 0, 0, 0), \
+                             hk(BABIL_ATTACK_MULT, 0, 0, T_FIRE, 0, 0, 150, BAHF_REQUIRES_STATE | BAHF_TYPE_FILTER))
+#define SCRAPPY HOOKS(113, hk(BABIL_TYPE_PASS, T_NORMAL, 0, T_GHOST, 0, 0, 0, 0), \
+                           hk(BABIL_VOLATILE_IMMUNE, BABIL_VOL_INTIMIDATE, 0, 0, 0, 0, 0, 0))
+#define SYNCHRONIZE HOOKS(28, hk(BABIL_STATUS_MIRROR, 0x1e, 0, 0, 0, 0, 0, 0))
+#define INTIMIDATE_ADJ HOOKS(22, hk(BABIL_ENTRY_STAT, BSTAT_ATK, -1, BRANGE_ADJACENT_FOES, 0, 0, 0, 0))
+#define INNER_FOCUS12 HOOKS(39, hk(BABIL_VOLATILE_IMMUNE, BABIL_VOL_FLINCH | BABIL_VOL_INTIMIDATE, 0, 0, 0, 0, 0, 0))
+
+static bool hook12_ok(BattleAbilityHook h) {
+    return battle_ability_hook_valid(&h, NTYPES, BATTLE_REQUEST_VERSION_ABILITY_HOOKS);
+}
+
+static void test_v12_wire(void) {
+    static BattleRequest r, d;
+    static uint8_t bytes[4096];
+    make_hooks(&r, BATTLE_FORMAT_DOUBLE);
+    give(&r.player[0], SCRAPPY);
+    give(&r.player[1], SHED_SKIN);
+    give(&r.opponent[0], UNSUPPORTED(104));
+    give(&r.opponent[1], (BattleAbility){.cls = BACLASS_NONE, .source = 50});
+    r.rules |= RULE_STRICT_ABILITIES | RULE_FIXED_SEED;
+    uint32_t n = battle_request_encode(&r, bytes, sizeof(bytes));
+    assert(n == battle_request_size(&r) && battle_request_decode(bytes, n, &d));
+    assert(d.rules & RULE_FIXED_SEED);
+    assert(d.player[0].mon.ability.cls == BACLASS_HOOKS && d.player[0].mon.ability.count == 2 &&
+           d.player[0].mon.ability.hooks[1].kind == BABIL_VOLATILE_IMMUNE && d.player[0].mon.ability.source == 113);
+    assert(d.player[1].mon.ability.hooks[0].chance == 1 && d.player[1].mon.ability.hooks[0].chance_den == 3);
+    assert(d.opponent[0].mon.ability.cls == BACLASS_UNSUPPORTED && d.opponent[1].mon.ability.cls == BACLASS_NONE);
+    // Block sizes: header 4 + 8 per hook: 4+16, 4+8, 4, 4.
+    static BattleRequest v11;
+    v11 = r;
+    v11.version = BATTLE_REQUEST_VERSION_ABILITIES;
+    v11.rules &= (uint16_t)~(RULE_STRICT_ABILITIES | RULE_FIXED_SEED);
+    give(&v11.player[0], STATIC);
+    give(&v11.player[1], STATIC);
+    assert(battle_request_size(&r) == battle_request_size(&v11) - 4 * BATTLE_ABILITY_BYTES + 20 + 12 + 4 + 4);
+    // Too many hooks, hooks on NONE, a later kind or flag in V11, rule bits below V12: all malformed.
+    const uint32_t block = n - BATTLE_VOLATILE_RULE_BYTES - 40;
+    assert(bytes[block] == BACLASS_HOOKS && bytes[block + 1] == 2);
+    bytes[block + 1] = BATTLE_MAX_ABILITY_HOOKS + 1;
+    assert(!battle_request_decode(bytes, n, &d));
+    bytes[block + 1] = 2;
+    {   // Five hooks claimed with enough bytes behind them: still refused before any is stored.
+        static BattleRequest big;
+        static uint8_t raw[4096];
+        big = r;
+        give(&big.player[1], HOOKS(61, hk(BABIL_STURDY, 0, 0, 0, 0, 0, 0, 0), hk(BABIL_NO_RECOIL, 0, 0, 0, 0, 0, 0, 0),
+                                   hk(BABIL_NO_GUARD, 0, 0, 0, 0, 0, 0, 0), hk(BABIL_INFILTRATOR, 0, 0, 0, 0, 0, 0, 0)));
+        const uint32_t m = battle_request_encode(&big, raw, sizeof(raw));
+        const uint32_t at = m - BATTLE_VOLATILE_RULE_BYTES - (20 + 36 + 4 + 4);
+        assert(m && battle_request_decode(raw, m, &d) && raw[at + 1] == 2);
+        raw[at + 1] = BATTLE_MAX_ABILITY_HOOKS + 1;
+        assert(!battle_request_decode(raw, m, &d));
+    }
+    bytes[block + 4 + 7] = BAHF_REQUIRES_STATE;  // a flag TYPE_PASS does not take
+    assert(!battle_request_decode(bytes, n, &d));
+    bytes[block + 4 + 7] = BAHF_BREAKABLE;       // carried for Mold Breaker: accepted
+    assert(battle_request_decode(bytes, n, &d));
+    bytes[block + 4 + 7] = 0;
+    assert(!battle_request_decode(bytes, n - 1, &d));
+    bytes[0] = BATTLE_REQUEST_VERSION_ABILITIES;
+    assert(!battle_request_decode(bytes, n, &d));
+    static BattleRequest v11r;
+    v11r = v11;
+    v11r.rules |= RULE_FIXED_SEED;
+    assert(!battle_request_encode(&v11r, bytes, sizeof(bytes)));  // a V12 rule cannot be written as V11
+    v11r = v11;
+    give(&v11r.player[0], SCRAPPY);                                // two hooks cannot be written as V11
+    assert(!battle_request_encode(&v11r, bytes, sizeof(bytes)));
+    n = battle_request_encode(&v11, bytes, sizeof(bytes));
+    bytes[6] |= RULE_FIXED_SEED;
+    assert(n && !battle_request_decode(bytes, n, &d));
+    // Hook rules.
+    assert(hook12_ok(hk(BABIL_END_TURN_CURE, 0xfe, 0, 0, 1, 3, 0, 0)));
+    assert(!hook12_ok(hk(BABIL_END_TURN_CURE, 0xfe, 0, 0, 0, 0, 0, 0)));   // needs a chance
+    assert(!hook12_ok(hk(BABIL_END_TURN_CURE, 0xfe, 0, 0, 4, 3, 0, 0)));   // more than certain
+    assert(!hook12_ok(hk(BABIL_STATUS_MIRROR, 1u << BST_SLEEP, 0, 0, 0, 0, 0, 0)));
+    assert(!hook12_ok(hk(BABIL_ATTACK_MULT, 0, 0, T_FIRE, 0, 0, 150, 0)));  // a type without the filter flag
+    assert(hook12_ok(hk(BABIL_ATTACK_MULT, 0, 0, T_FIRE, 0, 0, 150, BAHF_TYPE_FILTER)));
+    assert(!battle_ability_hook_valid(&(BattleAbilityHook){.kind = BABIL_ATTACK_MULT, .percent = 150}, NTYPES,
+                                      BATTLE_REQUEST_VERSION_ABILITIES));  // "any category" is V12
+    assert(!battle_ability_hook_valid(&(BattleAbilityHook){.kind = BABIL_STAB_MULT, .percent = 200}, NTYPES,
+                                      BATTLE_REQUEST_VERSION_ABILITIES));
+    assert(!hook12_ok(hk(BABIL_ENTRY_STAT, BSTAT_ATK, -1, 2, 0, 0, 0, 0)));
+    assert(strcmp(battle_ability_kind_name(BABIL_STATUS_MIRROR), "status_mirror") == 0);
+    // V11 has one hook and no flags.
+    BattleAbilityHook breakable = hk(BABIL_STURDY, 0, 0, 0, 0, 0, 0, BAHF_BREAKABLE);
+    assert(hook12_ok(breakable) &&
+           !battle_ability_hook_valid(&breakable, NTYPES, BATTLE_REQUEST_VERSION_ABILITIES));
+    const BattleAbility two = HOOKS(5, hk(BABIL_STURDY, 0, 0, 0, 0, 0, 0, 0), hk(BABIL_NO_RECOIL, 0, 0, 0, 0, 0, 0, 0));
+    assert(battle_ability_valid(&two, NTYPES, BATTLE_REQUEST_VERSION_ABILITY_HOOKS) &&
+           !battle_ability_valid(&two, NTYPES, BATTLE_REQUEST_VERSION_ABILITIES));
+}
+
+static uint8_t atk_stages(const Battle *b, uint8_t side) {
+    uint8_t mask = 0;
+    for (uint8_t s = 0; s < b->sides[side].active_count; ++s)
+        if (battle_at(b, (Position){side, s})->stat_stages[BSTAT_ATK] < 0) mask |= 1u << s;
+    return mask;
+}
+
+// Gen 5/6 Triple: Intimidate reaches the adjacent foes only (left/right 2, center 3).
+static void test_triple_range(void) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    static const uint8_t expected[3] = {0x3, 0x7, 0x6};
+    for (uint8_t slot = 0; slot < 3; ++slot) {
+        make_hooks(&r, BATTLE_FORMAT_TRIPLE);
+        give(&r.player[slot], INTIMIDATE_ADJ);
+        assert(battle_init(&b, &r, 1) == BI_OK);
+        battle_begin(&b, &log);
+        assert(atk_stages(&b, 1) == expected[slot] && event_count(&log, EV_ABILITY) == 1);
+        for (uint8_t s = 0; s < 3; ++s)
+            assert(battle_in_range(&b, (Position){0, slot}, (Position){1, s}, BRANGE_ADJACENT_FOES) ==
+                   ((expected[slot] >> s) & 1));
+    }
+    // Blockers apply only to the foes in range.
+    make_hooks(&r, BATTLE_FORMAT_TRIPLE);
+    give(&r.player[0], INTIMIDATE_ADJ);
+    give(&r.opponent[1], INNER_FOCUS12);
+    give(&r.opponent[2], INNER_FOCUS12);   // not adjacent: no block message either
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(atk_stages(&b, 1) == 0x1 && event_count(&log, EV_ABILITY_BLOCK) == 1 &&
+           find(&log, EV_ABILITY_BLOCK)->user.slot == 1);
+    // A switch-in on the right reaches center and right; a Triple Shift does not re-trigger.
+    make_hooks(&r, BATTLE_FORMAT_TRIPLE);
+    add_reserve(&r, 0);
+    give(&r.player[3], INTIMIDATE_ADJ);
+    give(&r.player[2], INTIMIDATE_ADJ);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    for (uint8_t s = 0; s < 3; ++s) ((Battler *)battle_at(&b, (Position){1, s}))->stat_stages[BSTAT_ATK] = 0;
+    battle_run_turn(&b, (Action[]){{.kind = ACT_SHIFT, .user = {0, 2}}}, 1, &log);
+    assert(find(&log, EV_SHIFT) && !find(&log, EV_ABILITY) && atk_stages(&b, 1) == 0);
+    battle_run_turn(&b, (Action[]){{.kind = ACT_SWITCH, .user = {0, 2}, .reserve = 3}}, 1, &log);
+    assert(find(&log, EV_SEND_OUT) && event_count(&log, EV_ABILITY) == 1 && atk_stages(&b, 1) == 0x6);
+    // Single, Double and Rotation: every foe on the field, as before.
+    const uint8_t formats[] = {BATTLE_FORMAT_SINGLE, BATTLE_FORMAT_DOUBLE, BATTLE_FORMAT_ROTATION};
+    const uint8_t all[] = {0x1, 0x3, 0x7};
+    for (unsigned f = 0; f < 3; ++f) {
+        make_hooks(&r, formats[f]);
+        give(&r.player[0], INTIMIDATE_ADJ);
+        assert(battle_init(&b, &r, 1) == BI_OK);
+        battle_begin(&b, &log);
+        assert(atk_stages(&b, 1) == all[f]);
+    }
+    // V11 (no range field) keeps the M4-A behaviour: all three Triple foes.
+    make_abilities(&r, BATTLE_FORMAT_TRIPLE);
+    give(&r.player[0], INTIMIDATE);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(atk_stages(&b, 1) == 0x7);
+}
+
+static void test_guts_marvel_adaptability(void) {
+    static BattleRequest r, plain;
+    Battle b, p;
+    uint8_t eff;
+    make_hooks(&r, BATTLE_FORMAT_SINGLE);
+    plain = r;
+    const BattleMove phys = damaging(40, T_FIRE, 0);
+    BattleMove spec = phys;
+    spec.category = BCAT_SPECIAL;
+    give(&r.player[0], GUTS);
+    assert(battle_init(&b, &r, 1) == BI_OK && battle_init(&p, &plain, 1) == BI_OK);
+    Battler *a = battle_active(&b, 0), *pa = battle_active(&p, 0), *d = battle_active(&b, 1), *pd = battle_active(&p, 1);
+    // No status: no change.
+    assert(battle_damage(&b, a, &phys, d, 100, &eff) == battle_damage(&p, pa, &phys, pd, 100, &eff));
+    // Paralysed: physical x1.5, special unchanged.
+    a->status = BST_PARALYSIS;
+    pa->attack = 90;
+    assert(battle_damage(&b, a, &phys, d, 100, &eff) == battle_damage(&p, pa, &phys, pd, 100, &eff));
+    assert(battle_damage(&b, a, &spec, d, 100, &eff) == battle_damage(&p, pa, &spec, pd, 100, &eff));
+    // Burned: x1.5 and no halving (the plain attacker is unburned).
+    a->status = BST_BURN;
+    assert(battle_damage(&b, a, &phys, d, 100, &eff) == battle_damage(&p, pa, &phys, pd, 100, &eff));
+    pa->status = BST_BURN;
+    pa->attack = 60;
+    assert(battle_damage(&b, a, &phys, d, 100, &eff) > battle_damage(&p, pa, &phys, pd, 100, &eff));
+    pa->status = 0;
+    // Marvel Scale: the holder's Defense x1.5 against physical moves while statused.
+    give(&r.player[0], (BattleAbility){0});
+    give(&r.opponent[0], MARVEL_SCALE);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    a = battle_active(&b, 0);
+    d = battle_active(&b, 1);
+    assert(battle_damage(&b, a, &phys, d, 100, &eff) == battle_damage(&p, pa, &phys, pd, 100, &eff));
+    d->status = BST_POISON;
+    pd->defense = 90;
+    assert(battle_damage(&b, a, &phys, d, 100, &eff) == battle_damage(&p, pa, &phys, pd, 100, &eff));
+    pd->defense = 60;
+    assert(battle_damage(&b, a, &spec, d, 100, &eff) == battle_damage(&p, pa, &spec, pd, 100, &eff));
+    // Adaptability: same-type bonus x2 instead of x1.5.
+    give(&r.opponent[0], (BattleAbility){0});
+    give(&r.player[0], ADAPTABILITY);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    a = battle_active(&b, 0);
+    d = battle_active(&b, 1);
+    const BattleMove stab = damaging(40, T_NORMAL, 0), other = damaging(40, T_GHOST, 0);
+    const uint16_t none = battle_damage(&b, a, &other, d, 100, &eff);
+    assert(battle_damage(&b, a, &stab, d, 100, &eff) == 2 * none);
+    assert(battle_damage(&p, pa, &stab, pd, 100, &eff) == none * 3 / 2);
+}
+
+static void test_moxie(void) {
+    static BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_hooks(&r, BATTLE_FORMAT_DOUBLE);
+    add_reserve(&r, 1);
+    give(&r.player[0], MOXIE);
+    BattleMove spread = damaging(250, T_NORMAL, 0);
+    spread.target = BTARGET_ALL_FOES;
+    set_move(&r.player[0], 1, 57, spread, 10);
+    set_move(&r.player[0], 2, 33, damaging(250, T_NORMAL, 0), 10);
+    // Two foes knocked out by one move: +2 at once, after the move.
+    for (unsigned i = 0; i < 2; ++i) r.opponent[i].record.hp = 10;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(event_count(&log, EV_FAINT) == 2 && battle_active(&b, 0)->stat_stages[BSTAT_ATK] == 2);
+    assert(index_of(&log, EV_ABILITY, 0) > index_of(&log, EV_FAINT, 1));
+    // One knocked out: +1. None: nothing.
+    r.opponent[1].record.hp = 200;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(battle_active(&b, 0)->stat_stages[BSTAT_ATK] == 1);
+    r.opponent[0].record.hp = 200;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 2)}, 1, &log);
+    assert(!find(&log, EV_ABILITY) && battle_active(&b, 0)->stat_stages[BSTAT_ATK] == 0);
+    // A substitute takes the hit: no knock-out, nothing.
+    r.opponent[0].record.hp = 10;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    ((Battler *)battle_at(&b, (Position){1, 0}))->vol.substitute_hp = 50;
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 2)}, 1, &log);
+    assert(!find(&log, EV_FAINT) && !find(&log, EV_ABILITY));
+    // The last foe goes down: the battle is decided, nothing.
+    make_hooks(&r, BATTLE_FORMAT_SINGLE);
+    give(&r.player[0], MOXIE);
+    set_move(&r.player[0], 1, 33, damaging(250, T_NORMAL, 0), 10);
+    r.opponent[0].record.hp = 10;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(find(&log, EV_FAINT) && !find(&log, EV_ABILITY) && b.outcome == OUTCOME_WIN);
+    // Recoil knocks the user out first: nothing.
+    add_reserve(&r, 1);
+    BattleMove edge = damaging(250, T_NORMAL, 0);
+    push(&edge, fx(BEFF_RECOIL, BWHO_USER, 0, 50, 0, 0));
+    set_move(&r.player[0], 1, 38, edge, 10);
+    r.player[0].record.hp = 5;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(find(&log, EV_RECOIL) && !find(&log, EV_ABILITY));
+}
+
+static void test_shed_skin(void) {
+    static BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_hooks(&r, BATTLE_FORMAT_SINGLE);
+    give(&r.player[0], SHED_SKIN);
+    r.player[0].record.status = BST_BURN;
+    unsigned cured = 0, kept = 0;
+    for (uint32_t seed = 1; seed <= 60; ++seed) {
+        assert(battle_init(&b, &r, seed) == BI_OK);
+        battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 0)}, 1, &log);
+        const BattleEvent *cure = find(&log, EV_CURE);
+        if (cure) {
+            ++cured;
+            // Before the residual damage: a cured holder takes none that turn.
+            assert(!find(&log, EV_RESIDUAL) && index_of(&log, EV_ABILITY, 0) + 1 == index_of(&log, EV_CURE, 0));
+            assert(!battle_active(&b, 0)->status);
+        } else {
+            ++kept;
+            assert(find(&log, EV_RESIDUAL) && !find(&log, EV_ABILITY));
+        }
+    }
+    assert(cured > 5 && kept > cured);  // about one in three
+    // A status outside the hook's mask is never cured.
+    r.player[0].mon.ability.hooks[0].arg0 = 1u << BST_PARALYSIS;
+    for (uint32_t seed = 1; seed <= 30; ++seed) {
+        assert(battle_init(&b, &r, seed) == BI_OK);
+        battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 0)}, 1, &log);
+        assert(!find(&log, EV_CURE) && find(&log, EV_RESIDUAL));
+    }
+    r.player[0].mon.ability.hooks[0].arg0 = 0xfe;
+    // No status: no roll, nothing (the same seed then runs exactly like a plain battle).
+    static BattleRequest plain;
+    r.player[0].record.status = 0;
+    plain = r;
+    give(&plain.player[0], (BattleAbility){0});
+    Battle p;
+    EventLog pl;
+    assert(battle_init(&b, &r, 7) == BI_OK && battle_init(&p, &plain, 7) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 0)}, 1, &log);
+    battle_run_turn(&p, (Action[]){slot_move(0, 0, 0, 0)}, 1, &pl);
+    assert(b.rng == p.rng && log.count == pl.count);
+}
+
+static void test_flash_fire(void) {
+    static BattleRequest r;
+    Battle b;
+    EventLog log;
+    uint8_t eff;
+    make_hooks(&r, BATTLE_FORMAT_SINGLE);
+    add_reserve(&r, 1);
+    give(&r.opponent[0], FLASH_FIRE);
+    give(&r.opponent[1], FLASH_FIRE);
+    set_move(&r.player[0], 1, 52, damaging(40, T_FIRE, 0), 10);
+    BattleMove wisp = effect_move(BTARGET_SINGLE, 0, fx(BEFF_STATUS, BWHO_TARGET, 0, BST_BURN, 0, 0));
+    wisp.type = T_FIRE;
+    set_move(&r.player[0], 2, 261, wisp, 10);
+    set_move(&r.opponent[0], 1, 53, damaging(40, T_FIRE, 0), 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    Battler *holder = battle_active(&b, 1);
+    const BattleMove *fire = &holder->moves[1];
+    const uint16_t before = battle_damage(&b, holder, fire, battle_active(&b, 0), 100, &eff);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(find(&log, EV_ABILITY) && !find(&log, EV_DAMAGE) && holder->vol.ability_state == 1);
+    assert(battle_damage(&b, holder, fire, battle_active(&b, 0), 100, &eff) > before);
+    const uint16_t boosted = battle_damage(&b, holder, fire, battle_active(&b, 0), 100, &eff);
+    // A Fire status move is absorbed too; the boost does not stack.
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 2)}, 1, &log);
+    assert(find(&log, EV_ABILITY) && !holder->status &&
+           battle_damage(&b, holder, fire, battle_active(&b, 0), 100, &eff) == boosted);
+    // The holder's other moves are not boosted; a switch-out clears the state.
+    const uint16_t normal_on = battle_damage(&b, holder, &holder->moves[0], battle_active(&b, 0), 100, &eff);
+    holder->vol.ability_state = 0;
+    assert(battle_damage(&b, holder, &holder->moves[0], battle_active(&b, 0), 100, &eff) == normal_on);
+    holder->vol.ability_state = 1;
+    battle_run_turn(&b, (Action[]){{.kind = ACT_SWITCH, .user = {1, 0}, .reserve = 1}}, 1, &log);
+    assert(!b.sides[1].battlers[0].vol.ability_state);
+    // With the old freeze rule (BAHF_NOT_FROZEN), a frozen holder takes the hit.
+    r.opponent[0].mon.ability.hooks[0].flags = BAHF_NOT_FROZEN;
+    r.opponent[0].record.status = BST_FREEZE;
+    r.conditions.flags &= (uint8_t)~BCR_THAW_ON_FIRE_HIT;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(find(&log, EV_DAMAGE) && !find(&log, EV_ABILITY) && !battle_active(&b, 1)->vol.ability_state);
+}
+
+static void test_scrappy(void) {
+    static BattleRequest r;
+    Battle b;
+    EventLog log;
+    uint8_t eff;
+    make_hooks(&r, BATTLE_FORMAT_SINGLE);
+    r.opponent[0].mon.types[0] = r.opponent[0].mon.types[1] = T_GHOST;
+    give(&r.player[0], SCRAPPY);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    const BattleMove normal = damaging(40, T_NORMAL, 0), fire = damaging(40, T_FIRE, 0);
+    assert(battle_damage(&b, battle_active(&b, 0), &normal, battle_active(&b, 1), 100, &eff) && eff == 4);
+    assert(battle_damage(&b, battle_active(&b, 0), &fire, battle_active(&b, 1), 100, &eff) && eff == 4);
+    // Only the Ghost part changes: Ghost/Water keeps Water's multiplier.
+    battle_active(&b, 1)->type_count = 2;
+    battle_active(&b, 1)->types[1] = T_WATER;
+    const BattleMove water = damaging(40, T_WATER, 0);
+    battle_damage(&b, battle_active(&b, 0), &normal, battle_active(&b, 1), 100, &eff);
+    assert(eff == 4);
+    (void)water;
+    // Another immunity of a Normal move (Water here) stays: only the hook's defending type passes.
+    r.type_chart[T_NORMAL * NTYPES + T_WATER] = 0;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_active(&b, 1)->types[0] = battle_active(&b, 1)->types[1] = T_WATER;
+    battle_damage(&b, battle_active(&b, 0), &normal, battle_active(&b, 1), 100, &eff);
+    assert(eff == 0);
+    r.type_chart[T_NORMAL * NTYPES + T_WATER] = 4;
+    // Without Scrappy: no effect. Its second hook blocks Intimidate.
+    give(&r.player[0], (BattleAbility){0});
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_damage(&b, battle_active(&b, 0), &normal, battle_active(&b, 1), 100, &eff);
+    assert(eff == 0);
+    give(&r.player[0], SCRAPPY);
+    give(&r.opponent[0], INTIMIDATE_ADJ);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(find(&log, EV_ABILITY_BLOCK) && battle_active(&b, 0)->stat_stages[BSTAT_ATK] == 0);
+}
+
+static void test_synchronize(void) {
+    static BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_hooks(&r, BATTLE_FORMAT_SINGLE);
+    give(&r.player[0], SYNCHRONIZE);
+    set_move(&r.opponent[0], 1, 86, effect_move(BTARGET_SINGLE, 0, fx(BEFF_STATUS, BWHO_TARGET, 0, BST_PARALYSIS, 0, 0)), 10);
+    set_move(&r.opponent[0], 2, 92, effect_move(BTARGET_SINGLE, 0, fx(BEFF_STATUS, BWHO_TARGET, 0, BST_TOXIC, 0, 0)), 10);
+    set_move(&r.opponent[0], 3, 95, effect_move(BTARGET_SINGLE, 0, fx(BEFF_STATUS, BWHO_TARGET, 0, BST_SLEEP, 0, 0)), 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(1, 0, 0, 1)}, 1, &log);
+    assert(event_count(&log, EV_STATUS) == 2 && BATTLE_CONDITION_KIND(battle_active(&b, 1)->status) == BST_PARALYSIS);
+    assert(index_of(&log, EV_ABILITY, 0) == index_of(&log, EV_STATUS, 0) + 1);
+    // Bad poison goes back as bad poison, or as poison under the old rule.
+    for (unsigned old = 0; old < 2; ++old) {
+        r.player[0].mon.ability.hooks[0].flags = old ? BAHF_TOXIC_TO_POISON : 0;
+        assert(battle_init(&b, &r, 1) == BI_OK);
+        battle_run_turn(&b, (Action[]){slot_move(1, 0, 0, 2)}, 1, &log);
+        assert(BATTLE_CONDITION_KIND(battle_active(&b, 1)->status) == (old ? BST_POISON : BST_TOXIC));
+    }
+    r.player[0].mon.ability.hooks[0].flags = 0;
+    // Sleep is not reflected.
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(1, 0, 0, 3)}, 1, &log);
+    assert(event_count(&log, EV_STATUS) == 1 && !find(&log, EV_ABILITY) && !battle_active(&b, 1)->status);
+    // The source cannot take it (Electric type under the rule): shown, nothing set.
+    r.opponent[0].mon.types[0] = r.opponent[0].mon.types[1] = T_WATER;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(1, 0, 0, 1)}, 1, &log);
+    assert(find(&log, EV_ABILITY) && event_count(&log, EV_STATUS) == 1 && !battle_active(&b, 1)->status);
+    r.opponent[0].mon.types[0] = r.opponent[0].mon.types[1] = T_NORMAL;
+    // Both sides with Synchronize: the status comes back once, not again.
+    give(&r.opponent[0], SYNCHRONIZE);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(1, 0, 0, 1)}, 1, &log);
+    assert(event_count(&log, EV_STATUS) == 2 && event_count(&log, EV_ABILITY) == 1);
+    // A contact status from Static goes back to the Static holder.
+    make_hooks(&r, BATTLE_FORMAT_SINGLE);
+    give(&r.player[0], SYNCHRONIZE);
+    give(&r.opponent[0], ab(BABIL_CONTACT_STATUS, BST_PARALYSIS, 0, 0, 100, 0, 9));
+    set_move(&r.player[0], 1, 24, contact(10, 1), 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(BATTLE_CONDITION_KIND(battle_active(&b, 0)->status) == BST_PARALYSIS &&
+           BATTLE_CONDITION_KIND(battle_active(&b, 1)->status) == BST_PARALYSIS);
+}
+
+static void test_strict_mode(void) {
+    static BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_hooks(&r, BATTLE_FORMAT_DOUBLE);
+    give(&r.opponent[1], UNSUPPORTED(104));
+    assert(battle_init(&b, &r, 1) == BI_OK);          // development: runs, with the notice
+    battle_begin(&b, &log);
+    assert(event_count(&log, EV_ABILITY_UNSUPPORTED) == 1);
+    r.rules |= RULE_STRICT_ABILITIES;
+    assert(battle_init(&b, &r, 1) == BI_UNSUPPORTED_ABILITY);
+    assert(strcmp(battle_init_error_name(BI_UNSUPPORTED_ABILITY), "strict rules: an ability is not simulated") == 0);
+    give(&r.opponent[1], (BattleAbility){.cls = BACLASS_NONE, .source = 50});  // NONE is not UNSUPPORTED
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    give(&r.opponent[1], UNSUPPORTED(104));
+    r.rules |= RULE_IGNORE_ABILITIES;                  // abilities normalised away: nothing to refuse
+    assert(battle_init(&b, &r, 1) == BI_OK);
+}
+
+// The same request and seed give the same battle, event for event (fixtures rely on it).
+static void test_v12_determinism(void) {
+    static BattleRequest r;
+    static Battle a, b;
+    static EventLog la, lb;
+    const BattleAbility pool[] = {GUTS, MARVEL_SCALE, ADAPTABILITY, MOXIE, SHED_SKIN, FLASH_FIRE, SCRAPPY, SYNCHRONIZE,
+                                  INTIMIDATE_ADJ, ROUGH_SKIN, STATIC, STURDY, UNSUPPORTED(104)};
+    const unsigned n = sizeof(pool) / sizeof(*pool);
+    const uint8_t formats[] = {BATTLE_FORMAT_SINGLE, BATTLE_FORMAT_DOUBLE, BATTLE_FORMAT_TRIPLE, BATTLE_FORMAT_ROTATION};
+    unsigned ability_events = 0;
+    for (unsigned f = 0; f < 4; ++f)
+        for (uint32_t seed = 1; seed <= 40; ++seed) {
+            make_hooks(&r, formats[f]);
+            for (unsigned side = 0; side < 2; ++side) add_reserve(&r, side);
+            for (unsigned side = 0; side < 2; ++side) {
+                BattleEntry *e = side ? r.opponent : r.player;
+                const unsigned count = side ? r.opponent_count : r.player_count;
+                for (unsigned i = 0; i < count; ++i) {
+                    give(&e[i], pool[(seed * 5 + side * 3 + i + f) % n]);
+                    e[i].record.hp = e[i].record.max_hp = 50;
+                    e[i].record.status = (seed + i) % 4 == 0 ? BST_BURN : 0;
+                    BattleMove m = contact(30, i == 1 ? 2 : 1);
+                    m.type = (uint8_t)((seed + i) % 3);
+                    push(&m, fx(BEFF_STATUS, BWHO_TARGET, 30, BST_PARALYSIS, 0, 0));
+                    set_move(&e[i], 1, 200 + i, m, 30);
+                    BattleMove spread = damaging(45, T_FIRE, 95);
+                    spread.target = BTARGET_ALL_FOES;
+                    set_move(&e[i], 2, 300 + i, spread, 30);
+                }
+            }
+            assert(battle_init(&a, &r, seed) == BI_OK && battle_init(&b, &r, seed) == BI_OK);
+            battle_begin(&a, &la);
+            battle_begin(&b, &lb);
+            for (unsigned t = 0; t < 50 && a.outcome == OUTCOME_NONE; ++t) {
+                Position pending;
+                while (battle_pending_replacement(&a, &pending)) {
+                    const uint8_t mask = battle_replacement_mask(&a, pending);
+                    uint8_t pick = 0;
+                    while (!(mask & (1u << pick))) ++pick;
+                    assert(battle_replace(&a, pending, pick, &la) && battle_replace(&b, pending, pick, &lb));
+                }
+                Action actions[BC_MAX_ACTIONS];
+                unsigned count = 0;
+                for (uint8_t side = 0; side < 2; ++side) {
+                    Position actors[BC_MAX_ACTIVE];
+                    const unsigned k = battle_collect_actors(&a, side, actors);
+                    for (unsigned i = 0; i < k; ++i) battle_choose_at(&a, actors[i], &actions[count++]);
+                }
+                for (unsigned i = 0; i < count; ++i) { Action x; battle_choose_at(&b, actions[i].user, &x); }
+                battle_run_turn(&a, actions, count, &la);
+                battle_run_turn(&b, actions, count, &lb);
+                assert(la.count == lb.count && la.count < BC_MAX_EVENTS &&
+                       memcmp(la.events, lb.events, la.count * sizeof(BattleEvent)) == 0);
+                ability_events += event_count(&la, EV_ABILITY) + event_count(&la, EV_ABILITY_BLOCK);
+                for (unsigned side = 0; side < 2; ++side)
+                    for (unsigned i = 0; i < a.sides[side].count; ++i) {
+                        const Battler *x = &a.sides[side].battlers[i];
+                        assert(x->hp <= x->max_hp && (x->hp == 0) == x->fainted);
+                    }
+            }
+            assert(memcmp(&a.sides, &b.sides, sizeof(a.sides)) == 0 && a.rng == b.rng);
+        }
+    assert(ability_events > 100);
+    printf("v12 determinism: %u ability events\n", ability_events);
+}
+
 int main(void) {
     test_request_roundtrip();
     test_messages();
@@ -3367,6 +3912,16 @@ int main(void) {
     test_ability_end_turn();
     test_ability_unsupported();
     test_ability_formats();
+    test_v12_wire();
+    test_triple_range();
+    test_guts_marvel_adaptability();
+    test_moxie();
+    test_shed_skin();
+    test_flash_fire();
+    test_scrappy();
+    test_synchronize();
+    test_strict_mode();
+    test_v12_determinism();
     puts("battle tests passed");
     return 0;
 }

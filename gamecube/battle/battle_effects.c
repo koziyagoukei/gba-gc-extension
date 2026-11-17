@@ -177,7 +177,7 @@ bool bc_confusion_check(Battle *b, Position user, EventLog *log) {
     // Sturdy also holds against the confusion self-hit (Gen 5 rule).
     const uint16_t amount = bc_ability_endure(b, user, (uint16_t)(damage > 0xffff ? 0xffff : damage), &endured);
     bc_apply_damage(b, (BattleEvent){.kind = EV_CONFUSION_HIT, .user = user, .target = user}, amount, log);
-    if (endured) bc_ability_event(log, user, user, bc_ability(b, battle_at(b, user), BABIL_STURDY));
+    if (endured) bc_ability_event(b, log, user, user, bc_ability(b, battle_at(b, user), BABIL_STURDY));
     return true;
 }
 
@@ -193,6 +193,7 @@ typedef struct {
     unsigned lost;   // HP all targets and substitutes lost, for recoil
     bool landed;     // any target was hit
     bool pivot;
+    uint8_t struck[2];  // roster indices whose Pokemon (not substitute) this move hit
     bool per_use_done;  // BETIME_PER_USE effects already ran for this use
     bool typeless;      // Struggle: no type chart, no thaw
 } MoveContext;
@@ -210,9 +211,9 @@ static bool roll(MoveContext *c, const BattleEffect *e) {
 
 // An ability stopped an effect on another battler: shown for a certain
 // effect (status moves, certain effects of a hit), silent for a chance.
-static bool blocked(MoveContext *c, const BattleEffect *e, Position target, const BattleAbility *a) {
+static bool blocked(MoveContext *c, const BattleEffect *e, Position target, const BattleAbilityHook *a) {
     if (!a || same(target, c->user)) return false;
-    if (!e->chance) bc_ability_block(c->log, target, c->user, a);
+    if (!e->chance) bc_ability_block(c->b, c->log, target, c->user, a);
     return true;
 }
 
@@ -238,6 +239,7 @@ void bc_set_status(Battle *b, Position source, Position target, uint8_t kind, ui
     mon->sleep_start = (uint8_t)counter;
     bc_emit(log, (BattleEvent){.kind = EV_STATUS, .user = source, .target = target, .move_id = move_id,
                                .condition = kind});
+    bc_ability_status_set(b, source, target, kind, move_id, log);
 }
 
 static bool apply_status(MoveContext *c, const BattleEffect *e, Position target) {
@@ -245,7 +247,7 @@ static bool apply_status(MoveContext *c, const BattleEffect *e, Position target)
     const BattleConditionRules *rules = &c->b->request->conditions;
     const uint8_t kind = e->arg0;
     if (mon->status || bc_immune_to_status(rules, mon, kind) ||
-        ((e->flags & BEFL_TYPE_CHART) && !bc_effectiveness(c->b, c->move->type, mon)))
+        ((e->flags & BEFL_TYPE_CHART) && !bc_effectiveness(c->b, battle_at(c->b, c->user), c->move->type, mon)))
         return false;
     if (blocked(c, e, target, bc_ability_status_immunity(c->b, target, kind))) return !e->chance;
     bc_set_status(c->b, c->user, target, kind, c->id, c->log);
@@ -457,7 +459,7 @@ static unsigned strike(MoveContext *c, const BattleEffect *damage, Position targ
             amount = bc_ability_endure(b, target, amount, &endured);
             ev.kind = EV_DAMAGE;
             bc_apply_damage(b, ev, amount, c->log);
-            if (endured) bc_ability_event(c->log, target, target, bc_ability(b, battle_at(b, target), BABIL_STURDY));
+            if (endured) bc_ability_event(b, c->log, target, target, bc_ability(b, battle_at(b, target), BABIL_STURDY));
             lost += before - battle_at(b, target)->hp;
             *struck = true;
             run_secondaries(c, BETIME_PER_HIT, target, true);
@@ -493,7 +495,9 @@ static void damaging_target(MoveContext *c, const BattleEffect *damage, Position
     if (blocked_by_protect(c, target) || evaded(c, target) ||
         bc_ability_blocks_move(c->b, c->user, target, c->move, c->typeless, c->id, c->log)) return;
     bool landed, struck;
+    const uint8_t index = c->b->sides[target.side].active[target.slot];
     const unsigned lost = strike(c, damage, target, &landed, &struck);
+    if (struck) c->struck[target.side] |= (uint8_t)(1u << index);
     if (!landed) return;
     c->landed = true;
     c->lost += lost;
@@ -567,12 +571,27 @@ static void protect(MoveContext *c, const BattleEffect *e) {
     bc_emit(c->log, (BattleEvent){.kind = EV_PROTECT, .user = c->user, .target = c->user, .move_id = c->id});
 }
 
-bool bc_struggle_strike(Battle *b, Position user, Position target, const BattleMove *move, EventLog *log) {
+// Pokemon this move struck that are now down, except the user (Moxie's count).
+static unsigned knocked_out(const MoveContext *c) {
+    unsigned n = 0;
+    const uint8_t self = c->b->sides[c->user.side].active[c->user.slot];
+    for (uint8_t side = 0; side < 2; ++side)
+        for (uint8_t i = 0; i < c->b->sides[side].count; ++i)
+            if ((c->struck[side] & (1u << i)) && !(side == c->user.side && i == self) &&
+                c->b->sides[side].battlers[i].fainted)
+                ++n;
+    return n;
+}
+
+bool bc_struggle_strike(Battle *b, Position user, Position target, const BattleMove *move, EventLog *log,
+                        unsigned *kos) {
     MoveContext c = {.b = b, .log = log, .user = user, .move = move, .id = BATTLE_MOVE_STRUGGLE, .typeless = true};
+    *kos = 0;
     const BattleEffect damage = {.kind = BEFF_DAMAGE, .who = BWHO_TARGET, .arg0 = 1, .arg2 = 1};
     if (blocked_by_protect(&c, target) || evaded(&c, target)) return false;
     bool landed, struck;
     strike(&c, &damage, target, &landed, &struck);
+    if (struck && battle_at(b, target)->fainted) *kos = 1;
     return landed;
 }
 
@@ -644,6 +663,7 @@ bool bc_execute_move(Battle *b, Position user, uint8_t slot, Position selected, 
         bc_apply_damage(b, (BattleEvent){.kind = EV_RECOIL, .user = user, .target = user, .move_id = id},
                         (uint16_t)(amount ? amount : 1), log);
     }
+    if (damage) bc_ability_after_move(b, user, knocked_out(&c), log);  // Moxie, after recoil
     if (c.landed && find_effect(m, BEFF_RECHARGE) && !battle_at(b, user)->fainted &&
         !(all_fainted && (b->request->volatiles.flags & BVR_RECHARGE_SKIP_ON_KO)))
         bc_mutable_at(b, user)->vol.recharge = 2;  // blocks the next turn, ticks down at turn ends

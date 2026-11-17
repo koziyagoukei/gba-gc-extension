@@ -19,6 +19,7 @@ const char *battle_init_error_name(int error) {
     case BI_NO_OPPONENT_MOVES: return "opponent has no supported move";
     case BI_BAD_TYPES: return "type data out of range";
     case BI_CONDITIONS: return "invalid V7 condition rules or status";
+    case BI_UNSUPPORTED_ABILITY: return "strict rules: an ability is not simulated";
     case BI_FAINTED_LEAD: return "a lead Pokemon has no HP";
     }
     return "unknown";
@@ -166,6 +167,13 @@ bool battle_adjacent(const Battle *b, Position a, Position d) {
     return true;
 }
 
+bool battle_in_range(const Battle *b, Position holder, Position other, uint8_t range) {
+    if (!field_position(b, holder) || !field_position(b, other) || holder.side == other.side) return false;
+    if (range == BRANGE_ADJACENT_FOES && b->request->format == BATTLE_FORMAT_TRIPLE)
+        return battle_adjacent(b, holder, other);
+    return true;
+}
+
 bool battle_can_shift(const Battle *b, Position p) {
     const Battler *x = battle_at(b, p);
     return b->request->format == BATTLE_FORMAT_TRIPLE && p.slot != BPOS_CENTER && x && !x->fainted;
@@ -278,6 +286,11 @@ int battle_init(Battle *b, const BattleRequest *r, uint32_t seed) {
         }
         if (!sent) return BI_FAINTED_LEAD;
     }
+    // Strict rules: an ability the core cannot run would change the result.
+    if (r->rules & RULE_STRICT_ABILITIES)
+        for (uint8_t side = 0; side < 2; ++side)
+            for (uint8_t i = 0; i < b->sides[side].count; ++i)
+                if (bc_ability_unsupported(b, side, i)) return BI_UNSUPPORTED_ABILITY;
     return BI_OK;
 }
 
@@ -357,16 +370,26 @@ void battle_choose_ai(Battle *b, uint8_t side, Action *out) {
     battle_choose_at(b, (Position){side, rotation_battle(b) ? BPOS_CENTER : 0}, out);
 }
 
-uint8_t bc_effectiveness(const Battle *b, uint8_t move_type, const Battler *d) {
+uint8_t bc_effectiveness(const Battle *b, const Battler *a, uint8_t move_type, const Battler *d) {
     const uint8_t n = b->request->type_count;
-    unsigned e = b->request->type_chart[move_type * n + d->types[0]];
-    if (d->type_count == 2 && d->types[1] != d->types[0]) e = e * b->request->type_chart[move_type * n + d->types[1]] / 4;
+    unsigned e = bc_ability_type_factor(b, a, move_type, d->types[0], b->request->type_chart[move_type * n + d->types[0]]);
+    if (d->type_count == 2 && d->types[1] != d->types[0])
+        e = e * bc_ability_type_factor(b, a, move_type, d->types[1], b->request->type_chart[move_type * n + d->types[1]]) / 4;
     return (uint8_t)e;
+}
+
+bool bc_battle_decided(const Battle *b) {
+    for (unsigned side = 0; side < 2; ++side) {
+        bool standing = false;
+        for (unsigned i = 0; i < b->sides[side].count; ++i) standing |= !b->sides[side].battlers[i].fainted;
+        if (!standing) return true;
+    }
+    return false;
 }
 
 uint16_t bc_calculate_damage(const Battle *b, const Battler *a, const BattleMove *m, const Battler *d,
                                  unsigned random_percent, bool typeless, uint8_t *eff) {
-    *eff = typeless ? 4 : bc_effectiveness(b, m->type, d);
+    *eff = typeless ? 4 : bc_effectiveness(b, a, m->type, d);
     if (*eff == 0) return 0;
     const bool physical = m->category == BCAT_PHYSICAL;
     unsigned atk = physical ? a->attack : a->sp_attack;
@@ -375,15 +398,17 @@ uint16_t bc_calculate_damage(const Battle *b, const Battler *a, const BattleMove
         atk = bc_stage_scale(atk, a->stat_stages[physical ? BSTAT_ATK : BSTAT_SPA], 2);
         def = bc_stage_scale(def, d->stat_stages[physical ? BSTAT_DEF : BSTAT_SPD], 2);
     }
-    // V11 abilities: attacking-stat modifiers (both sides) and base power.
+    // V11/V12 abilities: attacking and defending stat modifiers, base power.
     atk = bc_ability_attack(b, a, m, d, typeless, atk);
+    def = bc_ability_defense(b, m, d, def);
     const unsigned power = bc_ability_power(b, a, m->power);
     uint64_t dmg = ((2u * a->level / 5u + 2u) * (uint64_t)power * atk / (def ? def : 1)) / 50u + 2u;
     dmg = dmg * random_percent / 100u;
     if (!typeless && (m->type == a->types[0] || (a->type_count == 2 && m->type == a->types[1])))
-        dmg = dmg * 3u / 2u;
+        dmg = dmg * bc_ability_stab(b, a) / 100u;
     dmg = dmg * *eff / 4u;
-    if ((physical && bc_status_kind(b, a) == BST_BURN) || (!physical && bc_status_kind(b, a) == BST_FROSTBITE))
+    if ((physical && bc_status_kind(b, a) == BST_BURN && !bc_ability_ignores_burn(b, a)) ||
+        (!physical && bc_status_kind(b, a) == BST_FROSTBITE))
         dmg /= 2;
     if (dmg == 0) dmg = 1;
     return dmg > 0xffff ? 0xffff : (uint16_t)dmg;
@@ -658,11 +683,13 @@ static void execute_struggle(Battle *b, Position user, EventLog *log) {
                              .move_flags = BMF_CONTACT};
     // Protect, semi-invulnerable states and substitutes apply as to any hit;
     // the recoil follows only a hit that landed (a substitute hit counts).
-    if (!bc_struggle_strike(b, user, target, &move, log)) return;
+    unsigned kos;
+    if (!bc_struggle_strike(b, user, target, &move, log, &kos)) return;
     const unsigned max_hp = battle_at(b, user)->max_hp;
     const unsigned rounding = rules->struggle_recoil == BSTRUGGLE_MAX_HP_NEAREST ? 2 : 0;
     const uint16_t recoil = (max_hp + rounding) / 4u;
     bc_apply_damage(b, (BattleEvent){.kind = EV_RECOIL, .user = user, .target = user}, recoil ? recoil : 1, log);
+    bc_ability_after_move(b, user, kos, log);  // Moxie, after recoil
 }
 
 BattleActionState battle_action_state(const Battle *b, Position p) {
@@ -760,6 +787,8 @@ static void resolve_end_of_turn(Battle *b, EventLog *log) {
         }
     }
 
+    // Abilities that cure a status (Shed Skin) come before the residual damage.
+    for (unsigned i = 0; i < count; ++i) bc_ability_end_turn_cure(b, order[i], log);
     // Each effect group processes eligible battlers in speed order. Replacement
     // happens after the whole phase, including simultaneous losses on both sides.
     static const uint8_t groups[] = {BST_POISON, BST_BURN, BST_FROSTBITE};

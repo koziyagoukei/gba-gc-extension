@@ -56,6 +56,7 @@ typedef struct {
     bool protected_turn;        // Protect succeeded this turn
     uint8_t protect_uses;       // consecutive successful Protect uses
     bool entered;               // sent out since this turn started (V11 end-of-turn abilities)
+    uint8_t ability_state;      // V12 ability state (Flash Fire boost); leaves with the battler
 } BattlerVolatiles;
 
 typedef struct {
@@ -117,6 +118,7 @@ typedef struct { BattleEvent events[BC_MAX_EVENTS]; unsigned count; } EventLog;
 
 enum BattleInitError {
     BI_OK = 0, BI_FORMAT, BI_PARTY_SIZE, BI_NO_PLAYER_MOVES, BI_NO_OPPONENT_MOVES, BI_BAD_TYPES, BI_FAINTED_LEAD, BI_CONDITIONS,
+    BI_UNSUPPORTED_ABILITY,  // RULE_STRICT_ABILITIES and an ability is UNSUPPORTED
 };
 
 // Action resolution state within a turn. A battler's own multi-turn state
@@ -146,6 +148,7 @@ typedef struct {
     uint32_t rng;
     uint8_t turn;     // turns completed
     uint8_t outcome;  // BattleOutcome, OUTCOME_NONE while running
+    bool ability_mirroring;  // a Synchronize status is being given back (no second reflection)
 } Battle;
 
 const char *battle_init_error_name(int error);
@@ -156,6 +159,10 @@ unsigned battle_formation_size(uint8_t format);
 uint8_t battle_rotation_slot(uint8_t rotation);
 uint8_t battle_rotation_origin(uint8_t rotation, uint8_t destination);
 bool battle_adjacent(const Battle *battle, Position a, Position b);
+// Whether `other` is in `range` (BRANGE_*) of `holder`: the shared position rule
+// for effects that reach several Pokemon. ADJACENT_FOES uses Triple adjacency;
+// in Single, Double and Rotation every foe on the field counts.
+bool battle_in_range(const Battle *battle, Position holder, Position other, uint8_t range);
 bool battle_can_shift(const Battle *battle, Position user);
 uint8_t battle_target_mask(const Battle *battle, Position user, const BattleMove *move, uint8_t target_side);
 uint8_t battle_command_targets(const Battle *battle, Position user, unsigned move_slot);
