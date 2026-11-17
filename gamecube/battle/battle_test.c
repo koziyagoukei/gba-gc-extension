@@ -1768,8 +1768,12 @@ static void test_volatile_wire(void) {
     set_move(&r.player[0], 2, 16, gust, 35);
     assert(battle_init(&b, &r, 1) == BI_OK);
     assert((battle_usable_moves(&b, battle_active(&b, 0)) & 6) == 0);
-    // V8 requests still encode and decode unchanged (no rules block).
-    const uint32_t v8 = battle_request_encode(&r, bytes, sizeof(bytes));
+    // On the wire such a V8 request is malformed (audit P-03); a plain V8
+    // request still encodes and decodes unchanged (no rules block).
+    uint32_t v8 = battle_request_encode(&r, bytes, sizeof(bytes));
+    assert(v8 == battle_request_size(&r) && !battle_request_decode(bytes, v8, &d));
+    make_effects(&r, BATTLE_FORMAT_SINGLE);
+    v8 = battle_request_encode(&r, bytes, sizeof(bytes));
     assert(v8 == battle_request_size(&r) && battle_request_decode(bytes, v8, &d) && d.version == BATTLE_REQUEST_VERSION_EFFECTS);
     // State: one volatile byte per position.
     BattleRosterState s = {.field_state = {.phase = BPHASE_CHOOSE, .token = 9},
@@ -2626,6 +2630,32 @@ static void test_state_decode_defaults(void) {
     assert(!out.struggle_mask && !out.status[1][0] && !out.volatiles[0][0]);
 }
 
+// ---------------------------------------------------------------- later-version fields in an older request (audit P-03)
+
+static void test_version_schema(void) {
+    static BattleRequest r, d;
+    static uint8_t bytes[4096];
+    make_effects(&r, BATTLE_FORMAT_SINGLE);                      // V8
+    BattleMove bite = damaging(60, T_NORMAL, 0);
+    push(&bite, fx(BEFF_FLINCH, BWHO_TARGET, 30, 0, 0, 0));
+    set_move(&r.player[0], 1, 44, bite, 25);
+    uint32_t n = battle_request_encode(&r, bytes, sizeof(bytes));
+    assert(n && !battle_request_decode(bytes, n, &d));            // a V9 kind in V8: malformed
+    make_effects(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove gust = damaging(40, T_NORMAL, 0);
+    gust.move_flags = BMF_DOUBLE_AIRBORNE;
+    set_move(&r.player[0], 1, 16, gust, 35);
+    n = battle_request_encode(&r, bytes, sizeof(bytes));
+    assert(n && !battle_request_decode(bytes, n, &d));            // a V9 move flag in V8
+    r.version = BATTLE_REQUEST_VERSION_VOLATILES;                 // the same move is fine in V9
+    r.volatiles = (BattleVolatileRules){.confusion_hit_percent = 33, .confusion_min = 2, .confusion_max = 5,
+                                        .confusion_power = 40, .substitute_divisor = 4};
+    n = battle_request_encode(&r, bytes, sizeof(bytes));
+    assert(n && battle_request_decode(bytes, n, &d) && d.player[0].mon.moves[1].move_flags == BMF_DOUBLE_AIRBORNE);
+    bytes[0] = BATTLE_REQUEST_VERSION_TIMING + 1;                 // a future version
+    assert(!battle_request_decode(bytes, n, &d));
+}
+
 int main(void) {
     test_request_roundtrip();
     test_messages();
@@ -2674,6 +2704,7 @@ int main(void) {
     test_refused_turn_keeps_state();
     test_auto_target_normalized();
     test_state_decode_defaults();
+    test_version_schema();
     puts("battle tests passed");
     return 0;
 }
