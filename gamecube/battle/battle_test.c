@@ -2656,6 +2656,657 @@ static void test_version_schema(void) {
     assert(!battle_request_decode(bytes, n, &d));
 }
 
+// ------------------------------------------------------------- V11 abilities (Milestone 4-A)
+
+static void make_abilities(BattleRequest *r, uint8_t format) {
+    make_timing(r, format);
+    r->version = BATTLE_REQUEST_VERSION_ABILITIES;
+    r->rules &= (uint16_t)~RULE_IGNORE_ABILITIES;
+}
+
+static BattleAbility ab(uint8_t kind, uint8_t arg0, int8_t arg1, uint8_t arg2, uint8_t chance, uint8_t percent,
+                        uint16_t source) {
+    return (BattleAbility){.kind = kind, .arg0 = arg0, .arg1 = arg1, .arg2 = arg2, .chance = chance,
+                           .percent = percent, .source = source};
+}
+
+static void give(BattleEntry *e, BattleAbility a) {
+    e->record.ability = a.source;
+    e->mon.ability = a;
+}
+
+static Battler *at_pos(Battle *b, uint8_t side, uint8_t slot) {
+    return (Battler *)battle_at(b, (Position){side, slot});
+}
+
+static BattleMove contact(uint16_t power, uint8_t hits) {
+    BattleMove m = damaging(power, T_NORMAL, 0);
+    m.effects[0] = fx(BEFF_DAMAGE, BWHO_TARGET, 0, hits, 0, hits);
+    m.move_flags |= BMF_CONTACT;
+    return m;
+}
+
+#define HUGE_POWER ab(BABIL_ATTACK_MULT, BCAT_PHYSICAL, 0, 0, 0, 200, 37)
+#define TECHNICIAN ab(BABIL_LOW_POWER, 60, 0, 0, 0, 150, 101)
+#define THICK_FAT ab(BABIL_RESIST, T_FIRE, 0, T_WATER, 0, 50, 47)
+#define BLAZE ab(BABIL_PINCH, T_FIRE, 0, 3, 0, 150, 66)
+#define LEVITATE ab(BABIL_TYPE_IMMUNE, T_FIRE, 0, 0, 0, 0, 26)
+#define VOLT_ABSORB ab(BABIL_TYPE_ABSORB, T_WATER, 0, 0, 0, 25, 10)
+#define LIMBER ab(BABIL_STATUS_IMMUNE, 1u << BST_PARALYSIS, 0, 0, 0, 0, 7)
+#define INNER_FOCUS ab(BABIL_VOLATILE_IMMUNE, BABIL_VOL_FLINCH | BABIL_VOL_INTIMIDATE, 0, 0, 0, 0, 39)
+#define OWN_TEMPO ab(BABIL_VOLATILE_IMMUNE, BABIL_VOL_CONFUSION | BABIL_VOL_INTIMIDATE, 0, 0, 0, 0, 20)
+#define CLEAR_BODY ab(BABIL_STAT_DROP_IMMUNE, 0x7f, 0, 0, 0, 0, 29)
+#define HYPER_CUTTER ab(BABIL_STAT_DROP_IMMUNE, 1u << BSTAT_ATK, 0, 0, 0, 0, 52)
+#define KEEN_EYE ab(BABIL_STAT_DROP_IMMUNE, 1u << BSTAT_ACC, 0, BABIL_IGNORE_EVASION, 0, 0, 51)
+#define COMPOUND_EYES ab(BABIL_ACCURACY, 0, 0, 0, 0, 130, 14)
+#define NO_GUARD ab(BABIL_NO_GUARD, 0, 0, 0, 0, 0, 99)
+#define STATIC ab(BABIL_CONTACT_STATUS, BST_PARALYSIS, 0, 0, 100, 0, 9)
+#define ROUGH_SKIN ab(BABIL_CONTACT_DAMAGE, 0, 0, 8, 0, 0, 24)
+#define INTIMIDATE ab(BABIL_ENTRY_STAT, BSTAT_ATK, -1, 0, 0, 0, 22)
+#define SPEED_BOOST ab(BABIL_END_TURN_STAT, BSTAT_SPE, 1, 0, 0, 0, 3)
+#define STURDY ab(BABIL_STURDY, 0, 0, 0, 0, 0, 5)
+#define ROCK_HEAD ab(BABIL_NO_RECOIL, 0, 0, 0, 0, 0, 69)
+#define SHIELD_DUST ab(BABIL_SHIELD_DUST, 0, 0, 0, 0, 0, 19)
+#define SERENE_GRACE ab(BABIL_SECONDARY_CHANCE, 0, 0, 0, 0, 200, 32)
+#define INFILTRATOR ab(BABIL_INFILTRATOR, 0, 0, 0, 0, 0, 151)
+#define UNSUPPORTED(id) ab(BABIL_UNSUPPORTED, 0, 0, 0, 0, 0, id)
+
+static void test_ability_wire(void) {
+    static BattleRequest r, d;
+    static uint8_t bytes[4096];
+    make_abilities(&r, BATTLE_FORMAT_DOUBLE);
+    give(&r.player[0], INTIMIDATE);
+    give(&r.player[1], HUGE_POWER);
+    give(&r.opponent[0], UNSUPPORTED(104));
+    give(&r.opponent[1], THICK_FAT);
+    r.player[0].mon.moves[0].move_flags |= BMF_CONTACT;
+    uint32_t n = battle_request_encode(&r, bytes, sizeof(bytes));
+    assert(n == battle_request_size(&r) && battle_request_decode(bytes, n, &d));
+    assert(d.player[0].mon.ability.kind == BABIL_ENTRY_STAT && d.player[0].mon.ability.arg1 == -1 &&
+           d.player[0].mon.ability.source == 22);
+    assert(d.player[1].mon.ability.percent == 200 && d.opponent[0].mon.ability.kind == BABIL_UNSUPPORTED &&
+           d.opponent[1].mon.ability.arg2 == T_WATER && (d.player[0].mon.moves[0].move_flags & BMF_CONTACT));
+    // The block is 8 bytes per entry, between the effect lists and the volatile rules.
+    static BattleRequest v10;
+    v10 = r;
+    v10.version = BATTLE_REQUEST_VERSION_TIMING;
+    v10.player[0].mon.moves[0].move_flags &= (uint8_t)~BMF_CONTACT;
+    assert(battle_request_size(&r) == battle_request_size(&v10) + 4 * BATTLE_ABILITY_BYTES);
+    const uint32_t block = n - BATTLE_VOLATILE_RULE_BYTES - 4 * BATTLE_ABILITY_BYTES;
+    assert(bytes[block] == BABIL_ENTRY_STAT && bytes[block + 6] == 22);
+    // Source id must match the record, kinds and arguments must be exact.
+    bytes[block + 6] = 23;
+    assert(!battle_request_decode(bytes, n, &d));
+    bytes[block + 6] = 22;
+    bytes[block] = BABIL_COUNT;
+    assert(!battle_request_decode(bytes, n, &d));
+    bytes[block] = BABIL_ENTRY_STAT;
+    bytes[block + 3] = 1;  // an argument ENTRY_STAT does not use
+    assert(!battle_request_decode(bytes, n, &d));
+    bytes[block + 3] = 0;
+    assert(battle_request_decode(bytes, n, &d));
+    assert(!battle_request_decode(bytes, n - 1, &d));
+    // Later-version fields in an earlier request are malformed (audit P-03 rule).
+    bytes[0] = BATTLE_REQUEST_VERSION_TIMING;
+    assert(!battle_request_decode(bytes, n, &d));
+    n = battle_request_encode(&v10, bytes, sizeof(bytes));
+    assert(n && battle_request_decode(bytes, n, &d) && d.player[0].mon.ability.kind == BABIL_NONE &&
+           d.player[0].mon.ability.source == 0);
+    v10.player[0].mon.moves[0].move_flags |= BMF_CONTACT;
+    n = battle_request_encode(&v10, bytes, sizeof(bytes));
+    assert(n && !battle_request_decode(bytes, n, &d));
+    // Descriptor validation.
+    const BattleAbility valid_static = STATIC;
+    assert(battle_ability_valid(&valid_static, NTYPES));
+    assert(!battle_ability_valid(&(BattleAbility){.kind = BABIL_CONTACT_STATUS, .arg0 = BST_PARALYSIS}, NTYPES));
+    assert(!battle_ability_valid(&(BattleAbility){.kind = BABIL_TYPE_IMMUNE, .arg0 = NTYPES}, NTYPES));
+    assert(!battle_ability_valid(&(BattleAbility){.kind = BABIL_ACCURACY}, NTYPES));
+    assert(!battle_ability_valid(&(BattleAbility){.kind = BABIL_NONE, .percent = 1}, NTYPES));
+    assert(!battle_ability_valid(&(BattleAbility){.kind = BABIL_ENTRY_STAT, .arg0 = BSTAT_ATK}, NTYPES));
+    assert(strcmp(battle_ability_kind_name(BABIL_INFILTRATOR), "infiltrator") == 0);
+}
+
+static void test_ability_damage(void) {
+    static BattleRequest r, plain;
+    Battle b, p;
+    uint8_t eff;
+    make_abilities(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove fire = damaging(40, T_FIRE, 0), special = fire;
+    special.category = BCAT_SPECIAL;
+    BattleMove power61 = damaging(61, T_NORMAL, 0), power60 = damaging(60, T_NORMAL, 0);
+    BattleMove power90 = damaging(90, T_NORMAL, 0), power40 = damaging(40, T_NORMAL, 0);
+    plain = r;
+    give(&r.player[0], HUGE_POWER);
+    assert(battle_init(&b, &r, 1) == BI_OK && battle_init(&p, &plain, 1) == BI_OK);
+    Battler *a = battle_active(&b, 0), *pa = battle_active(&p, 0);
+    pa->attack = 120;
+    assert(battle_damage(&b, a, &fire, battle_active(&b, 1), 100, &eff) ==
+           battle_damage(&p, pa, &fire, battle_active(&p, 1), 100, &eff));
+    pa->attack = 60;
+    assert(battle_damage(&b, a, &special, battle_active(&b, 1), 100, &eff) ==
+           battle_damage(&p, pa, &special, battle_active(&p, 1), 100, &eff));  // physical only
+    // Technician: power <= 60 x1.5 (40 -> 60); 61 unchanged.
+    give(&r.player[0], TECHNICIAN);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    a = battle_active(&b, 0);
+    assert(battle_damage(&b, a, &power40, battle_active(&b, 1), 100, &eff) ==
+           battle_damage(&p, pa, &power60, battle_active(&p, 1), 100, &eff));
+    assert(battle_damage(&b, a, &power60, battle_active(&b, 1), 100, &eff) ==
+           battle_damage(&p, pa, &power90, battle_active(&p, 1), 100, &eff));
+    assert(battle_damage(&b, a, &power61, battle_active(&b, 1), 100, &eff) ==
+           battle_damage(&p, pa, &power61, battle_active(&p, 1), 100, &eff));
+    // Thick Fat (Fire, Water): the attacker's stat is halved; Normal is unchanged.
+    give(&r.player[0], (BattleAbility){0});
+    give(&r.opponent[0], THICK_FAT);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    a = battle_active(&b, 0);
+    pa->attack = 30;
+    assert(battle_damage(&b, a, &fire, battle_active(&b, 1), 100, &eff) ==
+           battle_damage(&p, pa, &fire, battle_active(&p, 1), 100, &eff));
+    pa->attack = 60;
+    assert(battle_damage(&b, a, &power40, battle_active(&b, 1), 100, &eff) ==
+           battle_damage(&p, pa, &power40, battle_active(&p, 1), 100, &eff));
+    // Blaze: Fire moves x1.5 at or below a third of max HP.
+    give(&r.opponent[0], (BattleAbility){0});
+    give(&r.player[0], BLAZE);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    a = battle_active(&b, 0);
+    a->hp = a->max_hp / 3 + 1;
+    const uint16_t above = battle_damage(&b, a, &fire, battle_active(&b, 1), 100, &eff);
+    assert(above == battle_damage(&p, pa, &fire, battle_active(&p, 1), 100, &eff));
+    a->hp = a->max_hp / 3;
+    pa->attack = 90;
+    assert(battle_damage(&b, a, &fire, battle_active(&b, 1), 100, &eff) ==
+           battle_damage(&p, pa, &fire, battle_active(&p, 1), 100, &eff));
+    // The rule and older versions keep the ability inert.
+    pa->attack = 60;
+    r.rules |= RULE_IGNORE_ABILITIES;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_active(&b, 0)->hp = 1;
+    assert(battle_damage(&b, battle_active(&b, 0), &fire, battle_active(&b, 1), 100, &eff) ==
+           battle_damage(&p, pa, &fire, battle_active(&p, 1), 100, &eff));
+}
+
+static void test_ability_immunity(void) {
+    static BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_abilities(&r, BATTLE_FORMAT_SINGLE);
+    give(&r.opponent[0], LEVITATE);
+    BattleMove fire = damaging(40, T_FIRE, 1);          // 1% accuracy: an accuracy check would miss
+    set_move(&r.player[0], 1, 53, fire, 10);
+    BattleMove growl = effect_move(BTARGET_SINGLE, 0, fx(BEFF_STAT, BWHO_TARGET, 0, BSTAT_ATK, -1, 0));
+    growl.type = T_FIRE;                                // a status move of the type: not blocked
+    set_move(&r.player[0], 2, 45, growl, 10);
+    BattleMove wave = effect_move(BTARGET_SINGLE, 0, fx(BEFF_STATUS, BWHO_TARGET, 0, BST_PARALYSIS, 0, 0));
+    wave.type = T_FIRE;
+    wave.effects[0].flags = BEFL_TYPE_CHART;           // uses the type chart (Thunder Wave): blocked
+    set_move(&r.player[0], 3, 86, wave, 10);
+    for (uint32_t seed = 1; seed < 40; ++seed) {
+        assert(battle_init(&b, &r, seed) == BI_OK);
+        battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+        const BattleEvent *e = find(&log, EV_ABILITY_BLOCK);
+        assert(e && e->user.side == 1 && e->ability == 26 && e->condition == BABIL_TYPE_IMMUNE);
+        assert(!find(&log, EV_MISS) && !find(&log, EV_DAMAGE));
+    }
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 2)}, 1, &log);
+    assert(find(&log, EV_STAGE) && !find(&log, EV_ABILITY_BLOCK));
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 3)}, 1, &log);
+    assert(find(&log, EV_ABILITY_BLOCK) && !find(&log, EV_STATUS) && !find(&log, EV_NO_EFFECT));
+
+    // Volt Absorb (Water here): heals a quarter, once per target, even through a substitute.
+    make_abilities(&r, BATTLE_FORMAT_SINGLE);
+    give(&r.opponent[0], VOLT_ABSORB);
+    BattleMove water = damaging(40, T_WATER, 0);
+    water.effects[0] = fx(BEFF_DAMAGE, BWHO_TARGET, 0, 3, 0, 3);
+    set_move(&r.player[0], 1, 61, water, 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    Battler *holder = battle_active(&b, 1);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(find(&log, EV_ABILITY_BLOCK) && !find(&log, EV_HEAL) && holder->hp == holder->max_hp);
+    holder->hp = 10;
+    holder->vol.substitute_hp = 30;
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(event_count(&log, EV_ABILITY) == 1 && event_count(&log, EV_HEAL) == 1);
+    assert(holder->hp == 10 + holder->max_hp / 4 && holder->vol.substitute_hp == 30 && !find(&log, EV_DAMAGE));
+    // Double spread: each holder once.
+    make_abilities(&r, BATTLE_FORMAT_DOUBLE);
+    give(&r.opponent[0], VOLT_ABSORB);
+    give(&r.opponent[1], VOLT_ABSORB);
+    water = damaging(40, T_WATER, 0);
+    water.target = BTARGET_ALL_FOES;
+    set_move(&r.player[0], 1, 57, water, 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    at_pos(&b, 1, 0)->hp = at_pos(&b, 1, 1)->hp = 50;
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(event_count(&log, EV_HEAL) == 2 && at_pos(&b, 1, 0)->hp == 100 && at_pos(&b, 1, 1)->hp == 100);
+}
+
+static void test_ability_accuracy(void) {
+    static BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_abilities(&r, BATTLE_FORMAT_SINGLE);
+    set_move(&r.player[0], 1, 12, damaging(40, T_NORMAL, 1), 10);
+    set_move(&r.player[0], 2, 90, damaging(40, T_NORMAL, 77), 10);
+    unsigned misses_plain = 0;
+    for (uint32_t seed = 1; seed < 60; ++seed) {
+        assert(battle_init(&b, &r, seed) == BI_OK);
+        battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 2)}, 1, &log);
+        misses_plain += find(&log, EV_MISS) != NULL;
+    }
+    assert(misses_plain > 0);
+    // Compound Eyes: 77 x 1.3 = 100.
+    give(&r.player[0], COMPOUND_EYES);
+    for (uint32_t seed = 1; seed < 60; ++seed) {
+        assert(battle_init(&b, &r, seed) == BI_OK);
+        battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 2)}, 1, &log);
+        assert(!find(&log, EV_MISS));
+    }
+    // No Guard on either side: a 1% move always hits, also a target in the air.
+    for (unsigned side = 0; side < 2; ++side) {
+        give(&r.player[0], side ? (BattleAbility){0} : NO_GUARD);
+        give(&r.opponent[0], side ? NO_GUARD : (BattleAbility){0});
+        for (uint32_t seed = 1; seed < 40; ++seed) {
+            assert(battle_init(&b, &r, seed) == BI_OK);
+            battle_active(&b, 1)->vol.semi_invulnerable = BSEMI_AIR;
+            battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+            assert(!find(&log, EV_MISS) && find(&log, EV_DAMAGE));
+        }
+    }
+    // Keen Eye ignores the target's evasion stages.
+    give(&r.opponent[0], (BattleAbility){0});
+    set_move(&r.player[0], 3, 33, damaging(40, T_NORMAL, 100), 10);
+    unsigned misses = 0;
+    for (uint32_t seed = 1; seed < 40; ++seed) {
+        give(&r.player[0], seed & 1 ? KEEN_EYE : (BattleAbility){0});
+        assert(battle_init(&b, &r, seed) == BI_OK);
+        battle_active(&b, 1)->stat_stages[BSTAT_EVA] = 6;
+        battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 3)}, 1, &log);
+        if (seed & 1) assert(!find(&log, EV_MISS));
+        else misses += find(&log, EV_MISS) != NULL;
+    }
+    assert(misses > 0);
+}
+
+static void test_ability_sturdy(void) {
+    static BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_abilities(&r, BATTLE_FORMAT_SINGLE);
+    give(&r.opponent[0], STURDY);
+    r.opponent[0].record.hp = r.opponent[0].record.max_hp = 12;
+    set_move(&r.player[0], 1, 88, damaging(120, T_NORMAL, 0), 10);
+    set_move(&r.player[0], 2, 89, contact(40, 3), 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(battle_active(&b, 1)->hp == 1 && !find(&log, EV_FAINT));
+    assert(index_of(&log, EV_ABILITY, 0) == index_of(&log, EV_DAMAGE, 0) + 1);
+    assert(find(&log, EV_ABILITY)->condition == BABIL_STURDY);
+    // Not at full HP: it faints.
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(b.sides[1].battlers[0].fainted && !find(&log, EV_ABILITY));
+    // Multi-hit (per hit): the first hit leaves 1 HP, the second knocks it out.
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 2)}, 1, &log);
+    assert(event_count(&log, EV_DAMAGE) == 2 && event_count(&log, EV_ABILITY) == 1 && b.sides[1].battlers[0].fainted);
+    // A substitute taking the hit: no Sturdy, the Pokemon keeps full HP.
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_active(&b, 1)->vol.substitute_hp = 3;
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(find(&log, EV_SUBSTITUTE_BREAK) && !find(&log, EV_ABILITY) && battle_active(&b, 1)->hp == 12);
+    // The confusion self-hit too.
+    make_abilities(&r, BATTLE_FORMAT_SINGLE);
+    r.volatiles.confusion_hit_percent = 100;
+    r.volatiles.confusion_power = 250;
+    give(&r.player[0], STURDY);
+    r.player[0].record.hp = r.player[0].record.max_hp = 5;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_active(&b, 0)->vol.confusion = 5;
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 0)}, 1, &log);
+    assert(find(&log, EV_CONFUSION_HIT) && battle_active(&b, 0)->hp == 1 && find(&log, EV_ABILITY));
+}
+
+static void test_ability_contact(void) {
+    static BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_abilities(&r, BATTLE_FORMAT_SINGLE);
+    give(&r.opponent[0], ROUGH_SKIN);
+    // Three contact hits, each with a per-hit (V10) Defense drop: hit, drop, ability, damage per hit.
+    BattleMove m = contact(10, 3);
+    BattleEffect drop = fx(BEFF_STAT, BWHO_TARGET, 0, BSTAT_DEF, -1, 0);
+    drop.flags = BEFL_TIMING(BETIME_PER_HIT);
+    push(&m, drop);
+    set_move(&r.player[0], 1, 24, m, 10);
+    set_move(&r.player[0], 2, 25, damaging(10, T_NORMAL, 0), 10);  // no contact
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    Battler *user = battle_active(&b, 0);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(event_count(&log, EV_ABILITY_DAMAGE) == 3 && user->hp == user->max_hp - 3 * (user->max_hp / 8));
+    for (unsigned h = 0; h < 3; ++h) {
+        const unsigned hit = index_of(&log, EV_DAMAGE, h);
+        assert(index_of(&log, EV_STAGE, h) == hit + 1 && index_of(&log, EV_ABILITY, h) == hit + 2 &&
+               index_of(&log, EV_ABILITY_DAMAGE, h) == hit + 3);
+    }
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 2)}, 1, &log);
+    assert(!find(&log, EV_ABILITY) && !find(&log, EV_ABILITY_DAMAGE));
+    // Behind a substitute: the Pokemon was not struck, no contact ability.
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_active(&b, 1)->vol.substitute_hp = 200;
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(event_count(&log, EV_SUBSTITUTE_HIT) == 3 && !find(&log, EV_ABILITY_DAMAGE));
+    // The attacker knocked out by Rough Skin: the multi-hit stops there.
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_active(&b, 0)->hp = 1;
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(event_count(&log, EV_DAMAGE) == 1 && b.sides[0].battlers[0].fainted);
+    // Struggle makes contact in V11.
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    user = battle_active(&b, 0);
+    for (unsigned i = 0; i < 4; ++i) user->pp[i] = 0;
+    battle_run_turn(&b, (Action[]){{.kind = ACT_STRUGGLE, .user = {0, 0}}}, 1, &log);
+    assert(find(&log, EV_ABILITY_DAMAGE) && find(&log, EV_RECOIL));
+
+    // Static (chance 100 here): the attacker is paralysed after the first contact hit only.
+    give(&r.opponent[0], STATIC);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(event_count(&log, EV_STATUS) == 1 && BATTLE_CONDITION_KIND(battle_active(&b, 0)->status) == BST_PARALYSIS);
+    assert(find(&log, EV_STATUS)->target.side == 0 && event_count(&log, EV_ABILITY) == 1);
+    // An attacker that cannot be paralysed (Limber, or the Electric type under the rule) draws nothing.
+    give(&r.player[0], LIMBER);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(!find(&log, EV_STATUS) && !find(&log, EV_ABILITY));
+    give(&r.player[0], (BattleAbility){0});
+    r.player[0].mon.types[0] = r.player[0].mon.types[1] = T_WATER;  // the rules' electric type
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(!find(&log, EV_STATUS));
+}
+
+static void test_ability_effect_level(void) {
+    static BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_abilities(&r, BATTLE_FORMAT_SINGLE);
+    // Shield Dust: a chance effect on the holder is skipped; the user's own effect still runs.
+    BattleMove m = damaging(10, T_NORMAL, 0);
+    push(&m, fx(BEFF_STAT, BWHO_TARGET, 100, BSTAT_DEF, -1, 0));
+    push(&m, fx(BEFF_STAT, BWHO_USER, 100, BSTAT_ATK, 1, 0));
+    set_move(&r.player[0], 1, 70, m, 10);
+    give(&r.opponent[0], SHIELD_DUST);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(battle_active(&b, 1)->stat_stages[BSTAT_DEF] == 0 && battle_active(&b, 0)->stat_stages[BSTAT_ATK] == 1);
+    // Serene Grace: 50% becomes 100%.
+    give(&r.opponent[0], (BattleAbility){0});
+    m = damaging(10, T_NORMAL, 0);
+    push(&m, fx(BEFF_STAT, BWHO_TARGET, 50, BSTAT_DEF, -1, 0));
+    set_move(&r.player[0], 1, 70, m, 10);
+    unsigned plain = 0;
+    for (uint32_t seed = 1; seed < 40; ++seed) {
+        give(&r.player[0], seed & 1 ? SERENE_GRACE : (BattleAbility){0});
+        assert(battle_init(&b, &r, seed) == BI_OK);
+        battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+        if (seed & 1) assert(find(&log, EV_STAGE));
+        else plain += find(&log, EV_STAGE) == NULL;
+    }
+    assert(plain > 0);
+    // Limber: a status move is stopped with a message; a chance effect silently.
+    give(&r.player[0], (BattleAbility){0});
+    give(&r.opponent[0], LIMBER);
+    set_move(&r.player[0], 1, 86, effect_move(BTARGET_SINGLE, 0, fx(BEFF_STATUS, BWHO_TARGET, 0, BST_PARALYSIS, 0, 0)), 10);
+    m = damaging(10, T_NORMAL, 0);
+    push(&m, fx(BEFF_STATUS, BWHO_TARGET, 100, BST_PARALYSIS, 0, 0));
+    set_move(&r.player[0], 2, 34, m, 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(find(&log, EV_ABILITY_BLOCK) && !find(&log, EV_STATUS) && !find(&log, EV_NO_EFFECT));
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 2)}, 1, &log);
+    assert(!find(&log, EV_ABILITY_BLOCK) && !find(&log, EV_STATUS) && !battle_active(&b, 1)->status);
+    // ... and a holder entering with that status is cured.
+    r.opponent[0].record.status = BST_PARALYSIS;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(find(&log, EV_ABILITY) && find(&log, EV_CURE) && !battle_active(&b, 1)->status);
+    r.opponent[0].record.status = 0;
+    // Inner Focus (flinch) and Own Tempo (confusion).
+    give(&r.opponent[0], INNER_FOCUS);
+    m = damaging(10, T_NORMAL, 0);
+    m.priority = 1;
+    push(&m, fx(BEFF_FLINCH, BWHO_TARGET, 0, 0, 0, 0));
+    set_move(&r.player[0], 1, 252, m, 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1), slot_move(1, 0, 0, 0)}, 2, &log);
+    assert(find(&log, EV_ABILITY_BLOCK) && !find(&log, EV_FLINCH) && event_count(&log, EV_MOVE_USED) == 2);
+    give(&r.opponent[0], OWN_TEMPO);
+    set_move(&r.player[0], 1, 48, effect_move(BTARGET_SINGLE, 0, fx(BEFF_CONFUSE, BWHO_TARGET, 0, 0, 0, 0)), 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(find(&log, EV_ABILITY_BLOCK) && !battle_active(&b, 1)->vol.confusion);
+    // Clear Body stops others' drops, not the holder's own; Hyper Cutter only Attack.
+    give(&r.opponent[0], CLEAR_BODY);
+    set_move(&r.player[0], 1, 45, effect_move(BTARGET_SINGLE, 0, fx(BEFF_STAT, BWHO_TARGET, 0, BSTAT_ATK, -1, 0)), 10);
+    m = damaging(10, T_NORMAL, 0);
+    push(&m, fx(BEFF_STAT, BWHO_USER, 0, BSTAT_DEF, -1, 0));
+    set_move(&r.opponent[0], 1, 370, m, 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1), slot_move(1, 0, 0, 1)}, 2, &log);
+    assert(find(&log, EV_ABILITY_BLOCK) && battle_active(&b, 1)->stat_stages[BSTAT_ATK] == 0 &&
+           battle_active(&b, 1)->stat_stages[BSTAT_DEF] == -1);
+    // A raise from another battler (Swagger-like) is not a drop: it applies.
+    set_move(&r.player[0], 3, 207, effect_move(BTARGET_SINGLE, 0, fx(BEFF_STAT, BWHO_TARGET, 0, BSTAT_ATK, 2, 0)), 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 3)}, 1, &log);
+    assert(!find(&log, EV_ABILITY_BLOCK) && battle_active(&b, 1)->stat_stages[BSTAT_ATK] == 2);
+    give(&r.opponent[0], HYPER_CUTTER);
+    set_move(&r.player[0], 2, 39, effect_move(BTARGET_SINGLE, 0, fx(BEFF_STAT, BWHO_TARGET, 0, BSTAT_DEF, -1, 0)), 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 2)}, 1, &log);
+    assert(battle_active(&b, 1)->stat_stages[BSTAT_ATK] == 0 && battle_active(&b, 1)->stat_stages[BSTAT_DEF] == -1);
+    // Rock Head: no move recoil; Struggle recoil stays.
+    give(&r.opponent[0], (BattleAbility){0});
+    give(&r.player[0], ROCK_HEAD);
+    m = damaging(60, T_NORMAL, 0);
+    push(&m, fx(BEFF_RECOIL, BWHO_USER, 0, 33, 0, 0));
+    set_move(&r.player[0], 1, 36, m, 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(find(&log, EV_DAMAGE) && !find(&log, EV_RECOIL));
+    for (unsigned i = 0; i < 4; ++i) battle_active(&b, 0)->pp[i] = 0;
+    battle_run_turn(&b, (Action[]){{.kind = ACT_STRUGGLE, .user = {0, 0}}}, 1, &log);
+    assert(find(&log, EV_RECOIL));
+    // Infiltrator: the target's substitute neither takes the hit nor stops a status move.
+    give(&r.player[0], INFILTRATOR);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_active(&b, 1)->vol.substitute_hp = 50;
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 0)}, 1, &log);
+    assert(find(&log, EV_DAMAGE) && !find(&log, EV_SUBSTITUTE_HIT) && battle_active(&b, 1)->vol.substitute_hp == 50);
+}
+
+static void test_ability_entry(void) {
+    static BattleRequest r;
+    Battle b;
+    EventLog log;
+    // Double: Intimidate at the battle start lowers both foes once; Clear Body and Inner Focus block.
+    make_abilities(&r, BATTLE_FORMAT_DOUBLE);
+    give(&r.player[0], INTIMIDATE);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(event_count(&log, EV_ABILITY) == 1 && event_count(&log, EV_STAGE) == 2);
+    assert(at_pos(&b, 1, 0)->stat_stages[BSTAT_ATK] == -1 && at_pos(&b, 1, 1)->stat_stages[BSTAT_ATK] == -1);
+    assert(at_pos(&b, 0, 1)->stat_stages[BSTAT_ATK] == 0);
+    give(&r.opponent[0], CLEAR_BODY);
+    give(&r.opponent[1], INNER_FOCUS);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(event_count(&log, EV_ABILITY_BLOCK) == 2 && !find(&log, EV_STAGE));
+    // At -6 and behind a substitute it fails (switch-in of a reserve holder).
+    make_abilities(&r, BATTLE_FORMAT_DOUBLE);
+    add_reserve(&r, 0);
+    give(&r.player[2], INTIMIDATE);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(log.count == 0);
+    at_pos(&b, 1, 0)->stat_stages[BSTAT_ATK] = -6;
+    at_pos(&b, 1, 1)->vol.substitute_hp = 10;
+    battle_run_turn(&b, (Action[]){{.kind = ACT_SWITCH, .user = {0, 0}, .reserve = 2}}, 1, &log);
+    assert(find(&log, EV_SEND_OUT) && event_count(&log, EV_ABILITY) == 1 && event_count(&log, EV_FAIL) == 2);
+    assert(index_of(&log, EV_ABILITY, 0) > index_of(&log, EV_SEND_OUT, 0));
+    // Replacement after a faint also triggers it.
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    set_fainted(&b, 0, 0);
+    b.sides[0].active[0] = BATTLE_SLOT_NONE;
+    assert(battle_replace(&b, (Position){0, 0}, 2, &log));
+    assert(event_count(&log, EV_STAGE) == 2);
+    // Triple and Rotation: every standing foe on the field.
+    make_abilities(&r, BATTLE_FORMAT_TRIPLE);
+    give(&r.player[0], INTIMIDATE);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(event_count(&log, EV_STAGE) == 3);
+    make_abilities(&r, BATTLE_FORMAT_ROTATION);
+    give(&r.opponent[2], INTIMIDATE);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(event_count(&log, EV_STAGE) == 3 && find(&log, EV_ABILITY)->user.side == 1);
+    // Leads in speed order: the faster holder acts first.
+    make_abilities(&r, BATTLE_FORMAT_SINGLE);
+    give(&r.player[0], INTIMIDATE);
+    give(&r.opponent[0], INTIMIDATE);
+    r.opponent[0].record.speed = 200;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(event_count(&log, EV_ABILITY) == 2 && log.events[index_of(&log, EV_ABILITY, 0)].user.side == 1);
+    // Older versions: nothing at the start.
+    make_timing(&r, BATTLE_FORMAT_SINGLE);
+    give(&r.player[0], INTIMIDATE);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(log.count == 0);
+}
+
+static void test_ability_end_turn(void) {
+    static BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_abilities(&r, BATTLE_FORMAT_SINGLE);
+    add_reserve(&r, 0);
+    give(&r.player[0], SPEED_BOOST);
+    give(&r.player[1], SPEED_BOOST);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 0)}, 1, &log);
+    assert(battle_active(&b, 0)->stat_stages[BSTAT_SPE] == 1 && find(&log, EV_ABILITY));
+    assert(index_of(&log, EV_STAGE, 0) > index_of(&log, EV_DAMAGE, 0));
+    // Switched in during the turn: no boost that turn, one the next.
+    battle_run_turn(&b, (Action[]){{.kind = ACT_SWITCH, .user = {0, 0}, .reserve = 1}}, 1, &log);
+    assert(battle_active(&b, 0) == &b.sides[0].battlers[1] && battle_active(&b, 0)->stat_stages[BSTAT_SPE] == 0);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 0)}, 1, &log);
+    assert(battle_active(&b, 0)->stat_stages[BSTAT_SPE] == 1);
+    // At +6 nothing happens.
+    battle_active(&b, 0)->stat_stages[BSTAT_SPE] = 6;
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 0)}, 1, &log);
+    assert(!find(&log, EV_ABILITY));
+}
+
+static void test_ability_unsupported(void) {
+    static BattleRequest r;
+    Battle b;
+    EventLog log;
+    make_abilities(&r, BATTLE_FORMAT_DOUBLE);
+    add_reserve(&r, 1);
+    give(&r.player[1], UNSUPPORTED(104));     // e.g. Mold Breaker
+    give(&r.opponent[2], UNSUPPORTED(2));     // a reserve: still listed
+    give(&r.opponent[0], (BattleAbility){.kind = BABIL_NONE, .source = 50});  // no effect: silent
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(event_count(&log, EV_ABILITY_UNSUPPORTED) == 2 && log.count == 2);
+    assert(log.events[0].user.side == 0 && log.events[0].battler == 1 && log.events[0].ability == 104);
+    assert(log.events[1].user.side == 1 && log.events[1].battler == 2 && log.events[1].ability == 2);
+    // The battle runs; the ability is inert.
+    battle_run_turn(&b, (Action[]){move(0, 1, 0)}, 1, &log);
+    assert(find(&log, EV_DAMAGE) && !find(&log, EV_ABILITY));
+    r.rules |= RULE_IGNORE_ABILITIES;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(log.count == 0);
+}
+
+// Every format, every representative ability, random commands: invariants hold
+// and the event log never overflows.
+static void test_ability_formats(void) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    const BattleAbility pool[] = {HUGE_POWER, TECHNICIAN, THICK_FAT, BLAZE, LEVITATE, VOLT_ABSORB, LIMBER,
+                                  INNER_FOCUS, OWN_TEMPO, CLEAR_BODY, HYPER_CUTTER, KEEN_EYE, COMPOUND_EYES,
+                                  NO_GUARD, STATIC, ROUGH_SKIN, INTIMIDATE, SPEED_BOOST, STURDY, ROCK_HEAD,
+                                  SHIELD_DUST, SERENE_GRACE, INFILTRATOR, UNSUPPORTED(104)};
+    const unsigned pool_size = sizeof(pool) / sizeof(*pool);
+    const uint8_t formats[] = {BATTLE_FORMAT_SINGLE, BATTLE_FORMAT_DOUBLE, BATTLE_FORMAT_TRIPLE, BATTLE_FORMAT_ROTATION};
+    unsigned peak = 0, abilities = 0;
+    for (unsigned f = 0; f < 4; ++f)
+        for (uint32_t seed = 1; seed <= 60; ++seed) {
+            make_abilities(&r, formats[f]);
+            for (unsigned side = 0; side < 2; ++side) add_reserve(&r, side);
+            for (unsigned side = 0; side < 2; ++side) {
+                BattleEntry *e = side ? r.opponent : r.player;
+                const unsigned count = side ? r.opponent_count : r.player_count;
+                for (unsigned i = 0; i < count; ++i) {
+                    give(&e[i], pool[(seed * 7 + side * 5 + i * 3 + f) % pool_size]);
+                    e[i].record.hp = e[i].record.max_hp = 60;
+                    BattleMove m = contact(30, i == 1 ? 3 : 1);
+                    BattleEffect drop = fx(BEFF_STAT, BWHO_TARGET, 30, BSTAT_DEF, -1, 0);
+                    drop.flags = BEFL_TIMING(i == 1 ? BETIME_PER_HIT : BETIME_PER_TARGET);
+                    push(&m, drop);
+                    push(&m, fx(BEFF_FLINCH, BWHO_TARGET, 20, 0, 0, 0));
+                    m.type = (uint8_t)((seed + i) % NTYPES == T_GHOST ? T_FIRE : (seed + i) % NTYPES);
+                    set_move(&e[i], 1, 200 + i, m, 30);
+                    BattleMove spread = damaging(40, T_WATER, 90);
+                    spread.target = BTARGET_ALL_FOES;
+                    push(&spread, fx(BEFF_RECOIL, BWHO_USER, 0, 25, 0, 0));
+                    set_move(&e[i], 2, 300 + i, spread, 30);
+                }
+            }
+            assert(battle_init(&b, &r, seed) == BI_OK);
+            battle_begin(&b, &log);
+            for (unsigned t = 0; t < 60 && b.outcome == OUTCOME_NONE; ++t) {
+                Position pending;
+                while (battle_pending_replacement(&b, &pending)) {
+                    const uint8_t mask = battle_replacement_mask(&b, pending);
+                    uint8_t pick = 0;
+                    while (!(mask & (1u << pick))) ++pick;
+                    assert(battle_replace(&b, pending, pick, &log));
+                }
+                if (battle_pending_pivot(&b, NULL)) break;
+                Action actions[BC_MAX_ACTIONS];
+                unsigned n = 0;
+                for (uint8_t side = 0; side < 2; ++side) {
+                    Position actors[BC_MAX_ACTIVE];
+                    const unsigned count = battle_collect_actors(&b, side, actors);
+                    for (unsigned i = 0; i < count; ++i) battle_choose_at(&b, actors[i], &actions[n++]);
+                }
+                battle_run_turn(&b, actions, n, &log);
+                assert(log.count < BC_MAX_EVENTS);
+                if (log.count > peak) peak = log.count;
+                abilities += event_count(&log, EV_ABILITY) + event_count(&log, EV_ABILITY_BLOCK);
+                for (unsigned side = 0; side < 2; ++side)
+                    for (unsigned i = 0; i < b.sides[side].count; ++i) {
+                        const Battler *x = &b.sides[side].battlers[i];
+                        assert(x->hp <= x->max_hp && (x->hp == 0) == x->fainted);
+                        for (unsigned s = 0; s < BSTAT_COUNT; ++s)
+                            assert(x->stat_stages[s] >= -6 && x->stat_stages[s] <= 6);
+                    }
+            }
+        }
+    assert(abilities > 100);
+    printf("ability formats: peak events %u of %u, ability events %u\n", peak, (unsigned)BC_MAX_EVENTS, abilities);
+}
+
 int main(void) {
     test_request_roundtrip();
     test_messages();
@@ -2705,6 +3356,17 @@ int main(void) {
     test_auto_target_normalized();
     test_state_decode_defaults();
     test_version_schema();
+    test_ability_wire();
+    test_ability_damage();
+    test_ability_immunity();
+    test_ability_accuracy();
+    test_ability_sturdy();
+    test_ability_contact();
+    test_ability_effect_level();
+    test_ability_entry();
+    test_ability_end_turn();
+    test_ability_unsupported();
+    test_ability_formats();
     puts("battle tests passed");
     return 0;
 }

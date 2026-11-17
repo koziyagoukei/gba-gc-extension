@@ -115,6 +115,7 @@ void bc_volatiles_on(Battler *mon, VolatileEvent event) {
     case VOL_TURN_START:
         v->protected_turn = false;
         v->acted = false;
+        v->entered = false;
         break;
     case VOL_TURN_END:
         v->flinched = false;
@@ -165,6 +166,7 @@ bool bc_confusion_check(Battle *b, Position user, EventLog *log) {
     bc_emit(log, (BattleEvent){.kind = EV_CONFUSED, .user = user, .target = user});
     const BattleVolatileRules *rules = &b->request->volatiles;
     if (bc_next_random(b) % 100u >= rules->confusion_hit_percent) return false;
+    bool endured;
     // Typeless physical self-hit with the user's own stages; no random factor,
     // STAB or type; burn only if the rules say so. Substitutes do not take it.
     const unsigned atk = bc_stage_scale(mon->attack, mon->stat_stages[BSTAT_ATK], 2);
@@ -172,8 +174,10 @@ bool bc_confusion_check(Battle *b, Position user, EventLog *log) {
     unsigned damage = (2u * mon->level / 5u + 2u) * rules->confusion_power * atk / (def ? def : 1) / 50u + 2u;
     if ((rules->flags & BVR_CONFUSION_BURN) && bc_status_kind(b, mon) == BST_BURN) damage /= 2;
     if (!damage) damage = 1;
-    bc_apply_damage(b, (BattleEvent){.kind = EV_CONFUSION_HIT, .user = user, .target = user},
-                    (uint16_t)(damage > 0xffff ? 0xffff : damage), log);
+    // Sturdy also holds against the confusion self-hit (Gen 5 rule).
+    const uint16_t amount = bc_ability_endure(b, user, (uint16_t)(damage > 0xffff ? 0xffff : damage), &endured);
+    bc_apply_damage(b, (BattleEvent){.kind = EV_CONFUSION_HIT, .user = user, .target = user}, amount, log);
+    if (endured) bc_ability_event(log, user, user, bc_ability(b, battle_at(b, user), BABIL_STURDY));
     return true;
 }
 
@@ -199,12 +203,22 @@ static Position subject(const MoveContext *c, const BattleEffect *e, Position ta
 
 static bool same(Position a, Position b) { return a.side == b.side && a.slot == b.slot; }
 
+// A chance roll (Serene Grace scales it; 100 or more always succeeds, still drawn).
 static bool roll(MoveContext *c, const BattleEffect *e) {
-    return !e->chance || bc_next_random(c->b) % 100u < e->chance;
+    return !e->chance || bc_next_random(c->b) % 100u < bc_ability_chance(c->b, c->user, e->chance);
+}
+
+// An ability stopped an effect on another battler: shown for a certain
+// effect (status moves, certain effects of a hit), silent for a chance.
+static bool blocked(MoveContext *c, const BattleEffect *e, Position target, const BattleAbility *a) {
+    if (!a || same(target, c->user)) return false;
+    if (!e->chance) bc_ability_block(c->log, target, c->user, a);
+    return true;
 }
 
 static bool apply_stat(MoveContext *c, const BattleEffect *e, Position target) {
     Battler *mon = bc_mutable_at(c->b, target);
+    if (e->arg1 < 0 && blocked(c, e, target, bc_ability_drop_immunity(c->b, target, e->arg0))) return !e->chance;
     int stage = mon->stat_stages[e->arg0] + e->arg1;
     if (stage < -6) stage = -6;
     if (stage > 6) stage = 6;
@@ -215,6 +229,17 @@ static bool apply_stat(MoveContext *c, const BattleEffect *e, Position target) {
     return true;
 }
 
+void bc_set_status(Battle *b, Position source, Position target, uint8_t kind, uint16_t move_id, EventLog *log) {
+    Battler *mon = bc_mutable_at(b, target);
+    const BattleConditionRules *rules = &b->request->conditions;
+    const unsigned counter = kind == BST_SLEEP ?
+        rules->sleep_min + bc_next_random(b) % (rules->sleep_max - rules->sleep_min + 1u) : 0;
+    mon->status = BATTLE_CONDITION(kind, counter);
+    mon->sleep_start = (uint8_t)counter;
+    bc_emit(log, (BattleEvent){.kind = EV_STATUS, .user = source, .target = target, .move_id = move_id,
+                               .condition = kind});
+}
+
 static bool apply_status(MoveContext *c, const BattleEffect *e, Position target) {
     Battler *mon = bc_mutable_at(c->b, target);
     const BattleConditionRules *rules = &c->b->request->conditions;
@@ -222,12 +247,8 @@ static bool apply_status(MoveContext *c, const BattleEffect *e, Position target)
     if (mon->status || bc_immune_to_status(rules, mon, kind) ||
         ((e->flags & BEFL_TYPE_CHART) && !bc_effectiveness(c->b, c->move->type, mon)))
         return false;
-    const unsigned counter = kind == BST_SLEEP ?
-        rules->sleep_min + bc_next_random(c->b) % (rules->sleep_max - rules->sleep_min + 1u) : 0;
-    mon->status = BATTLE_CONDITION(kind, counter);
-    mon->sleep_start = (uint8_t)counter;
-    bc_emit(c->log, (BattleEvent){.kind = EV_STATUS, .user = c->user, .target = target, .move_id = c->id,
-                                  .condition = kind});
+    if (blocked(c, e, target, bc_ability_status_immunity(c->b, target, kind))) return !e->chance;
+    bc_set_status(c->b, c->user, target, kind, c->id, c->log);
     return true;
 }
 
@@ -261,9 +282,10 @@ static bool apply_heal(MoveContext *c, const BattleEffect *e, Position target) {
     return true;  // a failure message is the result
 }
 
-static bool apply_confuse(MoveContext *c, Position target) {
+static bool apply_confuse(MoveContext *c, const BattleEffect *e, Position target) {
     Battler *mon = bc_mutable_at(c->b, target);
     if (mon->vol.confusion) return false;
+    if (blocked(c, e, target, bc_ability_volatile_immunity(c->b, target, BABIL_VOL_CONFUSION))) return !e->chance;
     const BattleVolatileRules *rules = &c->b->request->volatiles;
     mon->vol.confusion = (uint8_t)(rules->confusion_min +
                                    bc_next_random(c->b) % (rules->confusion_max - rules->confusion_min + 1u));
@@ -271,10 +293,11 @@ static bool apply_confuse(MoveContext *c, Position target) {
     return true;
 }
 
-static bool apply_flinch(MoveContext *c, Position target) {
+static bool apply_flinch(MoveContext *c, const BattleEffect *e, Position target) {
     Battler *mon = bc_mutable_at(c->b, target);
     // Only an action still to come this turn can be lost.
     if (mon->vol.acted || mon->vol.flinched) return false;
+    if (blocked(c, e, target, bc_ability_volatile_immunity(c->b, target, BABIL_VOL_FLINCH))) return !e->chance;
     mon->vol.flinched = true;
     return true;
 }
@@ -306,8 +329,8 @@ static bool apply(MoveContext *c, const BattleEffect *e, Position target) {
     case BEFF_HEAL: return apply_heal(c, e, who);
     case BEFF_FORCE_OUT: return bc_drag_out(c->b, who, c->log);
     case BEFF_PIVOT: c->pivot = true; return true;
-    case BEFF_CONFUSE: return apply_confuse(c, who);
-    case BEFF_FLINCH: return apply_flinch(c, who);
+    case BEFF_CONFUSE: return apply_confuse(c, e, who);
+    case BEFF_FLINCH: return apply_flinch(c, e, who);
     case BEFF_SUBSTITUTE: return apply_substitute(c, who);
     default: return false;
     }
@@ -331,12 +354,13 @@ static unsigned roll_hits(Battle *b, const BattleEffect *d) {
 
 static bool behind_substitute(const MoveContext *c, Position target) {
     return !same(target, c->user) && battle_at(c->b, target)->vol.substitute_hp &&
-           !(c->move->move_flags & BMF_IGNORES_SUBSTITUTE);
+           !(c->move->move_flags & BMF_IGNORES_SUBSTITUTE) && !bc_ability_passes_substitute(c->b, c->user);
 }
 
 // Semi-invulnerable targets: only moves flagged for that state reach them.
 static bool out_of_reach(const MoveContext *c, Position target) {
-    if (same(target, c->user) || bc_sure_hit(c->b, c->user, c->move)) return false;
+    if (same(target, c->user) || bc_sure_hit(c->b, c->user, c->move) || bc_ability_sure_hit(c->b, c->user, target))
+        return false;
     switch (battle_at(c->b, target)->vol.semi_invulnerable) {
     case BSEMI_AIR: return !(c->move->move_flags & (BMF_HITS_AIRBORNE | BMF_DOUBLE_AIRBORNE));
     case BSEMI_UNDERGROUND: return !(c->move->move_flags & (BMF_HITS_UNDERGROUND | BMF_DOUBLE_UNDERGROUND));
@@ -366,15 +390,20 @@ static bool is_secondary(const BattleEffect *e) {
     }
 }
 
+// One secondary effect on its target: the target must have been struck and be
+// standing; Shield Dust stops a chance effect before its roll.
+static void secondary(MoveContext *c, const BattleEffect *e, Position target, bool struck) {
+    if (e->who == BWHO_TARGET && (!struck || battle_at(c->b, target)->fainted)) return;
+    if (e->who == BWHO_TARGET && e->chance && bc_ability_shields(c->b, target)) return;
+    if (roll(c, e)) apply(c, e, target);
+}
+
 // Runs the secondary effects with one timing for one target (or for the
-// user alone with AFTER_MOVE / PER_USE). Effects on the target need the
-// Pokemon itself to have been struck and to be standing.
+// user alone with AFTER_MOVE / PER_USE).
 static void run_secondaries(MoveContext *c, unsigned timing, Position target, bool struck) {
     for (unsigned i = 0; i < c->move->effect_count; ++i) {
         const BattleEffect *e = &c->move->effects[i];
-        if (!is_secondary(e) || timing_of(e) != timing) continue;
-        if (e->who == BWHO_TARGET && (!struck || battle_at(c->b, target)->fainted)) continue;
-        if (roll(c, e)) apply(c, e, target);
+        if (is_secondary(e) && timing_of(e) == timing) secondary(c, e, target, struck);
     }
 }
 
@@ -424,13 +453,18 @@ static unsigned strike(MoveContext *c, const BattleEffect *damage, Position targ
             }
         } else {
             const uint16_t before = defender->hp;
+            bool endured;
+            amount = bc_ability_endure(b, target, amount, &endured);
             ev.kind = EV_DAMAGE;
             bc_apply_damage(b, ev, amount, c->log);
+            if (endured) bc_ability_event(c->log, target, target, bc_ability(b, battle_at(b, target), BABIL_STURDY));
             lost += before - battle_at(b, target)->hp;
             *struck = true;
             run_secondaries(c, BETIME_PER_HIT, target, true);
+            bc_ability_contact(b, c->user, target, c->move, c->id, c->log);
         }
-        if (h + 1 >= total || battle_at(b, target)->fainted) break;
+        // A multi-hit move stops when the target or the user is down.
+        if (h + 1 >= total || battle_at(b, target)->fainted || battle_at(b, c->user)->fainted) break;
     }
     if (total > 1)
         bc_emit(c->log, (BattleEvent){.kind = EV_MULTI_HIT, .user = c->user, .target = target, .move_id = c->id,
@@ -456,7 +490,8 @@ static bool evaded(MoveContext *c, Position target) {
 }
 
 static void damaging_target(MoveContext *c, const BattleEffect *damage, Position target) {
-    if (blocked_by_protect(c, target) || evaded(c, target)) return;
+    if (blocked_by_protect(c, target) || evaded(c, target) ||
+        bc_ability_blocks_move(c->b, c->user, target, c->move, c->typeless, c->id, c->log)) return;
     bool landed, struck;
     const unsigned lost = strike(c, damage, target, &landed, &struck);
     if (!landed) return;
@@ -478,10 +513,8 @@ static void damaging_target(MoveContext *c, const BattleEffect *damage, Position
             break;
         default:
             if (!is_secondary(e)) break;
-            if (timing_of(e) == BETIME_PER_TARGET || (timing_of(e) == BETIME_ON_DAMAGE && struck)) {
-                if (e->who == BWHO_TARGET && (!struck || battle_at(c->b, target)->fainted)) break;
-                if (roll(c, e)) apply(c, e, target);
-            }
+            if (timing_of(e) == BETIME_PER_TARGET || (timing_of(e) == BETIME_ON_DAMAGE && struck))
+                secondary(c, e, target, struck);
             break;
         }
     }
@@ -493,7 +526,8 @@ static void damaging_target(MoveContext *c, const BattleEffect *damage, Position
 }
 
 static void status_target(MoveContext *c, Position target) {
-    if (blocked_by_protect(c, target) || evaded(c, target)) return;
+    if (blocked_by_protect(c, target) || evaded(c, target) ||
+        bc_ability_blocks_move(c->b, c->user, target, c->move, false, c->id, c->log)) return;
     if (behind_substitute(c, target)) {
         fail(c, target);
         return;
@@ -605,7 +639,7 @@ bool bc_execute_move(Battle *b, Position user, uint8_t slot, Position selected, 
         }
     // Once after all targets (e.g. a spread move lowering the user's Defense).
     if (damage && c.landed) run_secondaries(&c, BETIME_AFTER_MOVE, user, true);
-    if (recoil && c.lost && !battle_at(b, user)->fainted) {
+    if (recoil && c.lost && !battle_at(b, user)->fainted && !bc_ability_no_recoil(b, user)) {
         const unsigned amount = c.lost * recoil->arg0 / 100u;
         bc_apply_damage(b, (BattleEvent){.kind = EV_RECOIL, .user = user, .target = user, .move_id = id},
                         (uint16_t)(amount ? amount : 1), log);

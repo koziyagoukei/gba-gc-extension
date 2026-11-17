@@ -28,4 +28,6 @@ CacheEntry *battle_label(uint32_t build, const PokemonRecord *mon);
 CacheEntry *battle_move_label(uint32_t build, uint16_t move);
 AssetKey battle_sprite_key(const PokemonRecord *mon, Position pos);
 AssetKey battle_move_label_key(uint16_t move);
+AssetKey battle_ability_label_key(uint16_t ability);
+CacheEntry *battle_ability_label(uint32_t build, uint16_t ability);
 #endif

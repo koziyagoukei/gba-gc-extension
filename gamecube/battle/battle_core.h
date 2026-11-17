@@ -18,9 +18,15 @@
 // Worst case per action: MOVE_USED, then per target up to BATTLE_MAX_HITS hits,
 // faint, multi-hit, thaw, drain and every other effect (with switch events),
 // then recoil and its faint; plus end-of-turn residuals and the battle end.
-// Each hit can also report the substitute taking it and breaking.
-#define BC_EVENTS_PER_TARGET (3 * BATTLE_MAX_HITS + 6 + 2 * BATTLE_MAX_EFFECTS)
-#define BC_MAX_EVENTS (BC_MAX_ACTIONS * (8 + BC_MAX_ACTIVE * BC_EVENTS_PER_TARGET) + 3 * BC_MAX_ACTIONS + 8)
+// Each hit can also report the substitute taking it and breaking, Sturdy and
+// a contact ability (announcement, status or damage, the attacker's faint).
+// V11 adds per target an ability immunity (2), per effect an ability block,
+// entry abilities for every send-out (announcement, cure, a result per foe),
+// end-of-turn abilities and the battle-start notices.
+#define BC_EVENTS_PER_TARGET (7 * BATTLE_MAX_HITS + 8 + 3 * BATTLE_MAX_EFFECTS)
+#define BC_ENTRY_EVENTS (3 + BC_MAX_ACTIVE)
+#define BC_MAX_EVENTS (BC_MAX_ACTIONS * (8 + 2 * BC_ENTRY_EVENTS + BC_MAX_ACTIVE * BC_EVENTS_PER_TARGET) + \
+                       5 * BC_MAX_ACTIONS + 8 + 2 * BATTLE_MAX_PER_SIDE)
 
 typedef struct { uint8_t side, slot; } Position;   // side 0 = player, 1 = opponent; slot = active position
 typedef struct { Position pos; } Target;
@@ -49,6 +55,7 @@ typedef struct {
     bool acted;                 // its action this turn has started (or been skipped)
     bool protected_turn;        // Protect succeeded this turn
     uint8_t protect_uses;       // consecutive successful Protect uses
+    bool entered;               // sent out since this turn started (V11 end-of-turn abilities)
 } BattlerVolatiles;
 
 typedef struct {
@@ -84,7 +91,13 @@ typedef struct {
 typedef enum { EV_MOVE_USED, EV_MISS, EV_DAMAGE, EV_NO_EFFECT, EV_FAINT, EV_FORFEIT, EV_NO_MOVES, EV_END, EV_SHIFT, EV_ROTATE, EV_SEND_OUT, EV_WITHDRAW, EV_RECOIL, EV_DRAG_OUT, EV_STAGE, EV_STATUS, EV_CURE, EV_STATUS_BLOCK, EV_RESIDUAL,
               EV_HEAL, EV_DRAIN, EV_PROTECT, EV_PROTECTED, EV_FAIL, EV_MULTI_HIT,
               EV_FLINCH, EV_CONFUSE, EV_CONFUSED, EV_CONFUSION_HIT, EV_CONFUSION_END,
-              EV_SUBSTITUTE, EV_SUBSTITUTE_HIT, EV_SUBSTITUTE_BREAK, EV_CHARGE, EV_CHARGE_END, EV_RECHARGE } EventKind;
+              EV_SUBSTITUTE, EV_SUBSTITUTE_HIT, EV_SUBSTITUTE_BREAK, EV_CHARGE, EV_CHARGE_END, EV_RECHARGE,
+              // V11 abilities: user = holder, ability = source id, condition = BABIL_* kind.
+              EV_ABILITY,             // the ability acts on target (its consequence follows)
+              EV_ABILITY_BLOCK,       // the holder's ability stopped something from target
+              EV_ABILITY_DAMAGE,      // target loses HP to the holder's ability
+              EV_ABILITY_UNSUPPORTED  // battle start: entry `battler` of side user.side is not simulated
+} EventKind;
 typedef struct {
     EventKind kind;
     Position user, target;
@@ -97,6 +110,7 @@ typedef struct {
     uint8_t condition;       // status events and send-out
     uint8_t stat;            // EV_STAGE
     int8_t stage;            // EV_STAGE: new stage
+    uint16_t ability;        // EV_ABILITY*: the source ability id
 } BattleEvent;
 
 typedef struct { BattleEvent events[BC_MAX_EVENTS]; unsigned count; } EventLog;
@@ -160,6 +174,10 @@ void battle_choose_ai(Battle *battle, uint8_t side, Action *out);
 // Damage with an explicit random percentage (85-100); effectiveness in quarters.
 uint16_t battle_damage(const Battle *battle, const Battler *attacker, const BattleMove *move,
                        const Battler *defender, unsigned random_percent, uint8_t *effectiveness);
+// Battle start (after battle_init, before the first command): V11 notices for
+// abilities that are not simulated, then the leads' entry abilities in speed
+// order. Older requests produce no events.
+void battle_begin(Battle *battle, EventLog *log);
 void battle_run_turn(Battle *battle, const Action *actions, unsigned count, EventLog *log);
 bool battle_pending_pivot(const Battle *battle, Position *position);
 // Multi-turn actions: a locked position is not prompted; the core supplies its action.

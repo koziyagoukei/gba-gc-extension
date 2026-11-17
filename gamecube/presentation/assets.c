@@ -131,6 +131,15 @@ AssetKey battle_move_label_key(uint16_t move) {
     return (AssetKey){ASSET_TEXT_LABEL, LABEL_ID(LABEL_MOVE, move), 0, 0};
 }
 
+AssetKey battle_ability_label_key(uint16_t ability) {
+    return (AssetKey){ASSET_TEXT_LABEL, LABEL_ID(LABEL_ABILITY, ability), 0, 0};
+}
+
+CacheEntry *battle_ability_label(uint32_t build, uint16_t ability) {
+    const AssetKey key = battle_ability_label_key(ability);
+    return cache_find(build, &key);
+}
+
 CacheEntry *battle_sprite(uint32_t build, const PokemonRecord *mon, Position pos) {
     const AssetKey key = battle_sprite_key(mon, pos);
     return cache_find(build, &key);

@@ -119,5 +119,19 @@ int main(void) {
     animation_play(&anim, triple, &cure);
     finish(&anim, triple);
     assert(anim.actor[0][BPOS_LEFT].condition == BST_NONE);
+    // V11 abilities: announcement with the ability id, Rough Skin damage, not-simulated notice.
+    const EventLog abilities = {{
+        {.kind = EV_ABILITY, .user = {1, BPOS_CENTER}, .target = {0, BPOS_LEFT}, .ability = 24},
+        {.kind = EV_ABILITY_DAMAGE, .user = {1, BPOS_CENTER}, .target = {0, BPOS_LEFT}, .ability = 24,
+         .amount = 11, .hp_after = 49},
+        {.kind = EV_ABILITY_UNSUPPORTED, .user = {1, BATTLE_SLOT_NONE}, .battler = 4, .ability = 104},
+    }, 3};
+    animation_play(&anim, triple, &abilities);
+    bool announced = false;
+    for (unsigned i = 0; i < 400 && !animation_tick(&anim, triple); ++i)
+        announced |= anim.message.kind == MSG_ABILITY && anim.message.ability == 24 &&
+                     anim.message.subject.side == 1 && anim.message.subject.slot == BPOS_CENTER;
+    assert(announced && anim.actor[0][BPOS_LEFT].hp == 49);
+    assert(anim.message.kind == MSG_ABILITY_UNSUPPORTED && anim.message.ability == 104 && anim.message.battler == 4);
     puts("presentation-test OK");
 }

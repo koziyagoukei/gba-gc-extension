@@ -228,7 +228,7 @@ int battle_init(Battle *b, const BattleRequest *r, uint32_t seed) {
     b->rng = seed ? seed : 0x9e3779b9u;
     const unsigned active = battle_formation_size(r->format);
     if (!active || r->active_per_side != active ||
-        r->version > BATTLE_REQUEST_VERSION_TIMING)
+        r->version > BATTLE_REQUEST_VERSION_LATEST)
         return BI_FORMAT;
     if (r->version >= BATTLE_REQUEST_VERSION_VOLATILES && !battle_volatile_rules_valid(&r->volatiles))
         return BI_CONDITIONS;
@@ -375,7 +375,10 @@ uint16_t bc_calculate_damage(const Battle *b, const Battler *a, const BattleMove
         atk = bc_stage_scale(atk, a->stat_stages[physical ? BSTAT_ATK : BSTAT_SPA], 2);
         def = bc_stage_scale(def, d->stat_stages[physical ? BSTAT_DEF : BSTAT_SPD], 2);
     }
-    uint64_t dmg = ((2u * a->level / 5u + 2u) * (uint64_t)m->power * atk / (def ? def : 1)) / 50u + 2u;
+    // V11 abilities: attacking-stat modifiers (both sides) and base power.
+    atk = bc_ability_attack(b, a, m, d, typeless, atk);
+    const unsigned power = bc_ability_power(b, a, m->power);
+    uint64_t dmg = ((2u * a->level / 5u + 2u) * (uint64_t)power * atk / (def ? def : 1)) / 50u + 2u;
     dmg = dmg * random_percent / 100u;
     if (!typeless && (m->type == a->types[0] || (a->type_count == 2 && m->type == a->types[1])))
         dmg = dmg * 3u / 2u;
@@ -432,10 +435,12 @@ bool battle_pending_replacement(const Battle *b, Position *position) {
 
 static void send_out(Battle *b, Position p, uint8_t index, EventLog *log) {
     Side *side = &b->sides[p.side];
-    const Battler *mon = &side->battlers[index];
+    Battler *mon = &side->battlers[index];
     side->active[p.slot] = index;
+    mon->vol.entered = true;
     bc_emit(log, (BattleEvent){.kind = EV_SEND_OUT, .target = p, .battler = index,
                             .amount = mon->max_hp, .hp_after = mon->hp, .condition = bc_status_kind(b, mon)});
+    bc_ability_on_entry(b, p, log);
 }
 
 bool battle_replace(Battle *b, Position p, uint8_t index, EventLog *log) {
@@ -565,8 +570,10 @@ bool bc_missed(Battle *b, Position user, Position target, const BattleMove *move
     unsigned accuracy = move->accuracy;
     if (bc_conditions_enabled(b)) {
         const Battler *a = battle_at(b, user), *d = battle_at(b, target);
-        if (bc_sure_hit(b, user, move)) return false;
-        accuracy = bc_stage_scale(accuracy, a->stat_stages[BSTAT_ACC] - d->stat_stages[BSTAT_EVA], 3);
+        if (bc_sure_hit(b, user, move) || bc_ability_sure_hit(b, user, target)) return false;
+        const int evasion = bc_ability_ignores_evasion(b, user) ? 0 : d->stat_stages[BSTAT_EVA];
+        accuracy = bc_stage_scale(accuracy, a->stat_stages[BSTAT_ACC] - evasion, 3);
+        accuracy = bc_ability_accuracy(b, user, accuracy);
     }
     return bc_next_random(b) % 100u >= accuracy;
 }
@@ -645,8 +652,10 @@ static void execute_struggle(Battle *b, Position user, EventLog *log) {
         bc_emit(log, (BattleEvent){.kind = EV_NO_EFFECT, .user = user, .target = target, .move_id = BATTLE_MOVE_STRUGGLE});
         return;
     }
+    // Struggle makes contact (V11 contact abilities; the flag means nothing earlier).
     const BattleMove move = {.power = rules->struggle_power, .category = BCAT_PHYSICAL,
-                             .accuracy = rules->struggle_accuracy, .target = BTARGET_SINGLE};
+                             .accuracy = rules->struggle_accuracy, .target = BTARGET_SINGLE,
+                             .move_flags = BMF_CONTACT};
     // Protect, semi-invulnerable states and substitutes apply as to any hit;
     // the recoil follows only a hit that landed (a substitute hit counts).
     if (!bc_struggle_strike(b, user, target, &move, log)) return;
@@ -762,6 +771,8 @@ static void resolve_end_of_turn(Battle *b, EventLog *log) {
             bc_apply_damage(b, (BattleEvent){.kind = EV_RESIDUAL, .user = order[i], .target = order[i],
                                          .condition = kind}, residual_damage(b, mon, kind), log);
         }
+    // Then end-of-turn abilities (Speed Boost), in the same speed order.
+    for (unsigned i = 0; i < count; ++i) bc_ability_end_turn(b, order[i], log);
 }
 
 static void continue_turn(Battle *b, EventLog *log) {
@@ -837,6 +848,34 @@ bool battle_resume_pivot(Battle *b, uint8_t index, EventLog *log) {
     bc_execute_switch(b, user, index, EV_WITHDRAW, log);
     continue_turn(b, log);
     return true;
+}
+
+void battle_begin(Battle *b, EventLog *log) {
+    log->count = 0;
+    if (!bc_abilities_enabled(b)) return;
+    bc_ability_begin_battle(b, log);
+    // Leads' entry abilities in speed order; a tie is decided by a draw, as in turn order.
+    Position order[BC_MAX_ACTIONS];
+    uint32_t tie[BC_MAX_ACTIONS];
+    unsigned count = 0;
+    for (uint8_t side = 0; side < 2; ++side)
+        for (uint8_t slot = 0; slot < b->sides[side].active_count; ++slot) {
+            const Position p = {side, slot};
+            const Battler *mon = battle_at(b, p);
+            if (!mon || mon->fainted) continue;
+            const uint32_t t = bc_next_random(b);
+            const unsigned s = speed(b, mon);
+            unsigned j = count++;
+            for (; j > 0; --j) {
+                const unsigned os = speed(b, battle_at(b, order[j - 1]));
+                if (s < os || (s == os && t <= tie[j - 1])) break;
+                order[j] = order[j - 1];
+                tie[j] = tie[j - 1];
+            }
+            order[j] = p;
+            tie[j] = t;
+        }
+    for (unsigned i = 0; i < count; ++i) bc_ability_on_entry(b, order[i], log);
 }
 
 void battle_run_turn(Battle *b, const Action *in, unsigned count, EventLog *log) {

@@ -10,6 +10,7 @@ typedef enum {
     MSG_HEAL, MSG_DRAIN, MSG_PROTECT, MSG_PROTECTED, MSG_FAIL, MSG_MULTI_HIT,
     MSG_FLINCH, MSG_CONFUSE, MSG_CONFUSED, MSG_CONFUSION_HIT, MSG_CONFUSION_END,
     MSG_SUBSTITUTE, MSG_SUBSTITUTE_HIT, MSG_SUBSTITUTE_BREAK, MSG_CHARGE, MSG_CHARGE_END, MSG_RECHARGE,
+    MSG_ABILITY, MSG_ABILITY_BLOCK, MSG_ABILITY_DAMAGE, MSG_ABILITY_UNSUPPORTED,
 } MessageKind;
 
 typedef struct {
@@ -19,6 +20,8 @@ typedef struct {
     uint8_t outcome;
     uint8_t condition, stat;
     int8_t stage;
+    uint16_t ability;   // MSG_ABILITY*: source ability id (game-rendered label)
+    uint8_t battler;    // MSG_ABILITY_UNSUPPORTED: roster index on subject.side
 } SceneMessage;
 
 typedef struct {

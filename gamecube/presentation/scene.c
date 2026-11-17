@@ -35,6 +35,10 @@ static const Battler *battler_at(Position p) {
     return index < side->count ? &side->battlers[index] : NULL;
 }
 
+static const Battler *roster_at(uint8_t side, uint8_t index) {
+    return side < 2 && index < scene.battle->sides[side].count ? &scene.battle->sides[side].battlers[index] : NULL;
+}
+
 void battle_scene_show_target(Position pos) {
     scene.show_target = battle_layout_anchor(scene.layout, pos) && battler_at(pos) && !battler_at(pos)->fainted;
     scene.target = pos;
@@ -195,6 +199,10 @@ static const char *message_text(const SceneMessage *msg) {
                             msg->stage == BSEMI_UNDERGROUND ? "Dug underground!" : "Is charging power!";
     case MSG_CHARGE_END: return "The charged move was lost.";
     case MSG_RECHARGE: return "Must recharge!";
+    case MSG_ABILITY: return "Ability activated!";
+    case MSG_ABILITY_BLOCK: return "Its ability prevented it!";
+    case MSG_ABILITY_DAMAGE: return "Hurt by an ability!";
+    case MSG_ABILITY_UNSUPPORTED: return "Ability not simulated:";
     case MSG_NONE: return "";
     }
     return "";
@@ -211,8 +219,9 @@ static void draw_message(const BattleLayout *layout) {
     render_text(x, y, 1.25f, UI_INK, "%s", message_text(msg));
     if (msg->kind == MSG_ENTER || msg->kind == MSG_MOVE || msg->kind == MSG_FAINT ||
         msg->kind == MSG_SHIFT || msg->kind == MSG_ROTATE || msg->kind == MSG_WITHDRAW || msg->kind == MSG_DRAG_OUT ||
-        (msg->kind >= MSG_STAGE && msg->kind <= MSG_RECHARGE)) {
-        const Battler *b = battler_at(msg->subject);
+        (msg->kind >= MSG_STAGE && msg->kind <= MSG_ABILITY_UNSUPPORTED)) {
+        const Battler *b = msg->kind == MSG_ABILITY_UNSUPPORTED ? roster_at(msg->subject.side, msg->battler)
+                                                                : battler_at(msg->subject);
         CacheEntry *name = b ? battle_label(scene.build, &b->entry->record) : NULL;
         if (name) draw_label(name, x, y + 27, 190, 23);
         else render_text(x, y + 28, 1, UI_MUTED, "%s", msg->subject.side ? "Opponent" : "Player");
@@ -224,6 +233,11 @@ static void draw_message(const BattleLayout *layout) {
             render_text(x + 210, y + 28, 1, UI_MUTED, "%d hit%s", msg->stage, msg->stage == 1 ? "" : "s");
         if (msg->condition)
             render_text(x + 210, y + 28, 1, UI_MUTED, "%s", condition_label(msg->condition));
+        if (msg->kind >= MSG_ABILITY && msg->kind <= MSG_ABILITY_UNSUPPORTED) {
+            CacheEntry *ability = battle_ability_label(scene.build, msg->ability);
+            if (ability) draw_label(ability, x + 210, y + 27, 220, 23);
+            else render_text(x + 210, y + 28, 1, UI_MUTED, "Ability #%u", msg->ability);
+        }
         if (msg->kind == MSG_MOVE) {
             CacheEntry *move = battle_move_label(scene.build, msg->move);
             if (msg->move == BATTLE_MOVE_STRUGGLE)

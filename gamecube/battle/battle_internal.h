@@ -24,6 +24,8 @@ bool bc_missed(Battle *battle, Position user, Position target, const BattleMove 
 bool bc_sure_hit(const Battle *battle, Position user, const BattleMove *move);
 void bc_cure_status(Battler *mon, BattleEvent event, EventLog *log);
 bool bc_immune_to_status(const BattleConditionRules *rules, const Battler *mon, uint8_t kind);
+// Sets a major status (sleep counter rolled from the rules) and emits EV_STATUS.
+void bc_set_status(Battle *battle, Position source, Position target, uint8_t kind, uint16_t move_id, EventLog *log);
 void bc_apply_damage(Battle *battle, BattleEvent event, uint16_t damage, EventLog *log);
 uint8_t bc_first_target(uint8_t mask);
 
@@ -48,4 +50,37 @@ void bc_effects_reset_volatiles(Battler *mon);
 void bc_cancel_charge(Battle *battle, Position user, EventLog *log);
 // Confusion check before an action; true if the battler hurt itself instead.
 bool bc_confusion_check(Battle *battle, Position user, EventLog *log);
+
+// Ability hooks (battle_abilities.c, docs/abilities.md). All are inert unless
+// the request is V11 without RULE_IGNORE_ABILITIES.
+bool bc_abilities_enabled(const Battle *battle);
+const BattleAbility *bc_ability(const Battle *battle, const Battler *mon, uint8_t kind);
+void bc_ability_event(EventLog *log, Position holder, Position target, const BattleAbility *ability);
+void bc_ability_block(EventLog *log, Position holder, Position source, const BattleAbility *ability);
+// Damage calculation (per hit).
+unsigned bc_ability_power(const Battle *battle, const Battler *attacker, unsigned power);
+unsigned bc_ability_attack(const Battle *battle, const Battler *attacker, const BattleMove *move,
+                           const Battler *defender, bool typeless, unsigned attack);
+uint16_t bc_ability_endure(const Battle *battle, Position target, uint16_t amount, bool *endured);
+// Per target, before the substitute and accuracy: true if the move stops here.
+bool bc_ability_blocks_move(Battle *battle, Position user, Position target, const BattleMove *move, bool typeless,
+                            uint16_t move_id, EventLog *log);
+bool bc_ability_sure_hit(const Battle *battle, Position user, Position target);
+unsigned bc_ability_accuracy(const Battle *battle, Position user, unsigned accuracy);
+bool bc_ability_ignores_evasion(const Battle *battle, Position user);
+bool bc_ability_passes_substitute(const Battle *battle, Position user);
+// Effect level (inside the effect handlers, at the effect's own unit).
+unsigned bc_ability_chance(const Battle *battle, Position user, unsigned chance);
+bool bc_ability_shields(const Battle *battle, Position target);
+const BattleAbility *bc_ability_status_immunity(const Battle *battle, Position target, uint8_t status);
+const BattleAbility *bc_ability_volatile_immunity(const Battle *battle, Position target, uint8_t bit);
+const BattleAbility *bc_ability_drop_immunity(const Battle *battle, Position target, uint8_t stat);
+bool bc_ability_no_recoil(const Battle *battle, Position user);
+// Per hit that struck the holder itself.
+void bc_ability_contact(Battle *battle, Position user, Position target, const BattleMove *move, uint16_t move_id,
+                        EventLog *log);
+// Entry (every send-out and the battle start), end of turn, battle start notices.
+void bc_ability_on_entry(Battle *battle, Position position, EventLog *log);
+void bc_ability_end_turn(Battle *battle, Position position, EventLog *log);
+void bc_ability_begin_battle(Battle *battle, EventLog *log);
 #endif

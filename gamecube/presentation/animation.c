@@ -215,6 +215,22 @@ void animation_play(BattleAnimation *a, const BattleLayout *layout, const EventL
         case EV_RECHARGE:
             message(a, (SceneMessage){.kind = MSG_RECHARGE, .subject = e->user}, 32);
             break;
+        case EV_ABILITY:
+        case EV_ABILITY_BLOCK:
+            if (!battle_layout_anchor(layout, e->user)) break;
+            message(a, (SceneMessage){.kind = e->kind == EV_ABILITY ? MSG_ABILITY : MSG_ABILITY_BLOCK,
+                                      .subject = e->user, .ability = e->ability}, 36);
+            break;
+        case EV_ABILITY_DAMAGE:
+            if (!battle_layout_anchor(layout, e->target)) break;
+            message(a, (SceneMessage){.kind = MSG_ABILITY_DAMAGE, .subject = e->target, .ability = e->ability}, 0);
+            add(a, (AnimationStep){.kind = ANIM_HP, .target = e->target, .hp = e->hp_after});
+            wait(a, 18);
+            break;
+        case EV_ABILITY_UNSUPPORTED:
+            message(a, (SceneMessage){.kind = MSG_ABILITY_UNSUPPORTED, .subject = e->user, .ability = e->ability,
+                                      .battler = e->battler}, 60);
+            break;
         case EV_END:
             if (e->outcome == OUTCOME_WIN || e->outcome == OUTCOME_LOSE || e->outcome == OUTCOME_DRAW)
                 message(a, (SceneMessage){.kind = MSG_RESULT, .outcome = e->outcome}, 30);
