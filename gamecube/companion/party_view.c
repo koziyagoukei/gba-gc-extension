@@ -188,8 +188,7 @@ static void step_session(void) {
             // This battle already ended and the GBA accepted its result (e.g.
             // the link dropped after RESULT): never run it a second time.
             SYS_Report("PH3 MODE result already final (nonce=%08x); not restarting the battle\n", mode.nonce);
-            host_bye(&v.link, BYE_HOST_EXIT);
-            v.hold_end = true;
+            host_bye(&v.link, BYE_HOST_EXIT);  // the GBA then returns to the field
             set_state(V_ENDED, "Battle already finished: the GBA has its result");
             return;
         }
