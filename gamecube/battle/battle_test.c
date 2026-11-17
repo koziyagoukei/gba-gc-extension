@@ -2247,6 +2247,196 @@ static void test_volatile_lifecycle(void) {
     assert(kinds[EV_CONFUSE] && kinds[EV_FLINCH] && kinds[EV_CHARGE] && kinds[EV_RECHARGE] && kinds[EV_SUBSTITUTE]);
 }
 
+// ---------------------------------------------------------------- V10 effect application units (audit B-01)
+
+static void make_timing(BattleRequest *r, uint8_t format) {
+    make_volatiles(r, format);
+    r->version = BATTLE_REQUEST_VERSION_TIMING;
+}
+
+// Clanging Scales / Scale Noise: hits all foes, then the user's Defense -1 once.
+static BattleMove scale_noise(uint8_t timing) {
+    BattleMove m = damaging(20, T_NORMAL, 0);
+    m.target = BTARGET_ALL_FOES;
+    BattleEffect drop = fx(BEFF_STAT, BWHO_USER, 0, BSTAT_DEF, -1, 0);
+    drop.flags = BEFL_TIMING(timing);
+    push(&m, drop);
+    return m;
+}
+
+static unsigned index_of(const EventLog *log, EventKind kind, unsigned nth) {
+    for (unsigned i = 0; i < log->count; ++i)
+        if (log->events[i].kind == kind && !nth--) return i;
+    return log->count;
+}
+
+static void test_effect_timing_spread_self(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    const Action noise = slot_move(0, 0, 0, 1);
+    // Double, both foes hit: one drop, after both hits.
+    make_timing(&r, BATTLE_FORMAT_DOUBLE);
+    set_move(&r.player[0], 1, 789, scale_noise(BETIME_AFTER_MOVE), 5);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, &noise, 1, &log);
+    assert(event_count(&log, EV_DAMAGE) == 2 && event_count(&log, EV_STAGE) == 1);
+    assert(battle_active(&b, 0)->stat_stages[BSTAT_DEF] == -1);
+    assert(index_of(&log, EV_STAGE, 0) > index_of(&log, EV_DAMAGE, 1));
+    // One foe left standing: one hit, one drop.
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    set_fainted(&b, 1, b.sides[1].active[1]);
+    battle_run_turn(&b, &noise, 1, &log);
+    assert(event_count(&log, EV_DAMAGE) == 1 && event_count(&log, EV_STAGE) == 1);
+    // One foe protected, the other immune (Ghost): nothing landed, no drop.
+    BattleMove guard = status_move(BTARGET_SELF, 0);
+    guard.priority = 4;
+    push(&guard, fx(BEFF_PROTECT, BWHO_USER, 0, 3, 0, 0));
+    set_move(&r.opponent[0], 1, 182, guard, 10);
+    r.opponent[1].mon.types[0] = r.opponent[1].mon.types[1] = T_GHOST;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    const Action both[] = {noise, slot_move(1, 0, 0, 1)};
+    battle_run_turn(&b, both, 2, &log);
+    assert(find(&log, EV_PROTECTED) && find(&log, EV_NO_EFFECT) && !find(&log, EV_STAGE));
+    assert(battle_active(&b, 0)->stat_stages[BSTAT_DEF] == 0);
+    // Protect on one foe, the other hit: one drop.
+    r.opponent[1].mon.types[0] = r.opponent[1].mon.types[1] = T_NORMAL;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, both, 2, &log);
+    assert(find(&log, EV_PROTECTED) && event_count(&log, EV_DAMAGE) == 1 && event_count(&log, EV_STAGE) == 1);
+    // A substitute taking one hit still counts as landing.
+    make_timing(&r, BATTLE_FORMAT_DOUBLE);
+    set_move(&r.player[0], 1, 789, scale_noise(BETIME_AFTER_MOVE), 5);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    ((Battler *)battle_at(&b, (Position){1, 0}))->vol.substitute_hp = 99;
+    battle_run_turn(&b, &noise, 1, &log);
+    assert(find(&log, EV_SUBSTITUTE_HIT) && event_count(&log, EV_DAMAGE) == 1 && event_count(&log, EV_STAGE) == 1);
+
+    // Triple: the center reaches all three foes; still one drop.
+    make_timing(&r, BATTLE_FORMAT_TRIPLE);
+    set_move(&r.player[1], 1, 789, scale_noise(BETIME_AFTER_MOVE), 5);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 1, 1, 1)}, 1, &log);
+    assert(event_count(&log, EV_DAMAGE) == 3 && event_count(&log, EV_STAGE) == 1);
+    assert(battle_at(&b, (Position){0, 1})->stat_stages[BSTAT_DEF] == -1);
+
+    // V9 keeps the per-target behaviour (two drops); timing bits need V10.
+    make_volatiles(&r, BATTLE_FORMAT_DOUBLE);
+    set_move(&r.player[0], 1, 789, scale_noise(BETIME_DEFAULT), 5);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_run_turn(&b, &noise, 1, &log);
+    assert(event_count(&log, EV_STAGE) == 2 && battle_active(&b, 0)->stat_stages[BSTAT_DEF] == -2);
+    set_move(&r.player[0], 1, 789, scale_noise(BETIME_AFTER_MOVE), 5);
+    assert(battle_init(&b, &r, 1) == BI_OK && !(battle_usable_moves(&b, battle_active(&b, 0)) & 2));
+    static uint8_t bytes[4096];
+    static BattleRequest d;
+    make_timing(&r, BATTLE_FORMAT_DOUBLE);
+    set_move(&r.player[0], 1, 789, scale_noise(BETIME_AFTER_MOVE), 5);
+    uint32_t n = battle_request_encode(&r, bytes, sizeof(bytes));
+    assert(n && battle_request_decode(bytes, n, &d));
+    assert(BATTLE_EFFECT_TIMING(&d.player[0].mon.moves[1].effects[1]) == BETIME_AFTER_MOVE);
+    bytes[0] = BATTLE_REQUEST_VERSION_VOLATILES;                     // the same list as V9: refused
+    assert(!battle_request_decode(bytes, n, &d));
+}
+
+static void test_effect_timing_units(void) {
+    BattleRequest r;
+    Battle b;
+    EventLog log;
+    // Structure: timing only on secondaries of a hit; before/after-move timings only on the user.
+    BattleMove m = scale_noise(BETIME_AFTER_MOVE);
+    assert(battle_move_effects_valid(&m));
+    m.effects[1].who = BWHO_TARGET;
+    assert(!battle_move_effects_valid(&m));
+    m = scale_noise(BETIME_COUNT);
+    assert(!battle_move_effects_valid(&m));
+    m = scale_noise(BETIME_PER_HIT);
+    m.effects[0].flags = BEFL_TIMING(BETIME_PER_HIT);              // DAMAGE has fixed handling
+    assert(!battle_move_effects_valid(&m));
+    BattleMove growl = effect_move(BTARGET_SINGLE, 0, fx(BEFF_STAT, BWHO_TARGET, 0, BSTAT_ATK, -1, 0));
+    growl.effects[0].flags = BEFL_TIMING(BETIME_PER_TARGET);
+    assert(!battle_move_effects_valid(&growl));                   // status moves stay per target
+    BattleMove drain = damaging(40, T_NORMAL, 0);
+    push(&drain, fx(BEFF_DRAIN, BWHO_USER, 0, 50, 0, 0));
+    drain.effects[1].flags = BEFL_TIMING(BETIME_AFTER_MOVE);
+    assert(!battle_move_effects_valid(&drain));
+
+    // Per hit vs per target on a two-strike move (Defense -1 on the target, 100%).
+    make_timing(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove kick = damaging(10, T_NORMAL, 0);
+    kick.effects[0] = fx(BEFF_DAMAGE, BWHO_TARGET, 0, 2, 0, 2);
+    BattleEffect lower = fx(BEFF_STAT, BWHO_TARGET, 100, BSTAT_DEF, -1, 0);
+    lower.flags = BEFL_TIMING(BETIME_PER_HIT);
+    push(&kick, lower);
+    set_move(&r.player[0], 1, 24, kick, 30);
+    const Action k = slot_move(0, 0, 0, 1);
+    assert(battle_init(&b, &r, 2) == BI_OK);
+    battle_run_turn(&b, &k, 1, &log);
+    assert(event_count(&log, EV_DAMAGE) == 2 && battle_active(&b, 1)->stat_stages[BSTAT_DEF] == -2);
+    assert(index_of(&log, EV_STAGE, 0) < index_of(&log, EV_DAMAGE, 1));   // between the hits
+    r.player[0].mon.moves[1].effects[1].flags = BEFL_TIMING(BETIME_PER_TARGET);
+    assert(battle_init(&b, &r, 2) == BI_OK);
+    battle_run_turn(&b, &k, 1, &log);
+    assert(event_count(&log, EV_DAMAGE) == 2 && battle_active(&b, 1)->stat_stages[BSTAT_DEF] == -1);
+    assert(index_of(&log, EV_STAGE, 0) > index_of(&log, EV_DAMAGE, 1));
+    // Per-hit effects only when the Pokemon itself is struck (not its substitute).
+    r.player[0].mon.moves[1].effects[1].flags = BEFL_TIMING(BETIME_PER_HIT);
+    r.volatiles.flags = 0;                                        // the move stops at the break
+    assert(battle_init(&b, &r, 2) == BI_OK);
+    battle_active(&b, 1)->vol.substitute_hp = 50;
+    battle_run_turn(&b, &k, 1, &log);
+    assert(!find(&log, EV_STAGE) && battle_active(&b, 1)->stat_stages[BSTAT_DEF] == 0);
+
+    // On damage vs per target for a user effect: hitting only a substitute.
+    make_timing(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove charge = damaging(10, T_NORMAL, 0);
+    BattleEffect boost = fx(BEFF_STAT, BWHO_USER, 0, BSTAT_SPA, 1, 0);
+    boost.flags = BEFL_TIMING(BETIME_ON_DAMAGE);
+    push(&charge, boost);
+    set_move(&r.player[0], 1, 451, charge, 10);
+    assert(battle_init(&b, &r, 3) == BI_OK);
+    battle_active(&b, 1)->vol.substitute_hp = 50;
+    battle_run_turn(&b, &k, 1, &log);
+    assert(find(&log, EV_SUBSTITUTE_HIT) && !find(&log, EV_STAGE));
+    battle_active(&b, 1)->vol.substitute_hp = 0;
+    battle_run_turn(&b, &k, 1, &log);
+    assert(find(&log, EV_DAMAGE) && battle_active(&b, 0)->stat_stages[BSTAT_SPA] == 1);
+    r.player[0].mon.moves[1].effects[1].flags = BEFL_TIMING(BETIME_PER_TARGET);
+    assert(battle_init(&b, &r, 3) == BI_OK);
+    battle_active(&b, 1)->vol.substitute_hp = 50;
+    battle_run_turn(&b, &k, 1, &log);
+    assert(find(&log, EV_SUBSTITUTE_HIT) && battle_active(&b, 0)->stat_stages[BSTAT_SPA] == 1);
+
+    // Per use: once, as soon as the first target is hit (before the second one).
+    make_timing(&r, BATTLE_FORMAT_DOUBLE);
+    BattleMove rush = scale_noise(BETIME_PER_USE);
+    rush.effects[1] = fx(BEFF_STAT, BWHO_USER, 0, BSTAT_SPE, 1, 0);
+    rush.effects[1].flags = BEFL_TIMING(BETIME_PER_USE);
+    set_move(&r.player[0], 1, 7, rush, 10);
+    assert(battle_init(&b, &r, 4) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(event_count(&log, EV_STAGE) == 1 && battle_active(&b, 0)->stat_stages[BSTAT_SPE] == 1);
+    assert(index_of(&log, EV_STAGE, 0) > index_of(&log, EV_DAMAGE, 0) &&
+           index_of(&log, EV_STAGE, 0) < index_of(&log, EV_DAMAGE, 1));
+
+    // Drain, recoil and a target secondary next to an after-move user effect.
+    make_timing(&r, BATTLE_FORMAT_DOUBLE);
+    BattleMove mix = scale_noise(BETIME_AFTER_MOVE);
+    push(&mix, fx(BEFF_DRAIN, BWHO_USER, 0, 50, 0, 0));
+    push(&mix, fx(BEFF_STATUS, BWHO_TARGET, 100, BST_BURN, 0, 0));
+    set_move(&r.player[0], 1, 1, mix, 10);
+    assert(battle_init(&b, &r, 5) == BI_OK);
+    battle_active(&b, 0)->hp = 50;
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    assert(event_count(&log, EV_DRAIN) == 2 && event_count(&log, EV_STATUS) == 2 && event_count(&log, EV_STAGE) == 1);
+    BattleMove edge = scale_noise(BETIME_AFTER_MOVE);
+    push(&edge, fx(BEFF_RECOIL, BWHO_USER, 0, 25, 0, 0));
+    set_move(&r.player[0], 2, 38, edge, 10);
+    assert(battle_init(&b, &r, 5) == BI_OK);
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 2)}, 1, &log);
+    assert(event_count(&log, EV_RECOIL) == 1 && event_count(&log, EV_STAGE) == 1);
+}
+
 int main(void) {
     test_request_roundtrip();
     test_messages();
@@ -2289,6 +2479,8 @@ int main(void) {
     test_charge();
     test_recharge();
     test_volatile_lifecycle();
+    test_effect_timing_spread_self();
+    test_effect_timing_units();
     puts("battle tests passed");
     return 0;
 }

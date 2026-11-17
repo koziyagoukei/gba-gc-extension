@@ -80,6 +80,7 @@ bool bc_effects_supported(const BattleRequest *r, const BattleMove *m) {
     for (unsigned i = 0; i < m->effect_count; ++i) {
         const BattleEffect *e = &m->effects[i];
         if (!v9 && e->kind > BEFF_PROTECT) return false;
+        if (r->version < BATTLE_REQUEST_VERSION_TIMING && (e->flags & BEFL_TIMING_MASK)) return false;
         switch (e->kind) {
         case BEFF_STATUS:
             if (e->arg0 == BST_FROSTBITE && !(r->conditions.flags & BCR_FROSTBITE)) return false;
@@ -188,6 +189,7 @@ typedef struct {
     unsigned lost;   // HP all targets and substitutes lost, for recoil
     bool landed;     // any target was hit
     bool pivot;
+    bool per_use_done;  // BETIME_PER_USE effects already ran for this use
 } MoveContext;
 
 static Position subject(const MoveContext *c, const BattleEffect *e, Position target) {
@@ -346,6 +348,35 @@ static bool doubled(const MoveContext *c, const Battler *target) {
            (target->vol.semi_invulnerable == BSEMI_UNDERGROUND && (c->move->move_flags & BMF_DOUBLE_UNDERGROUND));
 }
 
+static unsigned timing_of(const BattleEffect *e) {
+    const unsigned t = BATTLE_EFFECT_TIMING(e);
+    return t == BETIME_DEFAULT ? BETIME_PER_TARGET : t;
+}
+
+// Secondary effects of a damaging move, i.e. everything except the kinds
+// with fixed handling (damage, drain, recoil, recharge, charge, pivot, drag).
+static bool is_secondary(const BattleEffect *e) {
+    switch (e->kind) {
+    case BEFF_DAMAGE: case BEFF_DRAIN: case BEFF_RECOIL: case BEFF_RECHARGE:
+    case BEFF_CHARGE: case BEFF_PIVOT: case BEFF_FORCE_OUT:
+        return false;
+    default:
+        return true;
+    }
+}
+
+// Runs the secondary effects with one timing for one target (or for the
+// user alone with AFTER_MOVE / PER_USE). Effects on the target need the
+// Pokemon itself to have been struck and to be standing.
+static void run_secondaries(MoveContext *c, unsigned timing, Position target, bool struck) {
+    for (unsigned i = 0; i < c->move->effect_count; ++i) {
+        const BattleEffect *e = &c->move->effects[i];
+        if (!is_secondary(e) || timing_of(e) != timing) continue;
+        if (e->who == BWHO_TARGET && (!struck || battle_at(c->b, target)->fainted)) continue;
+        if (roll(c, e)) apply(c, e, target);
+    }
+}
+
 // Damage for one target. Returns the HP the target and its substitute lost;
 // *struck tells whether the Pokemon itself took a hit.
 static unsigned strike(MoveContext *c, const BattleEffect *damage, Position target, bool *landed, bool *struck) {
@@ -396,6 +427,7 @@ static unsigned strike(MoveContext *c, const BattleEffect *damage, Position targ
             bc_apply_damage(b, ev, amount, c->log);
             lost += before - battle_at(b, target)->hp;
             *struck = true;
+            run_secondaries(c, BETIME_PER_HIT, target, true);
         }
         if (h + 1 >= total || battle_at(b, target)->fainted) break;
     }
@@ -429,14 +461,11 @@ static void damaging_target(MoveContext *c, const BattleEffect *damage, Position
     if (!landed) return;
     c->landed = true;
     c->lost += lost;
+    // In list order: drain, the per-target secondaries (the V8/V9 default),
+    // pivot and drag. ON_DAMAGE secondaries need the Pokemon's own HP to drop.
     for (unsigned i = 0; i < c->move->effect_count; ++i) {
         const BattleEffect *e = &c->move->effects[i];
         switch (e->kind) {
-        case BEFF_DAMAGE:
-        case BEFF_RECOIL:
-        case BEFF_RECHARGE:
-        case BEFF_CHARGE:
-            break;
         case BEFF_DRAIN:  // from the HP the target or its substitute lost
             if (lost) restore(c, c->user, lost * e->arg0 / 100u, EV_DRAIN);
             break;
@@ -447,13 +476,18 @@ static void damaging_target(MoveContext *c, const BattleEffect *damage, Position
             if (struck) apply(c, e, target);
             break;
         default:
-            // Secondary effects: rolled per target. Effects on the target need
-            // the Pokemon itself to have been hit (not only its substitute)
-            // and to be standing; self effects always apply.
-            if (e->who == BWHO_TARGET && (!struck || battle_at(c->b, target)->fainted)) break;
-            if (roll(c, e)) apply(c, e, target);
+            if (!is_secondary(e)) break;
+            if (timing_of(e) == BETIME_PER_TARGET || (timing_of(e) == BETIME_ON_DAMAGE && struck)) {
+                if (e->who == BWHO_TARGET && (!struck || battle_at(c->b, target)->fainted)) break;
+                if (roll(c, e)) apply(c, e, target);
+            }
             break;
         }
+    }
+    // Once per use, as soon as the move first lands (before later targets).
+    if (!c->per_use_done) {
+        c->per_use_done = true;
+        run_secondaries(c, BETIME_PER_USE, c->user, true);
     }
 }
 
@@ -558,6 +592,8 @@ bool bc_execute_move(Battle *b, Position user, uint8_t slot, Position selected, 
             else status_target(&c, target);
             if (!battle_at(b, target)->fainted) all_fainted = false;
         }
+    // Once after all targets (e.g. a spread move lowering the user's Defense).
+    if (damage && c.landed) run_secondaries(&c, BETIME_AFTER_MOVE, user, true);
     if (recoil && c.lost && !battle_at(b, user)->fainted) {
         const unsigned amount = c.lost * recoil->arg0 / 100u;
         bc_apply_damage(b, (BattleEvent){.kind = EV_RECOIL, .user = user, .target = user, .move_id = id},

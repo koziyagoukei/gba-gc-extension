@@ -228,7 +228,7 @@ int battle_init(Battle *b, const BattleRequest *r, uint32_t seed) {
     b->rng = seed ? seed : 0x9e3779b9u;
     const unsigned active = battle_formation_size(r->format);
     if (!active || r->active_per_side != active ||
-        r->version > BATTLE_REQUEST_VERSION_VOLATILES)
+        r->version > BATTLE_REQUEST_VERSION_TIMING)
         return BI_FORMAT;
     if (r->version >= BATTLE_REQUEST_VERSION_VOLATILES && !battle_volatile_rules_valid(&r->volatiles))
         return BI_CONDITIONS;
