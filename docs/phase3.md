@@ -24,7 +24,7 @@ Content calls `GcStartMode(&handler)`. `include/gc_extension.h` defines the `GcM
 | `getRequest` | Request bytes the host fetches after MODE |
 | `handleApp` | The mode's own APP opcodes (separate app id) |
 | `draw` / `input` | GBA second screen while the session is active |
-| `onResult` | RESULT payload. The connector delivers each result id at most once and acks repeats as `RESULT_DUPLICATE` |
+| `onResult` | RESULT payload. Release 4: the result id must be the MODE nonce of this mode start; the first accepted result is final (an identical resend is acked as `RESULT_DUPLICATE`, any other result as `RESULT_REJECTED` without reaching the mode); MODE then carries `MODE_FLAG_RESULT_FINAL` and a host BYE ends the mode normally. Earlier releases delivered each result id at most once |
 | `finish` | Runs once, after the link is closed and after the unchanged-state check. This is the only place persistent state may change |
 | `free` | Release the mode's memory |
 

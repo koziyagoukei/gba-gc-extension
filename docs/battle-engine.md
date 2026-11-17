@@ -722,3 +722,19 @@ PoC link had none of these.
 Abilities and held items (Milestone 4) hook into the same stages: before
 the action (e.g. Inner Focus, Own Tempo), before accuracy, on damage
 (substitute-aware), after a hit and at the end of the turn.
+
+## Audit fixes (release 4, request V10)
+
+See [the audit response](audit-m3.5.md). For the engine: V10 descriptors
+carry an application unit in flags bits 1-3 (per hit, per target, on
+damage, after the move, per use; only secondary kinds, and the last two
+only for the user). The Frontier exporter uses the battle engine's own
+rule: a self effect of a hit runs once after the move (Clanging Scales'
+Defense -1 after the last target), other effects run per hit on
+multi-strike moves and per target otherwise. V8/V9 requests cannot carry
+the field and keep their old behaviour and RNG order. Struggle now goes
+through the shared Protect / semi-invulnerable / substitute path; a turn
+refused during a pivot or replacement leaves the battle state untouched;
+automatic-target moves store a canonical target; older roster states
+decode with cleared later-version fields; later-version effect fields in
+an older request make it malformed.

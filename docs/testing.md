@@ -66,3 +66,20 @@ host silent for 3 s to force a link loss; the battle restarts from its
 request after the reconnect. Each session prints `DIAG` lines (link
 counters, peaks, the GBA's PING counters and a ring buffer of anomalies)
 at battle end, on a GC-side abort and on link loss.
+
+## Release 4 (audit fixes)
+
+Native: `protocol/wire_test.c` (every lost and duplicated word position),
+`gamecube/battle/battle_test.c`, `gamecube/presentation/presentation_test.c`
+and `gamecube/companion/asset_check_test.c`. The GBA connector is tested
+natively too: `tools/connector-test.sh <pokeemerald checkout>` builds the
+checkout's real `gc_companion_link.c` (IO registers as variables, the test
+raises the serial IRQ per word) and `gc_companion_protocol.c` (RESULT
+handling through the frame handler) with ASan and UBSan.
+
+Dolphin: the Cube Tester battles are V10. Debug menu: **GC Double V8
+(effects)**, **GC Double V9 (volatiles)** and **GC Double V10 (endurance)**.
+To check the result contract, forfeit a battle and press GC Z (3 s
+silence) on the result screen: after the reconnect the GC must report
+"Battle already finished" and the GBA must return to the field.
+
