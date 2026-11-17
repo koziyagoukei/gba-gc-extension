@@ -575,7 +575,12 @@ BattleViewStatus battle_view_update(bool start_pressed, const char **message) {
         case FETCH_FAILED: return BV_LOST;
         }
         b.request_us = fetch_elapsed_us(&fetch);
-        if (!battle_request_decode(fetch.data, fetch.info.length, &b.request) ||
+        // The request must be the one MODE announced (length and CRC; audit P-03).
+        const bool announced = fetch.info.length == b.mode.request_length &&
+                               ~wire_crc(UINT32_MAX, fetch.data, fetch.info.length) == b.mode.request_crc;
+        if (!announced) SYS_Report("PH3 REQUEST differs from MODE (length %u/%u)\n", fetch.info.length,
+                                   b.mode.request_length);
+        if (!announced || !battle_request_decode(fetch.data, fetch.info.length, &b.request) ||
             b.request.version != b.mode.app_version) {
             SYS_Report("PH3 REQUEST rejected (decode)\n");
             *message = "Battle request rejected";

@@ -11,9 +11,9 @@
 typedef enum {
     DIAG_SESSION_OPEN = 1,  // a = session number
     DIAG_REQUEST_FAILED,    // a = frame type, b = seq
-    DIAG_RETRIES,           // a = frame type, b = retries in this request
+    DIAG_RETRIES,           // a = frame type, b = retries in this request (see DIAG_ATTEMPT)
     DIAG_SI_ERRORS,         // b = new SI errors since the last request
-    DIAG_SLOW_POLL,         // b = gap between two requests (us)
+    DIAG_SLOW_POLL,         // b = idle gap from the previous request's end to this start (us)
     DIAG_SLOW_CORE,         // b = battle core time for one turn (us), c = events
     DIAG_SLOW_PRESENT,      // b = presentation time for one frame (us)
     DIAG_EVENT_LOG_FULL,    // b = turn, c = events
@@ -22,9 +22,12 @@ typedef enum {
     DIAG_BATTLE_BEGIN,      // b = battle id
     DIAG_BATTLE_END,        // a = outcome, b = battle id, c = turns
     DIAG_LINK_LOST,         // b = seq
+    DIAG_ATTEMPT,           // a = type << 8 | AttemptEnd, b = seq, c = wait for a reply (us)
+    DIAG_SLOW_REQUEST,      // a = frame type, b = request start to done (us), c = attempts
 } DiagKind;
 
-typedef enum { DIAG_GBA_RESETS, DIAG_GBA_OVERFLOWS, DIAG_GBA_CRC, DIAG_GBA_DUPLICATES } DiagGbaCounter;
+typedef enum { DIAG_GBA_RESETS, DIAG_GBA_OVERFLOWS, DIAG_GBA_CRC, DIAG_GBA_DUPLICATES, DIAG_GBA_STALE_DROPS,
+               DIAG_GBA_RESYNCS } DiagGbaCounter;
 
 typedef struct {
     uint32_t ms;     // since boot
@@ -36,16 +39,18 @@ typedef struct {
 
 // The GBA's own JoyBus counters, from its PING reply.
 typedef struct {
-    bool valid;
+    bool valid, extended;   // extended: release 4+ GBA (more PING counters)
     uint32_t resets, overflows, crc_errors, duplicates;
+    uint32_t nacks, stale_drops, resyncs, max_queue, requests;
 } DiagGbaStats;
 
 typedef struct {
     uint32_t session, battle_id;
-    uint64_t last_good, last_request;  // ticks; 0 = none yet
+    uint64_t last_good, last_done;     // ticks; 0 = none yet
     uint32_t si_errors_seen;
     uint32_t requests, failures;
-    uint32_t max_poll_us, max_core_us, max_present_us, max_events, max_steps;
+    uint32_t max_idle_us, max_request_us, max_core_us, max_present_us, max_events, max_steps;
+    uint32_t retried_requests;
     uint32_t event_log_full, animation_full;
     DiagGbaStats gba;
     DiagEntry ring[DIAG_RING];
@@ -54,11 +59,13 @@ typedef struct {
 
 // Thresholds for ring entries (not limits; just what is worth recording).
 #define DIAG_SLOW_POLL_US 100000u
+#define DIAG_SLOW_REQUEST_US 100000u
 #define DIAG_SLOW_CORE_US 8000u
 #define DIAG_SLOW_PRESENT_US 12000u
 
 void diag_session_open(uint32_t session);
 // After every request: ok, the request type, and the session after it.
+// The session's RequestTrace (start, done, per-attempt end and wait) is read.
 void diag_exchange(bool ok, uint8_t type, const Session *session, uint32_t retries_before);
 void diag_battle_begin(uint32_t battle_id);
 void diag_battle_end(uint8_t outcome, uint32_t turns);

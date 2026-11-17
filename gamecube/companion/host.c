@@ -49,8 +49,9 @@ bool host_app_to(HostLink *link, uint16_t app_id, uint16_t opcode, const uint8_t
     msg_put16(request.payload + 2, opcode);
     memcpy(request.payload + APP_REQUEST_HEADER, args, length);
     request.len = (uint16_t)(APP_REQUEST_HEADER + length);
+    // The reply must answer this app and opcode (audit P-03).
     if (!exchange(link, &request) || reply.len < APP_REPLY_HEADER ||
-        msg_get16(reply.payload + 2) != opcode)
+        msg_get16(reply.payload) != app_id || msg_get16(reply.payload + 2) != opcode)
         return false;
     *status = msg_get16(reply.payload + 4);
     if (data) *data = reply.payload + APP_REPLY_HEADER;
@@ -90,8 +91,17 @@ bool host_ping(HostLink *link, DiagGbaStats *gba) {
     wire_put32(request.payload, link->session.seq);
     // The GBA echoes the 4 bytes and appends its JoyBus counters.
     if (!exchange(link, &request) || reply.len < 20 || memcmp(reply.payload, request.payload, 4)) return false;
-    *gba = (DiagGbaStats){true, wire_get32(reply.payload + 4), wire_get32(reply.payload + 8),
-                          wire_get32(reply.payload + 12), wire_get32(reply.payload + 16)};
+    *gba = (DiagGbaStats){.valid = true, .resets = wire_get32(reply.payload + 4),
+                          .overflows = wire_get32(reply.payload + 8), .crc_errors = wire_get32(reply.payload + 12),
+                          .duplicates = wire_get32(reply.payload + 16)};
+    if (reply.len >= 40) {  // release 4+ GBA connector
+        gba->extended = true;
+        gba->nacks = wire_get32(reply.payload + 20);
+        gba->stale_drops = wire_get32(reply.payload + 24);
+        gba->resyncs = wire_get32(reply.payload + 28);
+        gba->max_queue = wire_get32(reply.payload + 32);
+        gba->requests = wire_get32(reply.payload + 36);
+    }
     diag_gba(gba);
     return true;
 }

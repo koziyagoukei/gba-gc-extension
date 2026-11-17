@@ -20,33 +20,40 @@ const Diagnostics *diag_get(void) { return &d; }
 void diag_session_open(uint32_t session) {
     // Counters and the ring survive reconnects; per-session timing restarts.
     d.session = session;
-    d.last_request = 0;
     d.si_errors_seen = joy_errors();
     diag_note(DIAG_SESSION_OPEN, (uint16_t)session, 0, 0);
 }
 
 void diag_exchange(bool ok, uint8_t type, const Session *s, uint32_t retries_before) {
-    const uint64_t t = gettime();
+    const RequestTrace *t = &s->last;
     ++d.requests;
-    // HELLO opens a session: the time since the previous session is idle, not a poll gap.
-    if (type == HELLO) d.last_request = 0;
-    if (d.last_request) {
-        const uint32_t gap = us_between(d.last_request, t);
-        if (gap > d.max_poll_us) d.max_poll_us = gap;
-        if (gap > DIAG_SLOW_POLL_US) diag_note(DIAG_SLOW_POLL, type, gap, 0);
+    // Idle time between requests (our own processing, drawing, VSync) and the
+    // time a request took (its attempts and waits) are separate quantities.
+    if (d.last_done && type != HELLO && t->start > d.last_done) {
+        const uint32_t idle = us_between(d.last_done, t->start);
+        if (idle > d.max_idle_us) d.max_idle_us = idle;
+        if (idle > DIAG_SLOW_POLL_US) diag_note(DIAG_SLOW_POLL, type, idle, t->seq);
     }
-    d.last_request = t;
+    const uint32_t took = t->done > t->start ? us_between(t->start, t->done) : 0;
+    if (took > d.max_request_us) d.max_request_us = took;
+    if (took > DIAG_SLOW_REQUEST_US) diag_note(DIAG_SLOW_REQUEST, type, took, t->attempts);
+    d.last_done = t->done ? t->done : gettime();
     const uint32_t si = joy_errors();
     if (si != d.si_errors_seen) {
         diag_note(DIAG_SI_ERRORS, type, si - d.si_errors_seen, si);
         d.si_errors_seen = si;
     }
-    if (s->stats.retries != retries_before) diag_note(DIAG_RETRIES, type, s->stats.retries - retries_before, s->seq);
+    if (s->stats.retries != retries_before) {
+        ++d.retried_requests;
+        diag_note(DIAG_RETRIES, type, s->stats.retries - retries_before, s->seq);
+        for (unsigned i = 0; i < t->attempts && i < SESSION_MAX_ATTEMPTS; ++i)
+            diag_note(DIAG_ATTEMPT, (uint16_t)(type << 8 | t->end[i]), t->seq, t->wait_us[i]);
+    }
     if (ok) {
-        d.last_good = t;
+        d.last_good = t->done ? t->done : gettime();
     } else {
         ++d.failures;
-        diag_note(DIAG_REQUEST_FAILED, type, s->seq, 0);
+        diag_note(DIAG_REQUEST_FAILED, type, s->seq, t->attempts);
     }
 }
 
@@ -82,9 +89,10 @@ void diag_animation(unsigned steps, unsigned capacity, unsigned turn) {
 
 void diag_gba(const DiagGbaStats *g) {
     if (d.gba.valid) {
-        const uint32_t old[] = {d.gba.resets, d.gba.overflows, d.gba.crc_errors, d.gba.duplicates};
-        const uint32_t now[] = {g->resets, g->overflows, g->crc_errors, g->duplicates};
-        for (unsigned i = 0; i < 4; ++i)
+        const uint32_t old[] = {d.gba.resets, d.gba.overflows, d.gba.crc_errors, d.gba.duplicates,
+                                d.gba.stale_drops, d.gba.resyncs};
+        const uint32_t now[] = {g->resets, g->overflows, g->crc_errors, g->duplicates, g->stale_drops, g->resyncs};
+        for (unsigned i = 0; i < 6; ++i)
             if (now[i] != old[i]) diag_note(DIAG_GBA_ANOMALY, (uint16_t)i, old[i], now[i]);
     }
     d.gba = *g;
@@ -93,7 +101,8 @@ void diag_gba(const DiagGbaStats *g) {
 
 static const char *kind_name(uint16_t kind) {
     static const char *const names[] = {"?", "SESSION", "FAILED", "RETRIES", "SI_ERRORS", "SLOW_POLL", "SLOW_CORE",
-                                        "SLOW_PRESENT", "EVENTS_FULL", "ANIM_FULL", "GBA", "BATTLE", "END", "LOST"};
+                                        "SLOW_PRESENT", "EVENTS_FULL", "ANIM_FULL", "GBA", "BATTLE", "END", "LOST",
+                                        "ATTEMPT", "SLOW_REQUEST"};
     return kind < sizeof(names) / sizeof(*names) ? names[kind] : "?";
 }
 
@@ -103,13 +112,24 @@ void diag_dump(const char *why, const Session *s) {
                d.battle_id, d.requests, d.failures, d.last_good ? (uint32_t)ticks_to_millisecs(t - d.last_good) : 0,
                s ? s->seq : 0);
     if (s)
-        SYS_Report("DIAG link sent=%u received=%u crc=%u bad_headers=%u nacks=%u retries=%u timeouts=%u duplicates=%u si_errors=%u\n",
+        SYS_Report("DIAG link sent=%u received=%u crc=%u bad_headers=%u nacks=%u retries=%u timeouts=%u duplicates=%u "
+                   "write_errors=%u read_errors=%u resyncs=%u retried_requests=%u\n",
                    s->stats.sent, s->stats.received, s->stats.crc_errors, s->stats.bad_headers, s->stats.nacks,
-                   s->stats.retries, s->stats.timeouts, s->stats.duplicates, joy_errors());
-    SYS_Report("DIAG peaks poll_us=%u core_us=%u present_us=%u events=%u steps=%u events_full=%u anim_full=%u\n",
-               d.max_poll_us, d.max_core_us, d.max_present_us, d.max_events, d.max_steps, d.event_log_full,
-               d.animation_full);
-    if (d.gba.valid)
+                   s->stats.retries, s->stats.timeouts, s->stats.duplicates, s->stats.write_errors,
+                   s->stats.read_errors, s->stats.resyncs, d.retried_requests);
+    const JoyStats *j = joy_stats();
+    SYS_Report("DIAG si transfers=%u submit_fail=%u busy_waits=%u busy_fail=%u timeouts=%u status_errors=%u "
+               "not_ready_polls=%u not_ready_reads=%u max_transfer_us=%u last_status=%x (cumulative, incl. probing)\n",
+               j->transfers, j->submit_failures, j->busy_waits, j->busy_failures, j->completion_timeouts,
+               j->status_errors, j->not_ready_polls, j->not_ready_reads, j->max_transfer_us, j->last_status);
+    SYS_Report("DIAG peaks request_us=%u idle_us=%u core_us=%u present_us=%u events=%u steps=%u events_full=%u anim_full=%u\n",
+               d.max_request_us, d.max_idle_us, d.max_core_us, d.max_present_us, d.max_events, d.max_steps,
+               d.event_log_full, d.animation_full);
+    if (d.gba.valid && d.gba.extended)
+        SYS_Report("DIAG gba resets=%u overflows=%u crc=%u duplicates=%u nacks=%u stale_drops=%u resyncs=%u "
+                   "max_queue=%u requests=%u (last PING)\n", d.gba.resets, d.gba.overflows, d.gba.crc_errors,
+                   d.gba.duplicates, d.gba.nacks, d.gba.stale_drops, d.gba.resyncs, d.gba.max_queue, d.gba.requests);
+    else if (d.gba.valid)
         SYS_Report("DIAG gba resets=%u overflows=%u crc=%u duplicates=%u (last PING)\n", d.gba.resets,
                    d.gba.overflows, d.gba.crc_errors, d.gba.duplicates);
     else
