@@ -27,6 +27,8 @@
 #define GCX_RELEASE_NAME "m4a-dev"
 #elif GCX_RELEASE == 6
 #define GCX_RELEASE_NAME "m4a2-dev"
+#elif GCX_RELEASE == 7
+#define GCX_RELEASE_NAME "rule-poc"
 #else
 #error "unknown GCX_RELEASE: add its name to host.h and docs/releases.md"
 #endif

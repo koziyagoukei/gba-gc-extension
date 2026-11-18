@@ -191,7 +191,8 @@ static bool poll_multi_action(BattleMultiAction *a) {
     if (!host_app_to(b.link, b.mode.app_id, opcode, NULL, 0, &d, &n, &status)) return false;
     if (status == APP_OK) {
         switch (b.mode.app_version) {
-        case BATTLE_APP_VERSION_ABILITY_HOOKS:  // V12, V11, V10 and V9 keep the V6 action layout
+        case BATTLE_APP_VERSION_MODIFIERS:  // V13, V12, V11, V10 and V9 keep the V6 action layout
+        case BATTLE_APP_VERSION_ABILITY_HOOKS:
         case BATTLE_APP_VERSION_ABILITIES:
         case BATTLE_APP_VERSION_TIMING:
         case BATTLE_APP_VERSION_VOLATILES:
@@ -309,6 +310,13 @@ static void log_entry(const char *side, const BattleEntry *e) {
             SYS_Report("PH8   ability id=%u %s%s\n", a->source, a->cls == BACLASS_NONE ? "none" : "unsupported", note);
         for (unsigned i = 0; i < a->count && i < BATTLE_MAX_ABILITY_HOOKS; ++i) {
             const BattleAbilityHook *h = &a->hooks[i];
+            if (h->kind == BABIL_MODIFIER) {
+                const BattleModifier *x = &h->mod;
+                SYS_Report("PH8   ability id=%u hook%u modifier stage=%02x percent=%u flags=%02x pred=%02x:%02x,%02x:%02x%s\n",
+                           a->source, i, x->stage, x->percent, x->flags, x->pred[0].kind, x->pred[0].arg,
+                           x->pred[1].kind, x->pred[1].arg, note);
+                continue;
+            }
             SYS_Report("PH8   ability id=%u hook%u %s args=%u,%d,%u chance=%u/%u percent=%u flags=%02x%s\n", a->source, i,
                        battle_ability_kind_name(h->kind), h->arg0, h->arg1, h->arg2, h->chance, h->chance_den,
                        h->percent, h->flags, note);
@@ -319,11 +327,17 @@ static void log_entry(const char *side, const BattleEntry *e) {
     for (unsigned m = 0; m < 4; ++m) {
         const BattleMove *move = &e->mon.moves[m];
         if (!r->moves[m]) continue;
-        char text[160];
+        char text[256];
         unsigned used = (unsigned)snprintf(text, sizeof(text), "PH6   move%u prio=%d flags=%02x source=%u effects:",
                                            m, move->priority, move->move_flags, move->source_effect);
         for (unsigned i = 0; i < move->effect_count && used < sizeof(text); ++i) {
             const BattleEffect *x = &move->effects[i];
+            if (x->kind == BEFF_MODIFIER) {  // V13: stage, percent, predicates
+                used += (unsigned)snprintf(text + used, sizeof(text) - used, " modifier/%02x/%u%%/%02x:%02x,%02x:%02x",
+                                           x->mod.stage, x->mod.percent, x->mod.pred[0].kind, x->mod.pred[0].arg,
+                                           x->mod.pred[1].kind, x->mod.pred[1].arg);
+                continue;
+            }
             static const char *const timings[] = {"", "@hit", "@target", "@damage", "@after", "@use", "@6", "@7"};
             used += (unsigned)snprintf(text + used, sizeof(text) - used, " %s/%s/%u%%/%u,%d,%u%s",
                                        battle_effect_kind_name(x->kind), x->who ? "user" : "target", x->chance,
