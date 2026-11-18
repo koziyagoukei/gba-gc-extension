@@ -156,6 +156,27 @@ static void draw_target(void) {
     if (a) art(ART_CURSOR, (ScreenRect){a->cursor.x - 13, a->cursor.y, 26, 20}, 0xffffffffu);
 }
 
+static const char *weather_name(uint8_t kind) {
+    static const char *const names[] = {"", "SUN", "RAIN", "SANDSTORM", "HAIL", "SNOW"};
+    return kind < sizeof(names) / sizeof(*names) ? names[kind] : "WEATHER";
+}
+
+static const char *weather_text(const SceneMessage *msg) {
+    static const char *const start[] = {"", "The sunlight became harsh!", "Rain began to fall!",
+                                        "A sandstorm whipped up!", "Hail began to fall!", "Snow began to fall!"};
+    static const char *const go_on[] = {"", "The sunlight stays harsh.", "The rain keeps falling.",
+                                        "The sandstorm rages on.", "The hail keeps falling.", "The snow keeps falling."};
+    static const char *const end[] = {"", "The harsh sunlight faded.", "The rain stopped.",
+                                      "The sandstorm calmed down.", "The hail stopped.", "The snow stopped."};
+    const uint8_t k = msg->condition < BWEATHER_COUNT ? msg->condition : BWEATHER_NONE;
+    switch (msg->kind) {
+    case MSG_WEATHER_START: return start[k];
+    case MSG_WEATHER_CONTINUE: return go_on[k];
+    case MSG_WEATHER_END: return end[k];
+    default: return k == BWEATHER_HAIL ? "Hurt by the hail!" : "Hurt by the sandstorm!";
+    }
+}
+
 static const char *message_text(const SceneMessage *msg) {
     switch (msg->kind) {
     case MSG_INTRO: return "The trainer wants to battle!";
@@ -203,6 +224,10 @@ static const char *message_text(const SceneMessage *msg) {
     case MSG_ABILITY_BLOCK: return "Its ability prevented it!";
     case MSG_ABILITY_DAMAGE: return "Hurt by an ability!";
     case MSG_ABILITY_UNSUPPORTED: return "Ability not simulated:";
+    case MSG_WEATHER_START:
+    case MSG_WEATHER_CONTINUE:
+    case MSG_WEATHER_END:
+    case MSG_WEATHER_DAMAGE: return weather_text(msg);
     case MSG_NONE: return "";
     }
     return "";
@@ -212,6 +237,9 @@ static void draw_message(const BattleLayout *layout) {
     ui_panel(layout->command.x, layout->command.y, layout->command.w, layout->command.h, UI_EDGE, UI_MINT);
     if (scene.turn)
         render_text(layout->command.x + 12, layout->command.y + 5, 1, UI_INK, "TURN %u", scene.turn);
+    if (scene.animation.weather)
+        render_text(layout->command.x + 112, layout->command.y + 5, 1, UI_MUTED, "%s",
+                    weather_name(scene.animation.weather));
     render_text(layout->command.x + layout->command.w - 139, layout->command.y + 5, 1, UI_MUTED, "GBA CONTROLS");
     panel(layout->message, UI_SKY);
     const SceneMessage *msg = &scene.animation.message;
@@ -238,6 +266,10 @@ static void draw_message(const BattleLayout *layout) {
             if (ability) draw_label(ability, x + 210, y + 27, 220, 23);
             else render_text(x + 210, y + 28, 1, UI_MUTED, "Ability #%u", msg->ability);
         }
+    } else if (msg->kind == MSG_WEATHER_DAMAGE) {
+        const Battler *b = battler_at(msg->subject);
+        CacheEntry *name = b ? battle_label(scene.build, &b->entry->record) : NULL;
+        if (name) draw_label(name, x, y + 27, 190, 23);
         if (msg->kind == MSG_MOVE) {
             CacheEntry *move = battle_move_label(scene.build, msg->move);
             if (msg->move == BATTLE_MOVE_STRUGGLE)

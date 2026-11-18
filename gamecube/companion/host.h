@@ -31,6 +31,8 @@
 #define GCX_RELEASE_NAME "rule-poc"
 #elif GCX_RELEASE == 8
 #define GCX_RELEASE_NAME "m4p-dev"
+#elif GCX_RELEASE == 9
+#define GCX_RELEASE_NAME "m4w-dev"
 #else
 #error "unknown GCX_RELEASE: add its name to host.h and docs/releases.md"
 #endif

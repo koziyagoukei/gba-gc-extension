@@ -191,7 +191,8 @@ static bool poll_multi_action(BattleMultiAction *a) {
     if (!host_app_to(b.link, b.mode.app_id, opcode, NULL, 0, &d, &n, &status)) return false;
     if (status == APP_OK) {
         switch (b.mode.app_version) {
-        case BATTLE_APP_VERSION_FIXED_POINT:  // V14, V13, V12, V11, V10 and V9 keep the V6 action layout
+        case BATTLE_APP_VERSION_WEATHER:  // V15, V14, V13, V12, V11, V10 and V9 keep the V6 action layout
+        case BATTLE_APP_VERSION_FIXED_POINT:
         case BATTLE_APP_VERSION_MODIFIERS:
         case BATTLE_APP_VERSION_ABILITY_HOOKS:
         case BATTLE_APP_VERSION_ABILITIES:
@@ -656,6 +657,20 @@ BattleViewStatus battle_view_update(bool start_pressed, const char **message) {
             SYS_Report("PH7 VOLATILE rules flags=%02x confusion=%u%%/%u-%u/power %u substitute=1/%u\n", v->flags,
                        v->confusion_hit_percent, v->confusion_min, v->confusion_max, v->confusion_power,
                        v->substitute_divisor);
+        }
+        if (b.request.version >= BATTLE_REQUEST_VERSION_WEATHER) {  // V15 field rules (docs/weather.md)
+            const BattleFieldRules *f = &b.request.field;
+            SYS_Report("PH10 FIELD rules flags=%02x start=%u/%u records=%u\n", f->flags, f->start_weather,
+                       f->start_turns, f->modifier_count);
+            for (unsigned k = 0; k < BWEATHER_KINDS; ++k)
+                SYS_Report("PH10   weather%u residual=1/%u flags=%02x immune=%02x,%02x,%02x\n", k + 1,
+                           f->weather[k].residual_divisor, f->weather[k].flags, f->weather[k].immune_types[0],
+                           f->weather[k].immune_types[1], f->weather[k].immune_types[2]);
+            for (unsigned i = 0; i < f->modifier_count && i < BATTLE_MAX_FIELD_MODIFIERS; ++i) {
+                const BattleModifier *x = &f->modifiers[i];
+                SYS_Report("PH10   record%u stage=%02x percent=%u pred=%02x:%02x,%02x:%02x\n", i, x->stage, x->percent,
+                           x->pred[0].kind, x->pred[0].arg, x->pred[1].kind, x->pred[1].arg);
+            }
         }
         for (unsigned i = 0; i < b.request.player_count; ++i) log_entry("PLAYER", &b.request.player[i]);
         for (unsigned i = 0; i < b.request.opponent_count; ++i) log_entry("OPPONENT", &b.request.opponent[i]);

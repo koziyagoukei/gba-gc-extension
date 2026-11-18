@@ -11,6 +11,8 @@ typedef enum {
     MSG_FLINCH, MSG_CONFUSE, MSG_CONFUSED, MSG_CONFUSION_HIT, MSG_CONFUSION_END,
     MSG_SUBSTITUTE, MSG_SUBSTITUTE_HIT, MSG_SUBSTITUTE_BREAK, MSG_CHARGE, MSG_CHARGE_END, MSG_RECHARGE,
     MSG_ABILITY, MSG_ABILITY_BLOCK, MSG_ABILITY_DAMAGE, MSG_ABILITY_UNSUPPORTED,
+    // V15 weather: condition = BWEATHER_* kind.
+    MSG_WEATHER_START, MSG_WEATHER_CONTINUE, MSG_WEATHER_END, MSG_WEATHER_DAMAGE,
 } MessageKind;
 
 typedef struct {
@@ -34,14 +36,15 @@ typedef struct {
     uint8_t volatiles;  // BVF_* as presented (badges, hidden while semi-invulnerable)
 } ActorFrame;
 
-typedef enum { ANIM_MESSAGE, ANIM_WAIT, ANIM_FADE, ANIM_ENTER, ANIM_ATTACK, ANIM_HIT, ANIM_HP, ANIM_FAINT, ANIM_SHIFT, ANIM_ROTATE, ANIM_WITHDRAW, ANIM_CONDITION, ANIM_VOLATILE } AnimationKind;
+typedef enum { ANIM_MESSAGE, ANIM_WAIT, ANIM_FADE, ANIM_ENTER, ANIM_ATTACK, ANIM_HIT, ANIM_HP, ANIM_FAINT, ANIM_SHIFT, ANIM_ROTATE, ANIM_WITHDRAW, ANIM_CONDITION, ANIM_VOLATILE,
+               ANIM_WEATHER } AnimationKind;
 
 typedef struct {
     AnimationKind kind;
     Position source, target;
     uint16_t frames, hp, max_hp;
     uint8_t rotation, entrant; // one-based roster index for a send-out
-    uint8_t condition;
+    uint8_t condition;           // ANIM_CONDITION; ANIM_WEATHER: the weather shown from now on
     uint8_t vol_set, vol_clear;  // ANIM_VOLATILE
     SceneMessage message;
 } AnimationStep;
@@ -54,6 +57,7 @@ typedef struct {
     AnimationStep steps[ANIMATION_STEPS];
     unsigned count, index, frame;
     SceneMessage message;
+    uint8_t weather;  // BWEATHER_* on the field as presented (V15)
     float fade;
     bool effect_visible;
     ScreenPoint effect;

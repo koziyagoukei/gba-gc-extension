@@ -320,6 +320,18 @@ void bc_ability_on_entry(Battle *b, Position p, EventLog *log) {
             bc_ability_event(b, log, p, (Position){foe, bc_first_target(targets)}, x);
             for (uint8_t s = 0; s < BC_MAX_ACTIVE; ++s)
                 if (targets & (1u << s)) lower_on_entry(b, p, (Position){foe, s}, x, log);
+        } else if (x->kind == BABIL_ENTRY_WEATHER) {
+            // V15 (Drizzle, Drought ...): the shared weather change; the same weather
+            // again does nothing, a locked one shows the block.
+            if (b->field.weather.kind == x->arg0) continue;
+            if (b->field.locked) {
+                bc_ability_block(b, log, p, p, x);
+                continue;
+            }
+            bc_ability_event(b, log, p, p, x);
+            bc_weather_set(b, p, FSRC_ABILITY, x->arg0, x->arg2, log);
+        } else if (x->kind == BABIL_WEATHER_SUPPRESS) {
+            bc_ability_event(b, log, p, p, x);  // Cloud Nine's notice; the suppression is not a state
         }
     }
 }
@@ -340,6 +352,27 @@ void bc_ability_end_turn(Battle *b, Position p, EventLog *log) {
     const BattleAbilityHook *x = bc_ability(b, mon, BABIL_END_TURN_STAT);
     if (!x || mon->fainted || mon->vol.entered) return;  // on the field since the turn started
     stage_change(b, p, p, x, x->arg1, log);
+}
+
+// ------------------------------------------------------------- V15 weather
+
+bool bc_ability_suppresses_weather(const Battle *b, const Battler *mon) {
+    return bc_ability(b, mon, BABIL_WEATHER_SUPPRESS) != NULL;
+}
+
+static const BattleAbilityHook *weather_hook(const Battle *b, const Battler *mon, uint8_t kind, uint8_t weather) {
+    const BattleAbilityHook *x = NULL;
+    while ((x = bc_ability_next(b, mon, kind, x)))
+        if (x->arg0 & BWEATHER_BIT(weather)) return x;
+    return NULL;
+}
+
+const BattleAbilityHook *bc_ability_weather_immunity(const Battle *b, const Battler *mon, uint8_t weather) {
+    return weather_hook(b, mon, BABIL_WEATHER_IMMUNE, weather);
+}
+
+const BattleAbilityHook *bc_ability_weather_residual(const Battle *b, const Battler *mon, uint8_t weather) {
+    return weather_hook(b, mon, BABIL_WEATHER_RESIDUAL, weather);
 }
 
 bool bc_ability_unsupported(const Battle *b, uint8_t side, uint8_t index) {

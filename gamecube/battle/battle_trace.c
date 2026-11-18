@@ -12,6 +12,10 @@
 //      (without battle_test.c) -o build/battle-trace
 //   build/battle-trace [version] > trace.txt     (version 12 by default; 13 and 14 relabel the same data)
 //
+// Version 15 adds weather to the same corpus (field rules, weather abilities
+// and moves drawn after the V12 data, so 12 to 14 are unchanged): the V15
+// fingerprint later milestones keep (docs/weather.md).
+//
 // It uses only the public core API and the protocol records, so the same
 // source builds against older trees.
 
@@ -217,6 +221,138 @@ static void random_entry(BattleEntry *e, uint8_t slot, unsigned format, unsigned
     assert(battle_ability_valid(&e->mon.ability, NTYPES, BATTLE_REQUEST_VERSION_ABILITY_HOOKS));
 }
 
+#ifdef BATTLE_REQUEST_VERSION_WEATHER  // (absent when built against a tree before V15)
+static BattleAbilityHook mod_hook(uint8_t stage, uint8_t percent, uint8_t k0, uint8_t a0, uint8_t k1, uint8_t a1) {
+    BattleAbilityHook h;
+    memset(&h, 0, sizeof h);
+    h.kind = BABIL_MODIFIER;
+    h.mod = (BattleModifier){stage, percent, {{k0, a0}, {k1, a1}}};
+    return h;
+}
+
+static BattleModifier record(uint8_t stage, uint8_t percent, uint8_t k0, uint8_t a0, uint8_t k1, uint8_t a1) {
+    return (BattleModifier){stage, percent, {{k0, a0}, {k1, a1}}};
+}
+
+#define WB(kind) BWEATHER_BIT(kind)
+static BattleAbility weather_ability(unsigned which) {
+    BattleAbility a;
+    memset(&a, 0, sizeof a);
+    a.cls = BACLASS_HOOKS;
+    a.source = (uint16_t)(400 + which);
+    const uint8_t kind = (uint8_t)(1 + which % BWEATHER_KINDS);
+    switch (which % 8) {
+    case 0: case 1: a.hooks[a.count++] = hk(BABIL_ENTRY_WEATHER, kind, 0, which & 2 ? 5 : BWEATHER_TURNS_KEEP, 0, 0, 0, 0); break;
+    case 2: a.hooks[a.count++] = hk(BABIL_WEATHER_SUPPRESS, 0, 0, 0, 0, 0, 0, 0); break;
+    case 3: a.hooks[a.count++] = mod_hook(BMOD_SPEED, 200, BPRED_WEATHER, WB(kind), 0, 0); break;
+    case 4:
+        a.hooks[a.count++] = hk(BABIL_WEATHER_IMMUNE, WB(BWEATHER_SANDSTORM), 0, 0, 0, 0, 0, 0);
+        a.hooks[a.count++] = mod_hook(BATTLE_MODIFIER_STAGE(BMOD_ACCURACY, 0) | BMODF_DEFENDER, 80, BPRED_WEATHER,
+                                      WB(BWEATHER_SANDSTORM), 0, 0);
+        break;
+    case 5: a.hooks[a.count++] = hk(BABIL_WEATHER_RESIDUAL, WB(kind), 1, 16, 0, 0, 0, BAHF_NOT_UNDERGROUND); break;
+    case 6:
+        a.hooks[a.count++] = mod_hook(BATTLE_MODIFIER_STAGE(BMOD_ATTACK, BCAT_SPECIAL), 150, BPRED_WEATHER,
+                                      WB(BWEATHER_SUN), 0, 0);
+        a.hooks[a.count++] = hk(BABIL_WEATHER_RESIDUAL, WB(BWEATHER_SUN), -1, 8, 0, 0, 0, 0);
+        break;
+    default:
+        a.hooks[a.count++] = hk(BABIL_WEATHER_IMMUNE, WB(BWEATHER_SANDSTORM) | WB(BWEATHER_HAIL), 0, 0, 0, 0, 0, 0);
+        a.hooks[a.count++] = mod_hook(BMOD_POWER, 130, BPRED_WEATHER, WB(BWEATHER_SANDSTORM), BPRED_MOVE_TYPE, T_GHOST);
+        break;
+    }
+    return a;
+}
+
+static BattleMove weather_move(unsigned which) {
+    BattleMove m;
+    memset(&m, 0, sizeof m);
+    const uint8_t kind = (uint8_t)(1 + which % BWEATHER_KINDS);
+    m.target = BTARGET_SINGLE;
+    switch (which % 4) {
+    case 0:  // a weather move
+        m.category = BCAT_STATUS;
+        m.target = BTARGET_SELF;
+        m.effects[m.effect_count++] = fx(BEFF_WEATHER, BWHO_USER, 0, kind, 0, 5);
+        break;
+    case 1:  // Thunder-like: sure hit in rain, 50 in sun
+        m.power = 110;
+        m.type = T_ELECTRIC;
+        m.category = BCAT_SPECIAL;
+        m.accuracy = 70;
+        m.effects[m.effect_count++] = fx(BEFF_DAMAGE, BWHO_TARGET, 0, 1, 0, 1);
+        m.effects[m.effect_count++] = fx(BEFF_WEATHER_ACCURACY, 0, 0, WB(BWEATHER_RAIN), 0, 0);
+        m.effects[m.effect_count++] = fx(BEFF_WEATHER_ACCURACY, 0, 0, WB(BWEATHER_SUN), 0, 50);
+        break;
+    case 2:  // Weather Ball
+        m.power = 50;
+        m.category = BCAT_SPECIAL;
+        m.accuracy = 100;
+        m.effects[m.effect_count++] = fx(BEFF_DAMAGE, BWHO_TARGET, 0, 1, 0, 1);
+        m.effects[m.effect_count++] = fx(BEFF_WEATHER_TYPE, 0, 0, WB(BWEATHER_SUN), 0, T_FIRE);
+        m.effects[m.effect_count++] = fx(BEFF_WEATHER_TYPE, 0, 0, WB(BWEATHER_RAIN), 0, T_WATER);
+        m.effects[m.effect_count] = (BattleEffect){.kind = BEFF_MODIFIER};
+        m.effects[m.effect_count++].mod = record(BMOD_BASE_POWER, 200, BPRED_WEATHER, BWEATHER_ALL, 0, 0);
+        break;
+    default:  // Solar Beam
+        m.power = 120;
+        m.type = T_GRASS;
+        m.category = BCAT_SPECIAL;
+        m.accuracy = 100;
+        m.effects[m.effect_count++] = fx(BEFF_CHARGE, BWHO_USER, 0, BSEMI_NONE, 0, WB(BWEATHER_SUN));
+        m.effects[m.effect_count++] = fx(BEFF_DAMAGE, BWHO_TARGET, 0, 1, 0, 1);
+        m.effects[m.effect_count] = (BattleEffect){.kind = BEFF_MODIFIER};
+        m.effects[m.effect_count++].mod = record(BMOD_POWER, 50, BPRED_WEATHER, BWEATHER_ALL & ~WB(BWEATHER_SUN), 0, 0);
+        break;
+    }
+    assert(battle_move_effects_valid_for(&m, BATTLE_REQUEST_VERSION_WEATHER));
+    return m;
+}
+
+// The V15 additions, drawn after the V12 data.
+static void add_weather(BattleRequest *r, uint32_t seed) {
+    BattleFieldRules *f = &r->field;
+    memset(f, 0, sizeof *f);
+    for (unsigned k = 0; k < BWEATHER_KINDS; ++k)
+        memset(f->weather[k].immune_types, BABIL_NO_TYPE, sizeof f->weather[k].immune_types);
+    f->weather[BWEATHER_SUN - 1].flags = BWKF_NO_FREEZE;
+    f->weather[BWEATHER_SANDSTORM - 1] = (BattleWeatherKindRules){16, BWKF_UNDERGROUND_SAFE,
+                                                                   {T_GHOST, BABIL_NO_TYPE, BABIL_NO_TYPE}};
+    f->weather[BWEATHER_HAIL - 1] = (BattleWeatherKindRules){16, BWKF_UNDERGROUND_SAFE,
+                                                              {T_WATER, BABIL_NO_TYPE, BABIL_NO_TYPE}};
+    const BattleModifier records[] = {
+        record(BMOD_WEATHER, 150, BPRED_WEATHER, WB(BWEATHER_SUN), BPRED_MOVE_TYPE, T_FIRE),
+        record(BMOD_WEATHER, 50, BPRED_WEATHER, WB(BWEATHER_SUN), BPRED_MOVE_TYPE, T_WATER),
+        record(BMOD_WEATHER, 150, BPRED_WEATHER, WB(BWEATHER_RAIN), BPRED_MOVE_TYPE, T_WATER),
+        record(BMOD_WEATHER, 50, BPRED_WEATHER, WB(BWEATHER_RAIN), BPRED_MOVE_TYPE, T_FIRE),
+        record(BATTLE_MODIFIER_STAGE(BMOD_DEFENSE, BCAT_SPECIAL), 150, BPRED_WEATHER, WB(BWEATHER_SANDSTORM),
+               BPRED_HAS_TYPE | BPRED_DEFENDER, T_GHOST),
+        record(BATTLE_MODIFIER_STAGE(BMOD_DEFENSE, BCAT_PHYSICAL), 150, BPRED_WEATHER, WB(BWEATHER_SNOW),
+               BPRED_HAS_TYPE | BPRED_DEFENDER, T_WATER),
+    };
+    f->modifier_count = sizeof records / sizeof *records;
+    for (unsigned i = 0; i < f->modifier_count; ++i) f->modifiers[i] = records[i];
+    if (seed % 5 == 0) {
+        f->start_weather = (uint8_t)(1 + rnd(BWEATHER_KINDS));
+        f->start_turns = (uint8_t)rnd(6);
+    }
+    for (unsigned side = 0; side < 2; ++side) {
+        BattleEntry *e = side ? r->opponent : r->player;
+        const unsigned count = side ? r->opponent_count : r->player_count;
+        for (unsigned i = 0; i < count; ++i) {
+            if (rnd(2)) {
+                e[i].mon.ability = weather_ability(rnd(64));
+                e[i].record.ability = e[i].mon.ability.source;
+                assert(battle_ability_valid(&e[i].mon.ability, NTYPES, BATTLE_REQUEST_VERSION_WEATHER));
+            }
+            if (rnd(2)) e[i].mon.moves[3] = weather_move(rnd(64));
+        }
+    }
+    r->rules |= (uint16_t)(seed % 7 == 0 ? RULE_STRICT_MOVES : 0);
+}
+#undef WB
+#endif
+
 static void build(BattleRequest *r, uint8_t format, uint32_t seed, uint8_t version) {
     memset(r, 0, sizeof *r);
     lcg = seed * 2654435761u + format;
@@ -260,6 +396,9 @@ static void build(BattleRequest *r, uint8_t format, uint32_t seed, uint8_t versi
         if (!r->player[i].record.hp) r->player[i].record.hp = 1;
         if (!r->opponent[i].record.hp) r->opponent[i].record.hp = 1;
     }
+#ifdef BATTLE_REQUEST_VERSION_WEATHER
+    if (version >= BATTLE_REQUEST_VERSION_WEATHER) add_weather(r, seed);
+#endif
 }
 
 static uint32_t hash_events(uint32_t h, const EventLog *log) {

@@ -231,6 +231,21 @@ void animation_play(BattleAnimation *a, const BattleLayout *layout, const EventL
             message(a, (SceneMessage){.kind = MSG_ABILITY_UNSUPPORTED, .subject = e->user, .ability = e->ability,
                                       .battler = e->battler}, 60);
             break;
+        case EV_WEATHER_START:
+        case EV_WEATHER_CONTINUE:
+        case EV_WEATHER_END:
+            add(a, (AnimationStep){.kind = ANIM_WEATHER,
+                                   .condition = e->kind == EV_WEATHER_END ? BWEATHER_NONE : e->condition});
+            message(a, (SceneMessage){.kind = e->kind == EV_WEATHER_START ? MSG_WEATHER_START :
+                                              e->kind == EV_WEATHER_END ? MSG_WEATHER_END : MSG_WEATHER_CONTINUE,
+                                      .subject = e->user, .condition = e->condition}, 34);
+            break;
+        case EV_WEATHER_DAMAGE:
+            if (!battle_layout_anchor(layout, e->target)) break;
+            message(a, (SceneMessage){.kind = MSG_WEATHER_DAMAGE, .subject = e->target, .condition = e->condition}, 0);
+            add(a, (AnimationStep){.kind = ANIM_HP, .target = e->target, .hp = e->hp_after});
+            wait(a, 18);
+            break;
         case EV_END:
             if (e->outcome == OUTCOME_WIN || e->outcome == OUTCOME_LOSE || e->outcome == OUTCOME_DRAW)
                 message(a, (SceneMessage){.kind = MSG_RESULT, .outcome = e->outcome}, 30);
@@ -244,6 +259,7 @@ static bool advance(BattleAnimation *a, const BattleLayout *layout, const Animat
     const float t = s->frames ? (float)(f + 1) / s->frames : 0;
     switch (s->kind) {
     case ANIM_MESSAGE: a->message = s->message; return true;
+    case ANIM_WEATHER: a->weather = s->condition; return true;
     case ANIM_WAIT: break;
     case ANIM_CONDITION: actor->condition = s->condition; return true;
     case ANIM_VOLATILE: actor->volatiles = (uint8_t)((actor->volatiles & ~s->vol_clear) | s->vol_set); return true;

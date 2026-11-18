@@ -20,6 +20,7 @@ const char *battle_init_error_name(int error) {
     case BI_BAD_TYPES: return "type data out of range";
     case BI_CONDITIONS: return "invalid V7 condition rules or status";
     case BI_UNSUPPORTED_ABILITY: return "strict rules: an ability is not simulated";
+    case BI_UNSUPPORTED_MOVE: return "strict rules: a move is not simulated";
     case BI_FAINTED_LEAD: return "a lead Pokemon has no HP";
     }
     return "unknown";
@@ -43,9 +44,11 @@ uint8_t bc_status_kind(const Battle *b, const Battler *mon) {
     return bc_conditions_enabled(b) ? BATTLE_CONDITION_KIND(mon->status) : BST_NONE;
 }
 
+// V15: the holder's speed records (Swift Swim) between the stages and paralysis.
 static unsigned speed(const Battle *b, const Battler *mon) {
     if (!bc_conditions_enabled(b)) return mon->speed;
     unsigned value = bc_stage_scale(mon->speed, mon->stat_stages[BSTAT_SPE], 2);
+    value = bc_modify_speed(b, mon, value);
     if (bc_status_kind(b, mon) == BST_PARALYSIS)
         value /= b->request->conditions.paralysis_speed_divisor;
     return value ? value : 1;
@@ -240,6 +243,8 @@ int battle_init(Battle *b, const BattleRequest *r, uint32_t seed) {
         return BI_FORMAT;
     if (r->version >= BATTLE_REQUEST_VERSION_VOLATILES && !battle_volatile_rules_valid(&r->volatiles))
         return BI_CONDITIONS;
+    if (r->version >= BATTLE_REQUEST_VERSION_WEATHER && !battle_field_rules_valid(&r->field, r->type_count))
+        return BI_CONDITIONS;
     if (!r->type_count || r->type_count > BATTLE_MAX_TYPES) return BI_BAD_TYPES;
     if (r->version >= BATTLE_REQUEST_VERSION_STRUGGLE &&
         (!r->struggle_power || r->struggle_accuracy > 100 ||
@@ -291,6 +296,16 @@ int battle_init(Battle *b, const BattleRequest *r, uint32_t seed) {
         for (uint8_t side = 0; side < 2; ++side)
             for (uint8_t i = 0; i < b->sides[side].count; ++i)
                 if (bc_ability_unsupported(b, side, i)) return BI_UNSUPPORTED_ABILITY;
+    // V15 strict moves: a known move the core cannot run would change the result too.
+    if (r->rules & RULE_STRICT_MOVES)
+        for (uint8_t side = 0; side < 2; ++side)
+            for (uint8_t i = 0; i < b->sides[side].count; ++i) {
+                const Battler *x = &b->sides[side].battlers[i];
+                for (unsigned m = 0; m < 4; ++m)
+                    if (x->move_ids[m] && x->moves[m].unsupported != UNSUP_EMPTY &&
+                        !battle_move_supported(r, &x->moves[m]))
+                        return BI_UNSUPPORTED_MOVE;
+            }
     return BI_OK;
 }
 
@@ -394,7 +409,8 @@ bool bc_fixed_point(const Battle *b) { return b->request->version >= BATTLE_REQU
 // damage minimum. V14 (docs/modifiers.md) follows the Gen 5+ formula: base
 // damage, spread x0.75, random factor, same-type bonus, type, burn, then the
 // final modifiers (semi-invulnerable x2 first), each a 4.12 factor rounded
-// to the nearest integer (an exact half down).
+// to the nearest integer (an exact half down). V15 adds the weather step
+// between the spread and the random factor (docs/weather.md).
 uint16_t bc_calculate_damage(const Battle *b, const Battler *a, const BattleMove *m, const Battler *d,
                              unsigned random_percent, bool typeless, unsigned flags, uint8_t *eff) {
     *eff = typeless ? 4 : bc_effectiveness(b, a, m->type, d);
@@ -417,6 +433,9 @@ uint16_t bc_calculate_damage(const Battle *b, const Battler *a, const BattleMove
     def = (unsigned)bc_modify(&c, BMOD_DEFENSE, def);
     uint64_t dmg = ((2u * a->level / 5u + 2u) * (uint64_t)power * atk / (def ? def : 1)) / 50u + 2u;
     if (fx && (flags & BCD_SPREAD)) dmg = bc_fx_apply(3072u, dmg);
+    // V15: the weather step, after the spread factor and before the random
+    // factor, outside the modifier chains (the first field record that holds).
+    if (bc_weather_rules(b)) dmg = bc_modify(&c, BMOD_WEATHER, dmg);
     dmg = dmg * random_percent / 100u;
     if (!typeless && (m->type == a->types[0] || (a->type_count == 2 && m->type == a->types[1]))) {
         const unsigned stab = bc_ability_stab(b, a);
@@ -475,20 +494,64 @@ bool battle_pending_replacement(const Battle *b, Position *position) {
     return false;
 }
 
-static void send_out(Battle *b, Position p, uint8_t index, EventLog *log) {
+static void place(Battle *b, Position p, uint8_t index, EventLog *log) {
     Side *side = &b->sides[p.side];
     Battler *mon = &side->battlers[index];
     side->active[p.slot] = index;
     mon->vol.entered = true;
     bc_emit(log, (BattleEvent){.kind = EV_SEND_OUT, .target = p, .battler = index,
                             .amount = mon->max_hp, .hp_after = mon->hp, .condition = bc_status_kind(b, mon)});
+}
+
+static void send_out(Battle *b, Position p, uint8_t index, EventLog *log) {
+    place(b, p, index, log);
     bc_ability_on_entry(b, p, log);
 }
 
+// Entry abilities of several Pokemon entering together, in speed order (a
+// tie decided by a draw, as in turn order): the leads at the battle start
+// and, from V15, the replacements of one round.
+static void entries_by_speed(Battle *b, const uint8_t mask[2], EventLog *log) {
+    Position order[BC_MAX_ACTIONS];
+    uint32_t tie[BC_MAX_ACTIONS];
+    unsigned count = 0;
+    for (uint8_t side = 0; side < 2; ++side)
+        for (uint8_t slot = 0; slot < b->sides[side].active_count; ++slot) {
+            const Position p = {side, slot};
+            const Battler *mon = battle_at(b, p);
+            if (!(mask[side] & (1u << slot)) || !mon || mon->fainted) continue;
+            const uint32_t t = bc_next_random(b);
+            const unsigned s = speed(b, mon);
+            unsigned j = count++;
+            for (; j > 0; --j) {
+                const unsigned os = speed(b, battle_at(b, order[j - 1]));
+                if (s < os || (s == os && t <= tie[j - 1])) break;
+                order[j] = order[j - 1];
+                tie[j] = tie[j - 1];
+            }
+            order[j] = p;
+            tie[j] = t;
+        }
+    for (unsigned i = 0; i < count; ++i) bc_ability_on_entry(b, order[i], log);
+}
+
+// V15: the replacements after a turn enter together; their entry abilities
+// run once the last one is in, in speed order like the leads' (two weather
+// setters: the slower one's weather stays). Earlier requests run each
+// replacement's entry abilities at once, as before.
 bool battle_replace(Battle *b, Position p, uint8_t index, EventLog *log) {
     if (index >= BATTLE_MAX_PER_SIDE || !(battle_replacement_mask(b, p) & (1u << index))) return false;
     log->count = 0;
-    send_out(b, p, index, log);
+    if (!bc_weather_rules(b)) {
+        send_out(b, p, index, log);
+        return true;
+    }
+    place(b, p, index, log);
+    b->entry_pending[p.side] |= (uint8_t)(1u << p.slot);
+    if (battle_pending_replacement(b, NULL)) return true;
+    const uint8_t pending[2] = {b->entry_pending[0], b->entry_pending[1]};
+    b->entry_pending[0] = b->entry_pending[1] = 0;
+    entries_by_speed(b, pending, log);
     return true;
 }
 
@@ -607,15 +670,28 @@ bool bc_sure_hit(const Battle *b, Position user, const BattleMove *move) {
            bc_has_type(battle_at(b, user), b->request->conditions.poison_type);
 }
 
+// V15 accuracy stages use the game's ratio table (hundredths, stage -6..+6),
+// which differs from 3 / (3 + n) at -4 and -5.
+static unsigned accuracy_stage(unsigned accuracy, int stage) {
+    static const uint16_t ratio[13] = {33, 36, 43, 50, 60, 75, 100, 133, 166, 200, 233, 266, 300};
+    if (stage < -6) stage = -6;
+    if (stage > 6) stage = 6;
+    return accuracy * ratio[stage + 6] / 100u;
+}
+
 bool bc_missed(Battle *b, Position user, Position target, const BattleMove *move) {
     if (!move->accuracy) return false;
     unsigned accuracy = move->accuracy;
     if (bc_conditions_enabled(b)) {
         const Battler *a = battle_at(b, user), *d = battle_at(b, target);
         if (bc_sure_hit(b, user, move) || bc_ability_sure_hit(b, user, target)) return false;
+        // V15: a weather rule of the move replaces its accuracy before the stages (0: never misses).
+        if (bc_weather_accuracy(b, move, &accuracy) && !accuracy) return false;
         const int evasion = bc_ability_ignores_evasion(b, user) ? 0 : d->stat_stages[BSTAT_EVA];
-        accuracy = bc_stage_scale(accuracy, a->stat_stages[BSTAT_ACC] - evasion, 3);
+        const int stage = a->stat_stages[BSTAT_ACC] - evasion;
+        accuracy = bc_weather_rules(b) ? accuracy_stage(accuracy, stage) : bc_stage_scale(accuracy, stage, 3);
         accuracy = bc_ability_accuracy(b, user, accuracy);
+        accuracy = bc_modify_accuracy(b, a, move, d, accuracy);  // V15 records (Sand Veil)
     }
     return bc_next_random(b) % 100u >= accuracy;
 }
@@ -804,6 +880,8 @@ static void resolve_end_of_turn(Battle *b, EventLog *log) {
         }
     }
 
+    // V15: the weather first (countdown, then each Pokemon's weather residual).
+    bc_weather_end_turn(b, order, count, log);
     // Abilities that cure a status (Shed Skin) come before the residual damage.
     for (unsigned i = 0; i < count; ++i) bc_ability_end_turn_cure(b, order[i], log);
     // Each effect group processes eligible battlers in speed order. Replacement
@@ -898,30 +976,16 @@ bool battle_resume_pivot(Battle *b, uint8_t index, EventLog *log) {
 
 void battle_begin(Battle *b, EventLog *log) {
     log->count = 0;
-    if (!bc_abilities_enabled(b)) return;
+    if (!bc_abilities_enabled(b)) {
+        bc_weather_begin(b, log);
+        return;
+    }
     bc_ability_begin_battle(b, log);
+    // V15: the battle-start weather of the rules, before the entry abilities.
+    bc_weather_begin(b, log);
     // Leads' entry abilities in speed order; a tie is decided by a draw, as in turn order.
-    Position order[BC_MAX_ACTIONS];
-    uint32_t tie[BC_MAX_ACTIONS];
-    unsigned count = 0;
-    for (uint8_t side = 0; side < 2; ++side)
-        for (uint8_t slot = 0; slot < b->sides[side].active_count; ++slot) {
-            const Position p = {side, slot};
-            const Battler *mon = battle_at(b, p);
-            if (!mon || mon->fainted) continue;
-            const uint32_t t = bc_next_random(b);
-            const unsigned s = speed(b, mon);
-            unsigned j = count++;
-            for (; j > 0; --j) {
-                const unsigned os = speed(b, battle_at(b, order[j - 1]));
-                if (s < os || (s == os && t <= tie[j - 1])) break;
-                order[j] = order[j - 1];
-                tie[j] = tie[j - 1];
-            }
-            order[j] = p;
-            tie[j] = t;
-        }
-    for (unsigned i = 0; i < count; ++i) bc_ability_on_entry(b, order[i], log);
+    const uint8_t all[2] = {0xff, 0xff};
+    entries_by_speed(b, all, log);
 }
 
 void battle_run_turn(Battle *b, const Action *in, unsigned count, EventLog *log) {

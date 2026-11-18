@@ -73,7 +73,7 @@ void bc_translate_legacy_effects(BattleMove *m) {
 }
 
 bool bc_effects_supported(const BattleRequest *r, const BattleMove *m) {
-    if (!battle_move_effects_valid(m)) return false;
+    if (!battle_move_effects_valid_for(m, r->version)) return false;
     const bool v9 = r->version >= BATTLE_REQUEST_VERSION_VOLATILES;
     if (!v9 && (m->move_flags & ~BMF_V8_MASK)) return false;
     const uint8_t target = m->target & BTARGET_CLASS_MASK;
@@ -100,6 +100,12 @@ bool bc_effects_supported(const BattleRequest *r, const BattleMove *m) {
         case BEFF_CHARGE:
             // The charging turn keeps one chosen target.
             if (target != BTARGET_SINGLE) return false;
+            break;
+        case BEFF_WEATHER:  // V15: a field move, used on no Pokemon (the user stands for the field)
+            if (target != BTARGET_SELF) return false;
+            break;
+        case BEFF_WEATHER_TYPE:
+            if (e->arg2 >= r->type_count) return false;
             break;
         default:
             break;
@@ -248,7 +254,8 @@ static bool apply_status(MoveContext *c, const BattleEffect *e, Position target)
     const BattleConditionRules *rules = &c->b->request->conditions;
     const uint8_t kind = e->arg0;
     if (mon->status || bc_immune_to_status(rules, mon, kind) ||
-        ((e->flags & BEFL_TYPE_CHART) && !bc_effectiveness(c->b, battle_at(c->b, c->user), c->move->type, mon)))
+        ((e->flags & BEFL_TYPE_CHART) && !bc_effectiveness(c->b, battle_at(c->b, c->user), c->move->type, mon)) ||
+        ((kind == BST_FREEZE || kind == BST_FROSTBITE) && bc_weather_prevents_freeze(c->b)))
         return false;
     if (blocked(c, e, target, bc_ability_status_immunity(c->b, target, kind))) return !e->chance;
     bc_set_status(c->b, c->user, target, kind, c->id, c->log);
@@ -281,7 +288,15 @@ static void fail(MoveContext *c, Position target) {
 
 static bool apply_heal(MoveContext *c, const BattleEffect *e, Position target) {
     const Battler *mon = battle_at(c->b, target);
-    if (!restore(c, target, (unsigned)mon->max_hp * e->arg0 / e->arg2, EV_HEAL)) fail(c, target);
+    unsigned num = e->arg0, den = e->arg2;
+    bc_weather_heal_fraction(c->b, c->move, &num, &den);  // V15 (Moonlight in sun)
+    if (!restore(c, target, (unsigned)mon->max_hp * num / den, EV_HEAL)) fail(c, target);
+    return true;  // a failure message is the result
+}
+
+// V15: the shared weather change; the same weather again (or a locked one) fails.
+static bool apply_weather(MoveContext *c, const BattleEffect *e) {
+    if (bc_weather_set(c->b, c->user, FSRC_MOVE, e->arg0, e->arg2, c->log) != WEATHER_SET) fail(c, c->user);
     return true;  // a failure message is the result
 }
 
@@ -335,7 +350,8 @@ static bool apply(MoveContext *c, const BattleEffect *e, Position target) {
     case BEFF_CONFUSE: return apply_confuse(c, e, who);
     case BEFF_FLINCH: return apply_flinch(c, e, who);
     case BEFF_SUBSTITUTE: return apply_substitute(c, who);
-    default: return false;
+    case BEFF_WEATHER: return apply_weather(c, e);
+    default: return false;  // passive kinds (modifiers, weather rules) act elsewhere
     }
 }
 
@@ -388,6 +404,7 @@ static bool is_secondary(const BattleEffect *e) {
     switch (e->kind) {
     case BEFF_DAMAGE: case BEFF_DRAIN: case BEFF_RECOIL: case BEFF_RECHARGE:
     case BEFF_CHARGE: case BEFF_PIVOT: case BEFF_FORCE_OUT: case BEFF_MODIFIER:
+    case BEFF_WEATHER_ACCURACY: case BEFF_WEATHER_TYPE: case BEFF_WEATHER_HEAL:
         return false;
     default:
         return true;
@@ -603,6 +620,15 @@ bool bc_struggle_strike(Battle *b, Position user, Position target, const BattleM
 bool bc_execute_move(Battle *b, Position user, uint8_t slot, Position selected, EventLog *log) {
     Battler *a = bc_mutable_at(b, user);
     const BattleMove *m = &a->moves[slot];
+    // V15: a move whose type follows the weather (Weather Ball) is that type for
+    // the whole use: type chart, same-type bonus, abilities and modifiers.
+    BattleMove typed;
+    const uint8_t type = bc_weather_move_type(b, m);
+    if (type != m->type) {
+        typed = *m;
+        typed.type = type;
+        m = &typed;
+    }
     const uint16_t id = a->move_ids[slot];
     const uint8_t foe = 1 - user.side;
     const BattleEffect *charge = find_effect(m, BEFF_CHARGE);
@@ -627,7 +653,9 @@ bool bc_execute_move(Battle *b, Position user, uint8_t slot, Position selected, 
                 if (count++ == 0) first = (Position){side, s};
     if (!releasing) --a->pp[slot];
     bc_emit(log, (BattleEvent){.kind = EV_MOVE_USED, .user = user, .target = first, .move_id = id});
-    if (charge && !releasing) {  // first turn: charge (and maybe leave the field)
+    // First turn: charge (and maybe leave the field), unless the weather lets the
+    // move act at once (V15: Solar Beam in sun).
+    if (charge && !releasing && !bc_weather_skips_charge(b, charge)) {
         a->vol.charge_slot = slot;
         a->vol.charge_target = first;
         a->vol.semi_invulnerable = charge->arg0;

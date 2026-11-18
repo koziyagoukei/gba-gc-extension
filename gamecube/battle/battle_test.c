@@ -3900,7 +3900,9 @@ static uint16_t dmg_at(Battle *b, const BattleMove *m, unsigned random_percent) 
 }
 static uint16_t dmg(Battle *b, const BattleMove *m) { return dmg_at(b, m, 100); }
 
-static bool mod_ok(BattleModifier m, bool ability) { return battle_modifier_valid(&m, NTYPES, ability); }
+static bool mod_ok(BattleModifier m, bool ability) {
+    return battle_modifier_valid(&m, NTYPES, ability ? BMSRC_ABILITY : BMSRC_MOVE, BATTLE_REQUEST_VERSION_FIXED_POINT);
+}
 
 static void test_v13_validation(void) {
     // Valid records.
@@ -3909,7 +3911,7 @@ static void test_v13_validation(void) {
     assert(mod_ok(modr(ST(BMOD_DEFENSE, BCAT_SPECIAL) | BMODF_DEFENDER, 255, BPRED_MOVE_TYPE, T_GHOST, 0, 0), true));
     // Stage, category, reserved bits, percent.
     assert(!mod_ok(modr(BMOD_NONE, 100, 0, 0, 0, 0), true));
-    assert(!mod_ok(modr(BMOD_COUNT, 100, 0, 0, 0, 0), true) && !mod_ok(modr(7, 100, 0, 0, 0, 0), true));
+    assert(!mod_ok(modr(BMOD_V14_COUNT, 100, 0, 0, 0, 0), true) && !mod_ok(modr(7, 100, 0, 0, 0, 0), true));
     assert(!mod_ok(modr(ST(BMOD_POWER, 3), 100, 0, 0, 0, 0), true));
     assert(!mod_ok(modr(BMOD_POWER | 0x20, 100, 0, 0, 0, 0), true) && !mod_ok(modr(BMOD_POWER | 0x40, 100, 0, 0, 0, 0), true));
     assert(!mod_ok(modr(BMOD_POWER, 0, 0, 0, 0, 0), true));
@@ -3919,7 +3921,7 @@ static void test_v13_validation(void) {
     assert(!mod_ok(modr(BMOD_POWER, 150, BPRED_MOVE_TYPE, T_FIRE, 0, 0), false));
     assert(!mod_ok(modr(BMOD_POWER, 150, BPRED_POWER_AT_MOST, 60, 0, 0), false));
     // Predicates: unknown kinds, reserved bit, arguments, packing.
-    assert(!mod_ok(modr(BMOD_POWER, 150, BPRED_COUNT, 1, 0, 0), true));
+    assert(!mod_ok(modr(BMOD_POWER, 150, BPRED_V14_COUNT, 1, 0, 0), true));
     assert(!mod_ok(modr(BMOD_POWER, 150, 0x3f, 1, 0, 0), true));
     assert(!mod_ok(modr(BMOD_POWER, 150, BPRED_STATUS | 0x40, ANY_STATUS, 0, 0), true));
     assert(!mod_ok(modr(BMOD_POWER, 150, BPRED_HP_AT_MOST, 1, 0, 0), true));
@@ -4068,9 +4070,11 @@ static void test_v13_largest_request(void) {
     const struct { uint8_t format; unsigned per_side; } cases[] = {
         {BATTLE_FORMAT_TRIPLE, 3}, {BATTLE_FORMAT_SINGLE, 6}, {BATTLE_FORMAT_DOUBLE, 6}};
     for (unsigned c = 0; c < 3; ++c)
-        for (uint8_t v = BATTLE_REQUEST_VERSION_ABILITY_HOOKS; v <= BATTLE_REQUEST_VERSION_LATEST; ++v) {  // V12..V14
+        for (uint8_t v = BATTLE_REQUEST_VERSION_ABILITY_HOOKS; v <= BATTLE_REQUEST_VERSION_LATEST; ++v) {  // V12..V15
             build_largest(&r, cases[c].format, cases[c].per_side, v);
-            const uint32_t max = BATTLE_REQUEST_MAX_BYTES(2 * cases[c].per_side, NTYPES);
+            // The bound covers every version; requests before V15 have no field rules.
+            const uint32_t max = BATTLE_REQUEST_MAX_BYTES(2 * cases[c].per_side, NTYPES) -
+                                 (v < BATTLE_REQUEST_VERSION_WEATHER ? BATTLE_FIELD_RULE_BYTES : 0);
             assert(battle_request_size(&r) == max);
             assert(battle_request_encode(&r, bytes, max) == max);
             assert(battle_request_decode(bytes, max, &d));
@@ -4079,8 +4083,10 @@ static void test_v13_largest_request(void) {
             assert(battle_request_encode(&r, bytes, max - 1) == 0);
             assert(bytes[0] == 0xee);  // nothing written when it does not fit
         }
-    // The Frontier case: six Pokemon in all and its 21 types (the M4-A2 buffer size).
-    assert(BATTLE_REQUEST_MAX_BYTES(6, 21) == 2789);
+    // The Frontier case: six Pokemon in all and its 21 types (the M4-A2 buffer size
+    // was 2789; V15 adds the 88-byte field rules).
+    assert(BATTLE_FIELD_RULE_BYTES == 88);
+    assert(BATTLE_REQUEST_MAX_BYTES(6, 21) == 2789 + 88);
 }
 
 static void test_v13_hex_and_custom(void) {
@@ -4842,6 +4848,968 @@ static void test_v14_expansion_reference(void) {
     printf("  ref: V13 and V14 differ in %u of %u values\n", changed, (unsigned)(3 * sizeof cases / sizeof *cases));
 }
 
+// ------------------------------------------------------------- V15 weather (docs/weather.md)
+//
+// The world of the reference tests (R_* types) with the field rules the
+// Frontier exporter sends for this Expansion build (Gen 9): sandstorm and
+// hail 1/16 with their immune types, sun/rain x1.5 / x0.5 at the weather
+// step, the sandstorm Rock Sp. Def and the snow Ice Defense boosts.
+
+#define W_SUN BWEATHER_BIT(BWEATHER_SUN)
+#define W_RAIN BWEATHER_BIT(BWEATHER_RAIN)
+#define W_SAND BWEATHER_BIT(BWEATHER_SANDSTORM)
+#define W_HAIL BWEATHER_BIT(BWEATHER_HAIL)
+#define W_SNOW BWEATHER_BIT(BWEATHER_SNOW)
+#define W_ICY (W_HAIL | W_SNOW)
+
+static void frontier_field(BattleFieldRules *f) {
+    memset(f, 0, sizeof *f);
+    for (unsigned k = 0; k < BWEATHER_KINDS; ++k)
+        memset(f->weather[k].immune_types, BABIL_NO_TYPE, sizeof f->weather[k].immune_types);
+    f->weather[BWEATHER_SUN - 1].flags = BWKF_NO_FREEZE;
+    f->weather[BWEATHER_SANDSTORM - 1] = (BattleWeatherKindRules){16, BWKF_UNDERGROUND_SAFE, {R_ROCK, R_GROUND, R_STEEL}};
+    f->weather[BWEATHER_HAIL - 1] = (BattleWeatherKindRules){16, BWKF_UNDERGROUND_SAFE,
+                                                              {R_ICE, BABIL_NO_TYPE, BABIL_NO_TYPE}};
+    const BattleModifier records[] = {
+        modr(BMOD_WEATHER, 150, BPRED_WEATHER, W_SUN, BPRED_MOVE_TYPE, R_FIRE),
+        modr(BMOD_WEATHER, 50, BPRED_WEATHER, W_SUN, BPRED_MOVE_TYPE, R_WATER),
+        modr(BMOD_WEATHER, 150, BPRED_WEATHER, W_RAIN, BPRED_MOVE_TYPE, R_WATER),
+        modr(BMOD_WEATHER, 50, BPRED_WEATHER, W_RAIN, BPRED_MOVE_TYPE, R_FIRE),
+        modr(ST(BMOD_DEFENSE, BCAT_SPECIAL), 150, BPRED_WEATHER, W_SAND, BPRED_HAS_TYPE | BPRED_DEFENDER, R_ROCK),
+        modr(ST(BMOD_DEFENSE, BCAT_PHYSICAL), 150, BPRED_WEATHER, W_SNOW, BPRED_HAS_TYPE | BPRED_DEFENDER, R_ICE),
+    };
+    f->modifier_count = sizeof records / sizeof *records;
+    for (unsigned i = 0; i < f->modifier_count; ++i) f->modifiers[i] = records[i];
+}
+
+static void make_weather(BattleRequest *r, uint8_t format) {
+    make_mods(r, format);
+    r->version = BATTLE_REQUEST_VERSION_WEATHER;
+    ref_chart(r);
+    frontier_field(&r->field);
+}
+
+// The abilities as the Frontier exporter resolves them (ids are diagnostic only).
+#define W_HOOK(kind, arg0, arg1, arg2, flags) hk(kind, arg0, arg1, arg2, 0, 0, 0, flags)
+#define W_SETTER(id, kind) HOOKS(id, W_HOOK(BABIL_ENTRY_WEATHER, kind, 0, 5, 0))
+#define W_DRIZZLE W_SETTER(2, BWEATHER_RAIN)
+#define W_DROUGHT W_SETTER(70, BWEATHER_SUN)
+#define W_SAND_STREAM W_SETTER(45, BWEATHER_SANDSTORM)
+#define W_SNOW_WARNING W_SETTER(117, BWEATHER_SNOW)
+#define W_CLOUD_NINE HOOKS(13, W_HOOK(BABIL_WEATHER_SUPPRESS, 0, 0, 0, 0))
+#define W_SWIFT_SWIM MODS(33, modr(BMOD_SPEED, 200, BPRED_WEATHER, W_RAIN, 0, 0))
+#define W_SAND_VEIL HOOKS(8, W_HOOK(BABIL_WEATHER_IMMUNE, W_SAND, 0, 0, 0), \
+                          mod_hook(modr(ST(BMOD_ACCURACY, 0) | BMODF_DEFENDER, 80, BPRED_WEATHER, W_SAND, 0, 0)))
+#define W_RAIN_DISH HOOKS(44, W_HOOK(BABIL_WEATHER_RESIDUAL, W_RAIN, 1, 16, 0))
+#define W_ICE_BODY HOOKS(115, W_HOOK(BABIL_WEATHER_RESIDUAL, W_ICY, 1, 16, BAHF_NOT_UNDERGROUND))
+#define W_DRY_SKIN HOOKS(87, hk(BABIL_TYPE_ABSORB, R_WATER, 0, 0, 0, 0, 25, 0), \
+                         mod_hook(modr(ST(BMOD_POWER, 0) | BMODF_DEFENDER, 125, BPRED_MOVE_TYPE, R_FIRE, 0, 0)), \
+                         W_HOOK(BABIL_WEATHER_RESIDUAL, W_RAIN, 1, 8, 0), W_HOOK(BABIL_WEATHER_RESIDUAL, W_SUN, -1, 8, 0))
+#define W_SOLAR_POWER HOOKS(94, mod_hook(modr(ST(BMOD_ATTACK, BCAT_SPECIAL), 150, BPRED_WEATHER, W_SUN, 0, 0)), \
+                            W_HOOK(BABIL_WEATHER_RESIDUAL, W_SUN, -1, 8, 0))
+#define W_SAND_FORCE HOOKS(159, W_HOOK(BABIL_WEATHER_IMMUNE, W_SAND, 0, 0, 0), \
+                           mod_hook(modr(BMOD_POWER, 130, BPRED_WEATHER, W_SAND, BPRED_MOVE_TYPE, R_ROCK)), \
+                           mod_hook(modr(BMOD_POWER, 130, BPRED_WEATHER, W_SAND, BPRED_MOVE_TYPE, R_GROUND)), \
+                           mod_hook(modr(BMOD_POWER, 130, BPRED_WEATHER, W_SAND, BPRED_MOVE_TYPE, R_STEEL)))
+#define W_OVERCOAT HOOKS(142, W_HOOK(BABIL_WEATHER_IMMUNE, W_SAND | W_HAIL, 0, 0, 0))
+
+static BattleMove weather_move(uint8_t kind, uint8_t turns) {
+    BattleMove m = status_move(BTARGET_SELF, 0);
+    push(&m, fx(BEFF_WEATHER, BWHO_USER, 0, kind, 0, turns));
+    return m;
+}
+
+static BattleMove w_special(uint16_t power, uint8_t type, uint8_t accuracy) {
+    BattleMove m = damaging(power, type, accuracy);
+    m.category = BCAT_SPECIAL;
+    return m;
+}
+
+// Thunder / Hurricane: never misses in rain, 50% in sun.
+static BattleMove w_thunder(void) {
+    BattleMove m = w_special(110, R_FLYING, 70);
+    push(&m, fx(BEFF_WEATHER_ACCURACY, 0, 0, W_RAIN, 0, 0));
+    push(&m, fx(BEFF_WEATHER_ACCURACY, 0, 0, W_SUN, 0, 50));
+    return m;
+}
+
+// Solar Beam: no charging turn in sun, half power in rain, sandstorm, hail, snow.
+static BattleMove w_solar_beam(void) {
+    BattleMove m = charge_move(120, BSEMI_NONE);
+    m.category = BCAT_SPECIAL;
+    m.effects[0].arg2 = W_SUN;
+    push(&m, mod_effect(modr(BMOD_POWER, 50, BPRED_WEATHER, W_RAIN | W_SAND | W_ICY, 0, 0)));
+    return m;
+}
+
+// Weather Ball: its type follows the weather, base power x2 in any weather.
+static BattleMove w_weather_ball(void) {
+    BattleMove m = w_special(50, R_NORMAL, 100);
+    push(&m, fx(BEFF_WEATHER_TYPE, 0, 0, W_SUN, 0, R_FIRE));
+    push(&m, fx(BEFF_WEATHER_TYPE, 0, 0, W_RAIN, 0, R_WATER));
+    push(&m, fx(BEFF_WEATHER_TYPE, 0, 0, W_SAND, 0, R_ROCK));
+    push(&m, fx(BEFF_WEATHER_TYPE, 0, 0, W_ICY, 0, R_ICE));
+    push(&m, mod_effect(modr(BMOD_BASE_POWER, 200, BPRED_WEATHER, BWEATHER_ALL, 0, 0)));
+    return m;
+}
+
+// Moonlight: 1/2, 2/3 (20/30) in sun, 1/4 in any other weather.
+static BattleMove w_moonlight(void) {
+    BattleMove m = status_move(BTARGET_SELF, 0);
+    push(&m, fx(BEFF_HEAL, BWHO_USER, 0, 1, 0, 2));
+    push(&m, fx(BEFF_WEATHER_HEAL, BWHO_USER, 0, W_SUN, 20, 30));
+    push(&m, fx(BEFF_WEATHER_HEAL, BWHO_USER, 0, W_RAIN | W_SAND | W_ICY, 1, 4));
+    return m;
+}
+
+static const BattleEvent *find_event(const EventLog *log, EventKind kind, unsigned nth) {
+    for (unsigned i = 0; i < log->count; ++i)
+        if (log->events[i].kind == kind && nth-- == 0) return &log->events[i];
+    return NULL;
+}
+
+static int event_index(const EventLog *log, EventKind kind, unsigned nth) {
+    const BattleEvent *e = find_event(log, kind, nth);
+    return e ? (int)(e - log->events) : -1;
+}
+
+static void test_v15_wire(void) {
+    static BattleRequest r, d;
+    static uint8_t bytes[4096];
+    make_weather(&r, BATTLE_FORMAT_DOUBLE);
+    give(&r.player[0], W_DRIZZLE);
+    give(&r.player[1], W_SAND_VEIL);
+    give(&r.opponent[0], W_DRY_SKIN);
+    give(&r.opponent[1], W_SWIFT_SWIM);
+    set_move(&r.player[0], 1, 240, weather_move(BWEATHER_RAIN, 5), 5);
+    set_move(&r.player[1], 1, 87, w_thunder(), 10);
+    set_move(&r.opponent[0], 1, 76, w_solar_beam(), 10);
+    set_move(&r.opponent[1], 1, 311, w_weather_ball(), 10);
+    set_move(&r.opponent[1], 2, 236, w_moonlight(), 5);
+    r.field.start_weather = BWEATHER_HAIL;
+    r.field.start_turns = 3;
+    r.rules |= RULE_STRICT_MOVES;
+    uint32_t n = battle_request_encode(&r, bytes, sizeof bytes);
+    assert(n && n == battle_request_size(&r));
+    assert(battle_request_decode(bytes, n, &d));
+    assert(memcmp(&d.field, &r.field, sizeof r.field) == 0 && d.rules == r.rules);
+    assert(d.opponent[1].mon.moves[1].effect_count == 6 && d.opponent[0].mon.moves[1].effects[0].arg2 == W_SUN);
+    // The field rules close the request: V14 size + 88.
+    BattleRequest v14 = r;
+    v14.version = BATTLE_REQUEST_VERSION_FIXED_POINT;
+    v14.rules &= (uint16_t)~RULE_STRICT_MOVES;
+    for (unsigned i = 0; i < 2; ++i) give(&v14.player[i], (BattleAbility){.cls = BACLASS_NONE, .source = 1});
+    for (unsigned i = 0; i < 2; ++i) give(&v14.opponent[i], (BattleAbility){.cls = BACLASS_NONE, .source = 1});
+    v14.player[0].mon.moves[1].unsupported = v14.player[1].mon.moves[1].unsupported = UNSUP_EFFECT;
+    v14.opponent[0].mon.moves[1].unsupported = v14.opponent[1].mon.moves[1].unsupported = UNSUP_EFFECT;
+    v14.opponent[1].mon.moves[2].unsupported = UNSUP_EFFECT;
+    BattleRequest same = v14;
+    same.version = BATTLE_REQUEST_VERSION_WEATHER;
+    assert(battle_request_size(&same) == battle_request_size(&v14) + BATTLE_FIELD_RULE_BYTES);
+    // No V15 content can be written into, or read from, an earlier request.
+    BattleRequest old = r;
+    old.version = BATTLE_REQUEST_VERSION_FIXED_POINT;
+    old.rules &= (uint16_t)~RULE_STRICT_MOVES;
+    assert(battle_request_encode(&old, bytes, sizeof bytes) == 0);  // weather hooks and kinds
+    n = battle_request_encode(&r, bytes, sizeof bytes);
+    bytes[0] = BATTLE_REQUEST_VERSION_FIXED_POINT;
+    assert(!battle_request_decode(bytes, n, &d));
+    // V15 kinds are refused by the V14 checks; accepted by V15's.
+    assert(!battle_move_effects_valid_for(&r.player[0].mon.moves[1], BATTLE_REQUEST_VERSION_FIXED_POINT));
+    assert(battle_move_effects_valid_for(&r.player[0].mon.moves[1], BATTLE_REQUEST_VERSION_WEATHER));
+    const BattleMove v15_moves[] = {w_thunder(), w_solar_beam(), w_weather_ball(), w_moonlight()};
+    for (unsigned i = 0; i < 4; ++i) {
+        assert(battle_move_effects_valid_for(&v15_moves[i], BATTLE_REQUEST_VERSION_WEATHER));
+        assert(!battle_move_effects_valid_for(&v15_moves[i], BATTLE_REQUEST_VERSION_FIXED_POINT));
+    }
+    const BattleAbility v15_abilities[] = {W_DRIZZLE, W_CLOUD_NINE, W_SWIFT_SWIM, W_SAND_VEIL, W_ICE_BODY, W_DRY_SKIN,
+                                           W_SOLAR_POWER, W_SAND_FORCE, W_OVERCOAT};
+    for (unsigned i = 0; i < sizeof v15_abilities / sizeof *v15_abilities; ++i) {
+        assert(battle_ability_valid(&v15_abilities[i], R_COUNT, BATTLE_REQUEST_VERSION_WEATHER));
+        assert(!battle_ability_valid(&v15_abilities[i], R_COUNT, BATTLE_REQUEST_VERSION_FIXED_POINT));
+    }
+    // The new stages and predicates exist only from V15, and only where they belong.
+    const BattleModifier speed = modr(BMOD_SPEED, 200, BPRED_WEATHER, W_RAIN, 0, 0);
+    assert(battle_modifier_valid(&speed, R_COUNT, BMSRC_ABILITY, BATTLE_REQUEST_VERSION_WEATHER));
+    assert(!battle_modifier_valid(&speed, R_COUNT, BMSRC_ABILITY, BATTLE_REQUEST_VERSION_FIXED_POINT));
+    assert(!battle_modifier_valid(&speed, R_COUNT, BMSRC_MOVE, BATTLE_REQUEST_VERSION_WEATHER));
+    assert(!battle_modifier_valid(&speed, R_COUNT, BMSRC_FIELD, BATTLE_REQUEST_VERSION_WEATHER));
+    const BattleModifier bad_mods[] = {
+        modr(BMOD_SPEED | BMODF_DEFENDER, 200, 0, 0, 0, 0),                       // no defender at SPEED
+        modr(ST(BMOD_SPEED, BCAT_PHYSICAL), 200, 0, 0, 0, 0),                     // no category at SPEED
+        modr(BMOD_SPEED, 200, BPRED_MOVE_TYPE, R_FIRE, 0, 0),                     // no move at SPEED
+        modr(BMOD_SPEED, 200, BPRED_HP_AT_MOST | BPRED_DEFENDER, 2, 0, 0),        // only the holder
+        modr(BMOD_POWER, 130, BPRED_WEATHER, 0, 0, 0),                            // empty weather mask
+        modr(BMOD_POWER, 130, BPRED_WEATHER, (uint8_t)(BWEATHER_ALL + 1), 0, 0),  // unknown weather
+        modr(BMOD_POWER, 130, BPRED_WEATHER | BPRED_DEFENDER, W_RAIN, 0, 0),      // weather has no subject
+        modr(BMOD_POWER, 130, BPRED_HAS_TYPE, R_COUNT, 0, 0),                     // type out of range
+        modr(BMOD_POWER, 130, BPRED_COUNT, 0, 0, 0),                              // unknown predicate
+        modr(ST(BMOD_COUNT, 0), 100, 0, 0, 0, 0),                                 // unknown stage
+        modr(BMOD_WEATHER, 150, BPRED_WEATHER, W_SUN, 0, 0),                      // WEATHER: field only
+    };
+    for (unsigned i = 0; i < sizeof bad_mods / sizeof *bad_mods; ++i)
+        assert(!battle_modifier_valid(&bad_mods[i], R_COUNT, BMSRC_ABILITY, BATTLE_REQUEST_VERSION_WEATHER));
+    const BattleModifier field_ok = modr(BMOD_WEATHER, 150, BPRED_WEATHER, W_SUN, BPRED_MOVE_TYPE, R_FIRE);
+    BattleModifier field_bad = field_ok;
+    field_bad.stage |= BMODF_DEFENDER;
+    assert(battle_modifier_valid(&field_ok, R_COUNT, BMSRC_FIELD, BATTLE_REQUEST_VERSION_WEATHER));
+    assert(!battle_modifier_valid(&field_bad, R_COUNT, BMSRC_FIELD, BATTLE_REQUEST_VERSION_WEATHER));
+    assert(!battle_modifier_valid(&field_ok, R_COUNT, BMSRC_FIELD, BATTLE_REQUEST_VERSION_FIXED_POINT));
+    // Field records exist only from V15, whatever their stage.
+    const BattleModifier field_def = modr(ST(BMOD_DEFENSE, BCAT_SPECIAL), 150, BPRED_STATUS, ANY_STATUS, 0, 0);
+    assert(battle_modifier_valid(&field_def, R_COUNT, BMSRC_FIELD, BATTLE_REQUEST_VERSION_WEATHER));
+    assert(!battle_modifier_valid(&field_def, R_COUNT, BMSRC_FIELD, BATTLE_REQUEST_VERSION_FIXED_POINT));
+    const BattleModifier field_power = modr(BMOD_POWER, 130, 0, 0, 0, 0);  // terrain later (M4-T)
+    assert(!battle_modifier_valid(&field_power, R_COUNT, BMSRC_FIELD, BATTLE_REQUEST_VERSION_WEATHER));
+    // The stage byte: bit 5 is stage bit 3.
+    assert(battle_modifier_stage(ST(BMOD_ACCURACY, BCAT_SPECIAL)) == BMOD_ACCURACY &&
+           ST(BMOD_ACCURACY, 0) == ((BMOD_ACCURACY & 7u) | BMOD_STAGE_HIGH) &&
+           battle_modifier_stage(ST(BMOD_FINAL, BCAT_PHYSICAL)) == BMOD_FINAL);
+    // Malformed field rules.
+    const uint32_t base = n - BATTLE_FIELD_RULE_BYTES;
+    n = battle_request_encode(&r, bytes, sizeof bytes);
+    assert(battle_request_decode(bytes, n, &d));
+    const struct { unsigned at; uint8_t value; } bad[] = {
+        {0, 2}, {1, BWEATHER_COUNT}, {2, BWEATHER_MAX_TURNS + 1}, {3, BATTLE_MAX_FIELD_MODIFIERS + 1}, {3, 7},
+        {4, 1}, {5, 4}, {6, R_COUNT}, {29, 1}, {31, 1}, {32 + 2, 1},
+        {32 + 6 * BATTLE_MODIFIER_BODY_BYTES, BMOD_WEATHER},  // a record past the count
+        {32, BMOD_SPEED}, {32 + 3, BPRED_COUNT},
+    };
+    for (unsigned i = 0; i < sizeof bad / sizeof *bad; ++i) {
+        const uint8_t keep = bytes[base + bad[i].at];
+        bytes[base + bad[i].at] = bad[i].value;
+        assert(!battle_request_decode(bytes, n, &d));
+        bytes[base + bad[i].at] = keep;
+    }
+    assert(battle_request_decode(bytes, n, &d));
+    // A start weather needs a kind; no turns or lock without one.
+    BattleFieldRules f = r.field;
+    f.start_weather = BWEATHER_NONE;
+    assert(!battle_field_rules_valid(&f, R_COUNT));
+    f.start_turns = 0;
+    assert(battle_field_rules_valid(&f, R_COUNT));
+    f.flags = BFR_START_LOCKED;
+    assert(!battle_field_rules_valid(&f, R_COUNT));
+    // Effect and hook fields.
+    BattleMove m = weather_move(BWEATHER_SUN, 5);
+    m.effects[0].arg2 = BWEATHER_TURNS_KEEP;
+    assert(battle_move_effects_valid(&m));
+    m.effects[0].arg2 = 16;
+    assert(!battle_move_effects_valid(&m));
+    m = weather_move(BWEATHER_COUNT, 5);
+    assert(!battle_move_effects_valid(&m));
+    m = weather_move(BWEATHER_SUN, 5);
+    push(&m, fx(BEFF_STAT, BWHO_USER, 0, BSTAT_ATK, 1, 0));
+    assert(!battle_move_effects_valid(&m));  // a weather move stands alone
+    m = w_moonlight();
+    m.effects[1].arg1 = 31;                   // more than the denominator
+    assert(!battle_move_effects_valid(&m));
+    m = w_weather_ball();
+    m.effects[1].arg0 = 0;                    // no weather
+    assert(!battle_move_effects_valid(&m));
+    m = w_thunder();
+    m.effects[1].arg2 = 101;
+    assert(!battle_move_effects_valid(&m));
+    BattleAbilityHook h = W_HOOK(BABIL_WEATHER_RESIDUAL, W_RAIN, 2, 16, 0);
+    assert(!battle_ability_hook_valid(&h, R_COUNT, BATTLE_REQUEST_VERSION_WEATHER));
+    h = W_HOOK(BABIL_WEATHER_RESIDUAL, W_RAIN, -1, 1, 0);
+    assert(!battle_ability_hook_valid(&h, R_COUNT, BATTLE_REQUEST_VERSION_WEATHER));
+    h = W_HOOK(BABIL_WEATHER_IMMUNE, W_RAIN, 0, 0, BAHF_NOT_UNDERGROUND);
+    assert(!battle_ability_hook_valid(&h, R_COUNT, BATTLE_REQUEST_VERSION_WEATHER));
+    h = W_HOOK(BABIL_ENTRY_WEATHER, BWEATHER_SNOW, 0, BWEATHER_TURNS_KEEP, BAHF_BREAKABLE);
+    assert(battle_ability_hook_valid(&h, R_COUNT, BATTLE_REQUEST_VERSION_WEATHER));
+    h.arg0 = 0;
+    assert(!battle_ability_hook_valid(&h, R_COUNT, BATTLE_REQUEST_VERSION_WEATHER));
+    // The V15 rule bit is malformed in V14.
+    make_weather(&old, BATTLE_FORMAT_SINGLE);
+    old.version = BATTLE_REQUEST_VERSION_FIXED_POINT;
+    old.rules |= RULE_STRICT_MOVES;
+    assert(battle_request_encode(&old, bytes, sizeof bytes) == 0);
+    old.rules &= (uint16_t)~RULE_STRICT_MOVES;
+    n = battle_request_encode(&old, bytes, sizeof bytes);
+    assert(n);
+    msg_put16(bytes + 6, (uint16_t)(old.rules | RULE_STRICT_MOVES));
+    assert(!battle_request_decode(bytes, n, &d));
+    // The kind names.
+    assert(!strcmp(battle_effect_kind_name(BEFF_WEATHER_HEAL), "weather_heal") &&
+           !strcmp(battle_ability_kind_name(BABIL_WEATHER_RESIDUAL), "weather_residual"));
+}
+
+// Start, same weather again, replacement and the end after its turns.
+static void test_v15_set_and_end(void) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    make_weather(&r, BATTLE_FORMAT_SINGLE);
+    r.player[0].record.speed = 50;
+    r.opponent[0].record.speed = 90;
+    r.player[0].mon.moves[0].power = r.opponent[0].mon.moves[0].power = 1;
+    set_move(&r.player[0], 1, 240, weather_move(BWEATHER_RAIN, 5), 10);
+    set_move(&r.opponent[0], 1, 241, weather_move(BWEATHER_SUN, 5), 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(!log.count && battle_weather(&b) == BWEATHER_NONE);
+    Action rain = move(0, 0, 0), sun = move(1, 0, 0), hit_p = move(0, 0, 0), hit_f = move(1, 0, 0);
+    rain.move_slot = 1;
+    sun.move_slot = 1;
+    run1(&b, rain, hit_f, &log);
+    const BattleEvent *e = find_event(&log, EV_WEATHER_START, 0);
+    assert(e && e->condition == BWEATHER_RAIN && e->amount == 5 && e->user.side == 0 && e->user.slot == 0);
+    e = find_event(&log, EV_WEATHER_CONTINUE, 0);
+    assert(e && e->amount == 4 && battle_weather(&b) == BWEATHER_RAIN);
+    assert(battle_field_weather(&b)->source_kind == FSRC_MOVE);
+    // The same weather again fails and keeps the count.
+    run1(&b, rain, hit_f, &log);
+    assert(event_count(&log, EV_FAIL) == 1 && !find_event(&log, EV_WEATHER_START, 0));
+    assert(battle_field_weather(&b)->turns == 3);
+    // Another weather replaces it with a fresh count.
+    run1(&b, hit_p, sun, &log);
+    e = find_event(&log, EV_WEATHER_START, 0);
+    assert(e && e->condition == BWEATHER_SUN && e->user.side == 1 && battle_field_weather(&b)->turns == 4);
+    // Four more turn ends: the last one ends it before any weather effect.
+    for (unsigned t = 0; t < 3; ++t) {
+        run1(&b, hit_p, hit_f, &log);
+        assert(find_event(&log, EV_WEATHER_CONTINUE, 0) && battle_weather(&b) == BWEATHER_SUN);
+    }
+    run1(&b, hit_p, hit_f, &log);
+    e = find_event(&log, EV_WEATHER_END, 0);
+    assert(e && e->condition == BWEATHER_SUN && !find_event(&log, EV_WEATHER_CONTINUE, 0));
+    assert(battle_weather(&b) == BWEATHER_NONE && !battle_field_weather(&b)->kind);
+    // KEEP: the counter of the weather before stays (no weather before: no end).
+    set_move(&r.player[0], 1, 240, weather_move(BWEATHER_RAIN, BWEATHER_TURNS_KEEP), 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    run1(&b, rain, sun, &log);  // the faster foe's sun (5), then rain keeping its 5
+    assert(battle_weather(&b) == BWEATHER_RAIN && battle_field_weather(&b)->turns == 4);
+    // A permanent battle-start weather from the rules, before any entry ability.
+    r.field.start_weather = BWEATHER_SANDSTORM;
+    r.field.start_turns = 0;
+    give(&r.player[0], W_DRIZZLE);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(event_index(&log, EV_WEATHER_START, 0) < event_index(&log, EV_ABILITY, 0));
+    assert(log.events[event_index(&log, EV_WEATHER_START, 0)].user.slot == BATTLE_SLOT_NONE);
+    assert(battle_weather(&b) == BWEATHER_RAIN);  // Drizzle replaced it
+    // Locked (overworld, Gen 9): Drizzle shows the block, Rain Dance fails.
+    r.field.flags = BFR_START_LOCKED;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(event_count(&log, EV_ABILITY_BLOCK) == 1 && battle_weather(&b) == BWEATHER_SANDSTORM);
+    run1(&b, rain, hit_f, &log);
+    assert(event_count(&log, EV_FAIL) == 1 && battle_weather(&b) == BWEATHER_SANDSTORM);
+    assert(find_event(&log, EV_WEATHER_CONTINUE, 0)->amount == 0);  // no end
+}
+
+// Entry setters: speed order, the same weather, replacements together, switching back in.
+static void test_v15_entry(void) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    make_weather(&r, BATTLE_FORMAT_DOUBLE);
+    give(&r.player[0], W_DRIZZLE);
+    give(&r.opponent[0], W_DROUGHT);
+    r.player[0].record.speed = 100;
+    r.opponent[0].record.speed = 50;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    // Faster first: rain, then the slower Drought's sun stays.
+    assert(event_count(&log, EV_WEATHER_START) == 2 && find_event(&log, EV_WEATHER_START, 0)->condition == BWEATHER_RAIN);
+    assert(event_index(&log, EV_ABILITY, 0) < event_index(&log, EV_WEATHER_START, 0));
+    assert(battle_weather(&b) == BWEATHER_SUN && battle_field_weather(&b)->source_kind == FSRC_ABILITY);
+    r.player[0].record.speed = 40;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(battle_weather(&b) == BWEATHER_RAIN);
+    // The same weather twice: the second does nothing (no restart, no notice).
+    give(&r.opponent[0], W_DRIZZLE);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(event_count(&log, EV_WEATHER_START) == 1 && event_count(&log, EV_ABILITY) == 1);
+    // Replacements after a turn enter together (V15): entry abilities after the
+    // last one, in speed order. Each side's lead is down; reserves are setters.
+    give(&r.opponent[0], W_DROUGHT);
+    add_reserve(&r, 0);
+    add_reserve(&r, 1);
+    give(&r.player[2], W_SNOW_WARNING);
+    give(&r.opponent[2], W_SAND_STREAM);
+    r.player[2].record.speed = 30;   // slower: its snow stays
+    r.opponent[2].record.speed = 120;
+    for (unsigned v = 0; v < 2; ++v) {
+        r.version = v ? BATTLE_REQUEST_VERSION_FIXED_POINT : BATTLE_REQUEST_VERSION_WEATHER;
+        if (v) {  // V14 has no weather hooks: plain abilities, immediate entry (no draw)
+            give(&r.player[2], INTIMIDATE_ADJ);
+            give(&r.opponent[2], INTIMIDATE_ADJ);
+            give(&r.player[0], (BattleAbility){.cls = BACLASS_NONE, .source = 1});
+            give(&r.opponent[0], (BattleAbility){.cls = BACLASS_NONE, .source = 1});
+        }
+        assert(battle_init(&b, &r, 3) == BI_OK);
+        battle_begin(&b, &log);
+        for (uint8_t side = 0; side < 2; ++side) {
+            Battler *x = at_pos(&b, side, 0);
+            x->hp = 0;
+            x->fainted = true;
+            b.sides[side].active[0] = BATTLE_SLOT_NONE;
+        }
+        Position p;
+        assert(battle_pending_replacement(&b, &p) && p.side == 0);
+        assert(battle_replace(&b, p, 2, &log));
+        if (!v) {
+            assert(log.count == 1 && log.events[0].kind == EV_SEND_OUT);  // waits for the foe's
+        } else {
+            assert(event_count(&log, EV_ABILITY) == 1);                   // V14: at once
+        }
+        assert(battle_pending_replacement(&b, &p) && p.side == 1);
+        assert(battle_replace(&b, p, 2, &log));
+        if (!v) {
+            const BattleEvent *first = find_event(&log, EV_WEATHER_START, 0), *second = find_event(&log, EV_WEATHER_START, 1);
+            assert(first && second && first->condition == BWEATHER_SANDSTORM && second->condition == BWEATHER_SNOW);
+            assert(battle_weather(&b) == BWEATHER_SNOW);
+        }
+    }
+    // A Pokemon switched out and in again sets its weather again.
+    make_weather(&r, BATTLE_FORMAT_SINGLE);
+    add_reserve(&r, 0);
+    give(&r.player[0], W_DRIZZLE);
+    r.player[0].record.speed = 10;
+    set_move(&r.opponent[0], 1, 241, weather_move(BWEATHER_SUN, 5), 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    Action sun = move(1, 0, 0), out = {.kind = ACT_SWITCH, .user = {0, 0}, .reserve = 1};
+    sun.move_slot = 1;
+    run1(&b, out, sun, &log);
+    assert(battle_weather(&b) == BWEATHER_SUN);
+    Action back = {.kind = ACT_SWITCH, .user = {0, 0}, .reserve = 0};
+    run1(&b, back, move(1, 0, 0), &log);
+    assert(battle_weather(&b) == BWEATHER_RAIN && event_count(&log, EV_WEATHER_START) == 1);
+}
+
+// Cloud Nine / Air Lock: the weather stays and counts down without effect.
+static void test_v15_suppress(void) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    make_weather(&r, BATTLE_FORMAT_SINGLE);
+    add_reserve(&r, 0);
+    give(&r.player[0], W_CLOUD_NINE);
+    give(&r.opponent[0], W_SAND_STREAM);
+    r.opponent[0].mon.types[0] = R_NORMAL;  // not immune to its own sandstorm
+    r.player[0].record.speed = 100;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(event_count(&log, EV_ABILITY) == 2);  // the notice, then the setter
+    assert(battle_field_weather(&b)->kind == BWEATHER_SANDSTORM && battle_weather(&b) == BWEATHER_NONE);
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    assert(find_event(&log, EV_WEATHER_CONTINUE, 0)->amount == 4 && !event_count(&log, EV_WEATHER_DAMAGE));
+    // Cloud Nine leaves: the weather acts again at once.
+    Action out = {.kind = ACT_SWITCH, .user = {0, 0}, .reserve = 1};
+    run1(&b, out, move(1, 0, 0), &log);
+    assert(battle_weather(&b) == BWEATHER_SANDSTORM && event_count(&log, EV_WEATHER_DAMAGE) == 2);
+    // A fainted holder suppresses nothing.
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    Battler *holder = at_pos(&b, 0, 0);
+    holder->fainted = true;
+    assert(battle_weather(&b) == BWEATHER_SANDSTORM);
+    holder->fainted = false;
+    assert(battle_weather(&b) == BWEATHER_NONE);
+}
+
+// The weather damage step: after the spread factor, before the random factor.
+static uint16_t w_damage(const RefMon *atk, const RefMon *def, BattleMove move, unsigned flags, uint8_t weather,
+                         unsigned roll) {
+    static BattleRequest r;
+    static Battle b;
+    make_weather(&r, BATTLE_FORMAT_SINGLE);
+    ref_mon(&r.player[0], 0, atk);
+    set_move(&r.player[0], 0, 100, move, 10);
+    ref_mon(&r.opponent[0], 0x80, def);
+    set_move(&r.opponent[0], 0, 101, damaging(10, R_NORMAL, 100), 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    b.field.weather = (FieldEffect){.kind = weather, .turns = 5};
+    const Battler *a = battle_active(&b, 0);
+    BattleMove m = a->moves[0];
+    m.type = bc_weather_move_type(&b, &m);  // as bc_execute_move does
+    uint8_t eff;
+    return bc_calculate_damage(&b, a, &m, battle_active(&b, 1), roll, false, flags, &eff);
+}
+
+static void test_v15_damage(void) {
+    const RefMon pelipper = RMON(50, R_WATER, R_FLYING, 100, 999, 999, 65, 0, R_NO_ABILITY);
+    const RefMon snorlax = RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 30, 0, R_NO_ABILITY);
+    const BattleMove surf = ref_move(90, R_WATER, BCAT_SPECIAL), flamethrower = ref_move(90, R_FIRE, BCAT_SPECIAL);
+    // Base 41; rain x1.5 = 61.5 -> 61 (an exact half rounds down) before the
+    // roll, then STAB: 91 / 84 / 76. Applied after the roll the 93% hit would
+    // be 41 x0.93 = 38, x1.5 = 57, STAB 85.
+    assert(w_damage(&pelipper, &snorlax, surf, 0, BWEATHER_RAIN, 100) == 91);
+    assert(w_damage(&pelipper, &snorlax, surf, 0, BWEATHER_RAIN, 93) == 84);
+    assert(w_damage(&pelipper, &snorlax, surf, 0, BWEATHER_RAIN, 85) == 76);
+    assert(w_damage(&pelipper, &snorlax, surf, 0, BWEATHER_NONE, 100) == 61);
+    assert(w_damage(&pelipper, &snorlax, surf, 0, BWEATHER_SUN, 100) == 30);       // 41 x0.5 = 20.5 -> 20, x1.5
+    assert(w_damage(&pelipper, &snorlax, flamethrower, 0, BWEATHER_RAIN, 100) == 20);
+    assert(w_damage(&pelipper, &snorlax, flamethrower, 0, BWEATHER_SUN, 100) == 61);  // 41 x1.5 = 61.5 -> 61
+    // Other weathers and other types: no weather factor.
+    for (uint8_t w = BWEATHER_SANDSTORM; w <= BWEATHER_SNOW; ++w)
+        assert(w_damage(&pelipper, &snorlax, surf, 0, w, 100) == 61);
+    assert(w_damage(&pelipper, &snorlax, ref_move(90, R_NORMAL, BCAT_SPECIAL), 0, BWEATHER_RAIN, 100) == 41);
+    // Spread first: 41 x0.75 = 30.75 -> 31, x1.5 = 46.5 -> 46, then STAB 69.
+    assert(w_damage(&pelipper, &snorlax, surf, BCD_SPREAD, BWEATHER_RAIN, 100) == 69);
+    // Sandstorm: a Rock type's Sp. Def x1.5 (special moves only), in the defending stat's chain.
+    const RefMon golem = RMON(50, R_ROCK, R_GROUND, 100, 999, 999, 45, 0, R_NO_ABILITY);
+    const uint16_t plain = w_damage(&pelipper, &golem, surf, 0, BWEATHER_NONE, 100);
+    const uint16_t sand = w_damage(&pelipper, &golem, surf, 0, BWEATHER_SANDSTORM, 100);
+    assert(sand < plain && w_damage(&pelipper, &golem, ref_move(90, R_WATER, BCAT_PHYSICAL), 0, BWEATHER_SANDSTORM,
+                                    100) == w_damage(&pelipper, &golem, ref_move(90, R_WATER, BCAT_PHYSICAL), 0,
+                                                     BWEATHER_NONE, 100));
+    // Snow: an Ice type's Defense x1.5 (physical only); hail does not.
+    const RefMon glalie = RMON(50, R_ICE, R_ICE, 100, 999, 999, 50, 0, R_NO_ABILITY);
+    const BattleMove body_slam = ref_move(85, R_NORMAL, BCAT_PHYSICAL);
+    assert(w_damage(&snorlax, &glalie, body_slam, 0, BWEATHER_SNOW, 100) <
+           w_damage(&snorlax, &glalie, body_slam, 0, BWEATHER_HAIL, 100));
+    assert(w_damage(&snorlax, &glalie, ref_move(85, R_NORMAL, BCAT_SPECIAL), 0, BWEATHER_SNOW, 100) ==
+           w_damage(&snorlax, &glalie, ref_move(85, R_NORMAL, BCAT_SPECIAL), 0, BWEATHER_NONE, 100));
+    // Solar Beam: power x0.5 in rain (POWER chain); Weather Ball: Fire 100 in sun (and the sun boost).
+    assert(w_damage(&pelipper, &snorlax, w_solar_beam(), 0, BWEATHER_RAIN, 100) ==
+           w_damage(&pelipper, &snorlax, ref_move(60, R_NORMAL, BCAT_SPECIAL), 0, BWEATHER_NONE, 100));
+    const RefMon ninetales = RMON(50, R_FIRE, R_FIRE, 100, 999, 999, 100, 0, R_NO_ABILITY);
+    assert(w_damage(&ninetales, &snorlax, w_weather_ball(), 0, BWEATHER_SUN, 100) ==
+           w_damage(&ninetales, &snorlax, ref_move(100, R_FIRE, BCAT_SPECIAL), 0, BWEATHER_SUN, 100));
+    assert(w_damage(&ninetales, &snorlax, w_weather_ball(), 0, BWEATHER_NONE, 100) ==
+           w_damage(&ninetales, &snorlax, ref_move(50, R_NORMAL, BCAT_SPECIAL), 0, BWEATHER_NONE, 100));
+    // The weather step is one factor: only the first matching field record
+    // applies (GetWeatherDamageModifier returns), never a chain.
+    {
+        static BattleRequest r;
+        static Battle b;
+        make_weather(&r, BATTLE_FORMAT_SINGLE);
+        ref_mon(&r.player[0], 0, &pelipper);
+        set_move(&r.player[0], 0, 100, surf, 10);
+        ref_mon(&r.opponent[0], 0x80, &snorlax);
+        r.field.modifiers[r.field.modifier_count++] = modr(BMOD_WEATHER, 200, BPRED_WEATHER, W_RAIN, 0, 0);
+        assert(battle_init(&b, &r, 1) == BI_OK);
+        b.field.weather = (FieldEffect){.kind = BWEATHER_RAIN, .turns = 5};
+        uint8_t eff;
+        const Battler *a = battle_active(&b, 0);
+        assert(bc_calculate_damage(&b, a, &a->moves[0], battle_active(&b, 1), 100, false, 0, &eff) == 91);
+    }
+    // Suppressed: Cloud Nine on the field, no weather effect at all.
+    RefMon golduck = snorlax;
+    golduck.ability = W_CLOUD_NINE;
+    assert(w_damage(&pelipper, &golduck, surf, 0, BWEATHER_RAIN, 100) == 61);
+}
+
+// Accuracy in a weather (Thunder, Blizzard) and the evasion abilities (Sand Veil).
+static void test_v15_accuracy(void) {
+    static BattleRequest r;
+    static Battle b;
+    make_weather(&r, BATTLE_FORMAT_SINGLE);
+    set_move(&r.player[0], 0, 87, w_thunder(), 10);
+    give(&r.opponent[0], W_SAND_VEIL);
+    assert(battle_init(&b, &r, 7) == BI_OK);
+    const Position user = {0, 0}, target = {1, 0};
+    const BattleMove *thunder = &battle_active(&b, 0)->moves[0];
+    const struct { uint8_t weather; unsigned expected; } cases[] = {
+        {BWEATHER_NONE, 70}, {BWEATHER_SUN, 50}, {BWEATHER_SANDSTORM, 56}, {BWEATHER_HAIL, 70},
+    };
+    for (unsigned c = 0; c < 4; ++c) {
+        b.field.weather = (FieldEffect){.kind = cases[c].weather, .turns = 5};
+        unsigned hits = 0;
+        for (unsigned i = 0; i < 4000; ++i) {
+            const uint32_t before = b.rng;
+            const bool missed = bc_missed(&b, user, target, thunder);
+            b.rng = before;
+            const unsigned roll = bc_next_random(&b) % 100u;
+            assert(missed == (roll >= cases[c].expected));  // exactly the threshold
+            hits += !missed;
+        }
+        assert(hits > 0);
+    }
+    // Rain: never misses, without a draw.
+    b.field.weather = (FieldEffect){.kind = BWEATHER_RAIN, .turns = 5};
+    const uint32_t before = b.rng;
+    assert(!bc_missed(&b, user, target, thunder) && b.rng == before);
+    // V15 accuracy stages use the game's table: -4 is 43/100 (3/7 was 42).
+    b.field.weather.kind = BWEATHER_NONE;
+    BattleMove plain = damaging(40, R_NORMAL, 100);
+    battle_active(&b, 1)->stat_stages[BSTAT_EVA] = 4;
+    for (unsigned i = 0; i < 200; ++i) {
+        const uint32_t s = b.rng;
+        const bool missed = bc_missed(&b, user, target, &plain);
+        b.rng = s;
+        assert(missed == (bc_next_random(&b) % 100u >= 43));
+    }
+}
+
+// Speed abilities change the turn order (dynamic speed) and come before paralysis.
+static void test_v15_speed_order(void) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    make_weather(&r, BATTLE_FORMAT_DOUBLE);
+    give(&r.player[0], W_SWIFT_SWIM);
+    r.player[0].record.speed = 51;
+    r.player[1].record.speed = 200;
+    r.opponent[0].record.speed = 90;
+    r.opponent[1].record.speed = 80;
+    set_move(&r.player[1], 1, 240, weather_move(BWEATHER_RAIN, 5), 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    Action rain = move(0, 1, 0);
+    rain.move_slot = 1;
+    const Action turn[] = {move(0, 0, 0), rain, move(1, 0, 0), move(1, 1, 0)};
+    battle_run_turn(&b, turn, 4, &log);
+    // Rain Dance first (200), then Swift Swim's 102 before the foes' 90 and 80.
+    const BattleEvent *used[4];
+    for (unsigned i = 0; i < 4; ++i) used[i] = find_event(&log, EV_MOVE_USED, i);
+    assert(used[0]->user.side == 0 && used[0]->user.slot == 1);
+    assert(used[1]->user.side == 0 && used[1]->user.slot == 0);
+    assert(used[2]->user.side == 1 && used[2]->user.slot == 0);
+    // Next turn: the sorted speed is 102 at the start; paralysis halves after the x2: 51.
+    at_pos(&b, 0, 0)->status = BST_PARALYSIS;
+    battle_run_turn(&b, (Action[]){move(0, 0, 0), move(0, 1, 0), move(1, 0, 0), move(1, 1, 0)}, 4, &log);
+    unsigned speed = 0;
+    for (unsigned i = 0; i < b.resolution.count; ++i)
+        if (b.resolution.actions[i].action.user.side == 0 && b.resolution.actions[i].battler == 0)
+            speed = b.resolution.actions[i].speed;
+    assert(speed == 51);  // (51 x2) / 2, not (51 / 2) x2 = 50
+}
+
+// End of turn: the countdown, then each Pokemon's weather residual in speed order.
+static void test_v15_residual(void) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    make_weather(&r, BATTLE_FORMAT_TRIPLE);
+    // Sandstorm: Normal 1/16, Rock immune, Sand Veil / Overcoat immune.
+    for (unsigned side = 0; side < 2; ++side)
+        for (unsigned i = 0; i < 3; ++i) {
+            BattleEntry *e = side ? &r.opponent[i] : &r.player[i];
+            e->record.hp = e->record.max_hp = 160;
+            e->record.speed = (uint16_t)(100 - 10 * (3 * side + i));
+        }
+    r.player[1].mon.types[0] = R_ROCK;
+    give(&r.player[2], W_SAND_VEIL);
+    give(&r.opponent[0], W_OVERCOAT);
+    give(&r.opponent[1], W_ICE_BODY);
+    give(&r.opponent[2], W_RAIN_DISH);
+    r.field.start_weather = BWEATHER_SANDSTORM;
+    r.field.start_turns = 5;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    const Action idle[] = {move(0, 0, 0), move(0, 1, 0), move(0, 2, 0), move(1, 0, 0), move(1, 1, 0), move(1, 2, 0)};
+    for (unsigned i = 0; i < 6; ++i) b.sides[i / 3].battlers[i % 3].moves[0].power = 1;  // keep HP readable
+    battle_run_turn(&b, idle, 6, &log);
+    const int cont = event_index(&log, EV_WEATHER_CONTINUE, 0);
+    assert(cont >= 0 && event_count(&log, EV_WEATHER_DAMAGE) == 3);  // player 0, foe 1 (Ice Body: no heal), foe 2
+    for (unsigned i = 0; i < 3; ++i) {
+        const BattleEvent *e = find_event(&log, EV_WEATHER_DAMAGE, i);
+        assert(e->condition == BWEATHER_SANDSTORM && e->amount == 10 && (int)(e - log.events) > cont);
+    }
+    assert(find_event(&log, EV_WEATHER_DAMAGE, 0)->target.side == 0 && find_event(&log, EV_WEATHER_DAMAGE, 1)->target.side == 1);
+    // Hail: Ice Body heals 1/16 (not at full HP; not underground) instead of taking damage.
+    b.field.weather = (FieldEffect){.kind = BWEATHER_HAIL, .turns = 5};
+    Battler *ice = at_pos(&b, 1, 1);
+    ice->hp = 100;
+    battle_run_turn(&b, idle, 6, &log);
+    const BattleEvent *heal = find_event(&log, EV_HEAL, 0);
+    assert(heal && heal->target.side == 1 && heal->target.slot == 1 && heal->amount == 10 && ice->hp > 100);
+    assert(event_count(&log, EV_WEATHER_DAMAGE) == 4);  // Overcoat and Ice Body immune; Sand Veil not in hail
+    ice->vol.semi_invulnerable = BSEMI_UNDERGROUND;
+    const uint16_t ice_hp = ice->hp;
+    b.field.weather.turns = 5;
+    static EventLog end;
+    end.count = 0;
+    Position order[6];
+    unsigned n = 0;
+    for (uint8_t side = 0; side < 2; ++side)
+        for (uint8_t slot = 0; slot < 3; ++slot) order[n++] = (Position){side, slot};
+    bc_weather_end_turn(&b, order, n, &end);
+    assert(ice->hp == ice_hp && !find_event(&end, EV_HEAL, 0));
+    ice->vol.semi_invulnerable = BSEMI_NONE;
+    // Underground is safe from the damage too (BWKF_UNDERGROUND_SAFE).
+    at_pos(&b, 0, 0)->vol.semi_invulnerable = BSEMI_UNDERGROUND;
+    end.count = 0;
+    bc_weather_end_turn(&b, order, n, &end);
+    for (unsigned i = 0; i < end.count; ++i)
+        assert(!(end.events[i].kind == EV_WEATHER_DAMAGE && end.events[i].target.side == 0 && end.events[i].target.slot == 0));
+    at_pos(&b, 0, 0)->vol.semi_invulnerable = BSEMI_NONE;
+    // Rain: Rain Dish heals 1/16; Dry Skin 1/8; sun: Dry Skin and Solar Power lose 1/8.
+    make_weather(&r, BATTLE_FORMAT_DOUBLE);
+    for (unsigned i = 0; i < 2; ++i) r.player[i].record.max_hp = 160, r.opponent[i].record.max_hp = 160;
+    for (unsigned i = 0; i < 2; ++i) r.player[i].record.hp = 80, r.opponent[i].record.hp = 80;
+    give(&r.player[0], W_RAIN_DISH);
+    give(&r.player[1], W_DRY_SKIN);
+    give(&r.opponent[0], W_SOLAR_POWER);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    b.field.weather = (FieldEffect){.kind = BWEATHER_RAIN, .turns = 5};
+    n = battle_collect_actors(&b, 0, order);
+    n += battle_collect_actors(&b, 1, order + n);
+    end.count = 0;
+    bc_weather_end_turn(&b, order, n, &end);
+    assert(at_pos(&b, 0, 0)->hp == 90 && at_pos(&b, 0, 1)->hp == 100 && at_pos(&b, 1, 0)->hp == 80);
+    b.field.weather.kind = BWEATHER_SUN;
+    end.count = 0;
+    bc_weather_end_turn(&b, order, n, &end);
+    assert(at_pos(&b, 0, 0)->hp == 90 && at_pos(&b, 0, 1)->hp == 80 && at_pos(&b, 1, 0)->hp == 60);
+    assert(event_count(&end, EV_ABILITY_DAMAGE) == 2 && event_count(&end, EV_ABILITY) == 2);
+    // Weather damage can end the battle: the last foe faints at the turn end.
+    make_weather(&r, BATTLE_FORMAT_SINGLE);
+    r.opponent[0].record.hp = 5;
+    r.field.start_weather = BWEATHER_SANDSTORM;
+    r.field.start_turns = 5;
+    r.player[0].mon.types[0] = R_STEEL;
+    for (unsigned i = 0; i < 1; ++i) r.player[i].mon.moves[0].power = 1, r.opponent[i].mon.moves[0].power = 1;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    assert(b.outcome == OUTCOME_WIN && event_count(&log, EV_FAINT) == 1);
+    assert(event_index(&log, EV_WEATHER_DAMAGE, 0) < event_index(&log, EV_FAINT, 0));
+}
+
+// Moves in a weather: Solar Beam's charge, Weather Ball, Moonlight.
+static void test_v15_moves(void) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    make_weather(&r, BATTLE_FORMAT_SINGLE);
+    r.player[0].record.speed = 100;
+    set_move(&r.player[0], 0, 76, w_solar_beam(), 10);
+    set_move(&r.player[0], 1, 236, w_moonlight(), 10);
+    set_move(&r.player[0], 2, 311, w_weather_ball(), 10);
+    r.opponent[0].mon.moves[0].power = 1;
+    r.player[0].record.max_hp = 200;
+    r.player[0].record.hp = 50;
+    give(&r.opponent[0], W_DRY_SKIN);  // absorbs a Water-type Weather Ball
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    b.field.weather = (FieldEffect){.kind = BWEATHER_SUN, .turns = 5};
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);  // Solar Beam fires at once in sun
+    assert(!event_count(&log, EV_CHARGE) && event_count(&log, EV_DAMAGE) >= 1 && battle_active(&b, 0)->pp[0] == 9);
+    assert(battle_action_state(&b, (Position){0, 0}) == BAS_READY);
+    b.field.weather.kind = BWEATHER_RAIN;
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);  // charges in rain
+    assert(event_count(&log, EV_CHARGE) == 1 && battle_action_state(&b, (Position){0, 0}) == BAS_CHARGING);
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    assert(battle_action_state(&b, (Position){0, 0}) == BAS_READY);
+    // Moonlight: 2/3 in sun, 1/4 in rain, 1/2 without.
+    const struct { uint8_t weather; uint16_t heal; } heals[] = {
+        {BWEATHER_SUN, 133}, {BWEATHER_RAIN, 50}, {BWEATHER_SANDSTORM, 50}, {BWEATHER_NONE, 100}};
+    for (unsigned i = 0; i < 4; ++i) {
+        b.field.weather = (FieldEffect){.kind = heals[i].weather, .turns = heals[i].weather ? 5 : 0};
+        battle_active(&b, 0)->hp = 50;
+        Action moon = move(0, 0, 0);
+        moon.move_slot = 1;
+        run1(&b, moon, move(1, 0, 0), &log);
+        const BattleEvent *e = find_event(&log, EV_HEAL, 0);
+        assert(e && e->target.side == 0 && e->amount == heals[i].heal);
+    }
+    // Weather Ball turns Water in rain: Dry Skin absorbs it (the type counts everywhere).
+    b.field.weather = (FieldEffect){.kind = BWEATHER_RAIN, .turns = 5};
+    Battler *foe = battle_active(&b, 1);
+    foe->hp = foe->max_hp / 2;
+    Action ball = move(0, 0, 0);
+    ball.move_slot = 2;
+    run1(&b, ball, move(1, 0, 0), &log);
+    assert(!event_count(&log, EV_DAMAGE) || find_event(&log, EV_DAMAGE, 0)->target.side == 0);
+    const BattleEvent *absorbed = find_event(&log, EV_HEAL, 0);
+    assert(absorbed && absorbed->target.side == 1);
+    // In sun it is Fire: Dry Skin takes x1.25 power and x1.5 from the sun.
+    b.field.weather.kind = BWEATHER_SUN;
+    run1(&b, ball, move(1, 0, 0), &log);
+    const BattleEvent *hit = find_event(&log, EV_DAMAGE, 0);
+    assert(hit && hit->target.side == 1);
+}
+
+// Harsh sunlight: no freezing (BWKF_NO_FREEZE), as in this build's status code.
+static void test_v15_no_freeze(void) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    make_weather(&r, BATTLE_FORMAT_SINGLE);
+    r.player[0].record.speed = 100;
+    BattleMove freeze = status_move(BTARGET_SINGLE, 0);
+    push(&freeze, fx(BEFF_STATUS, BWHO_TARGET, 0, BST_FREEZE, 0, 0));
+    set_move(&r.player[0], 0, 58, freeze, 10);
+    r.opponent[0].mon.moves[0].power = 1;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    b.field.weather = (FieldEffect){.kind = BWEATHER_SUN, .turns = 5};
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    assert(!event_count(&log, EV_STATUS) && event_count(&log, EV_NO_EFFECT) == 1 && !battle_active(&b, 1)->status);
+    b.field.weather.kind = BWEATHER_RAIN;
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    assert(event_count(&log, EV_STATUS) == 1 && find_event(&log, EV_STATUS, 0)->condition == BST_FREEZE);  // (it may thaw at once)
+}
+
+static void test_v15_strict_moves(void) {
+    static BattleRequest r;
+    Battle b;
+    make_weather(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove unknown = hit(60, R_NORMAL, BCAT_SPECIAL);
+    unknown.unsupported = UNSUP_EFFECT;
+    set_move(&r.opponent[0], 1, 999, unknown, 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);        // development: the move cannot be chosen
+    r.rules |= RULE_STRICT_MOVES;
+    assert(battle_init(&b, &r, 1) == BI_UNSUPPORTED_MOVE);
+    assert(!strcmp(battle_init_error_name(BI_UNSUPPORTED_MOVE), "strict rules: a move is not simulated"));
+    r.opponent[0].mon.moves[1].unsupported = UNSUP_EMPTY;  // an empty slot is no move
+    r.opponent[0].record.moves[1] = 0;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+}
+
+// Random weather battles in every format: the same request and seed give the
+// same events, state and RNG; HP stays in range; the weather events happen.
+static void test_v15_formats(void) {
+    static BattleRequest r;
+    static Battle a, b;
+    static EventLog la, lb;
+    const BattleAbility pool[] = {W_DRIZZLE, W_DROUGHT, W_SAND_STREAM, W_SNOW_WARNING, W_CLOUD_NINE, W_SWIFT_SWIM,
+                                  W_SAND_VEIL, W_ICE_BODY, W_DRY_SKIN, W_SOLAR_POWER, W_SAND_FORCE, W_OVERCOAT,
+                                  W_RAIN_DISH, R_NO_ABILITY};
+    const unsigned n = sizeof pool / sizeof *pool;
+    const uint8_t formats[] = {BATTLE_FORMAT_SINGLE, BATTLE_FORMAT_DOUBLE, BATTLE_FORMAT_TRIPLE, BATTLE_FORMAT_ROTATION};
+    unsigned weather_events[4] = {0}, battles = 0;
+    for (unsigned f = 0; f < 4; ++f)
+        for (uint32_t seed = 1; seed <= 60; ++seed) {
+            make_weather(&r, formats[f]);
+            for (unsigned side = 0; side < 2; ++side) add_reserve(&r, side);
+            for (unsigned side = 0; side < 2; ++side) {
+                BattleEntry *e = side ? r.opponent : r.player;
+                const unsigned count = side ? r.opponent_count : r.player_count;
+                for (unsigned i = 0; i < count; ++i) {
+                    give(&e[i], pool[(seed * 7 + side * 5 + i + f) % n]);
+                    e[i].record.hp = e[i].record.max_hp = 90;
+                    e[i].mon.types[0] = (uint8_t)((seed + 3 * i + side) % R_COUNT);
+                    e[i].record.speed = (uint16_t)(40 + (seed * 13 + i * 7 + side * 3) % 60);
+                    const uint8_t kind = (uint8_t)(1 + (seed + i + side) % BWEATHER_KINDS);
+                    set_move(&e[i], 1, 240 + kind, weather_move(kind, (seed & 1) ? 5 : BWEATHER_TURNS_KEEP), 8);
+                    BattleMove extra = (seed + i) % 3 == 0 ? w_thunder() : (seed + i) % 3 == 1 ? w_weather_ball()
+                                                                                               : w_solar_beam();
+                    set_move(&e[i], 2, 300 + i, extra, 10);
+                    BattleMove spread = w_special(45, R_FIRE, 90);
+                    spread.target = BTARGET_ALL_FOES;
+                    set_move(&e[i], 3, 400 + i, (seed + i) % 4 ? spread : w_moonlight(), 10);
+                }
+            }
+            r.field.start_weather = (uint8_t)(seed % 4 == 0 ? 1 + seed % BWEATHER_KINDS : 0);
+            r.field.start_turns = r.field.start_weather ? (uint8_t)(seed % 3) : 0;
+            assert(battle_init(&a, &r, seed) == BI_OK && battle_init(&b, &r, seed) == BI_OK);
+            battle_begin(&a, &la);
+            battle_begin(&b, &lb);
+            assert(la.count == lb.count && memcmp(la.events, lb.events, la.count * sizeof(BattleEvent)) == 0);
+            for (unsigned t = 0; t < 60 && a.outcome == OUTCOME_NONE; ++t) {
+                Position pending;
+                while (battle_pending_replacement(&a, &pending)) {
+                    const uint8_t mask = battle_replacement_mask(&a, pending);
+                    uint8_t pick = 0;
+                    while (!(mask & (1u << pick))) ++pick;
+                    assert(battle_replace(&a, pending, pick, &la) && battle_replace(&b, pending, pick, &lb));
+                    assert(la.count == lb.count && memcmp(la.events, lb.events, la.count * sizeof(BattleEvent)) == 0);
+                }
+                if (a.outcome != OUTCOME_NONE) break;
+                Action actions[BC_MAX_ACTIONS];
+                unsigned count = 0;
+                for (uint8_t side = 0; side < 2; ++side) {
+                    Position actors[BC_MAX_ACTIVE];
+                    const unsigned k = battle_collect_actors(&a, side, actors);
+                    for (unsigned i = 0; i < k; ++i) battle_choose_at(&a, actors[i], &actions[count++]);
+                }
+                for (unsigned i = 0; i < count; ++i) {
+                    Action dummy;
+                    battle_choose_at(&b, actions[i].user, &dummy);
+                }
+                battle_run_turn(&a, actions, count, &la);
+                battle_run_turn(&b, actions, count, &lb);
+                assert(la.count == lb.count && la.count < BC_MAX_EVENTS &&
+                       memcmp(la.events, lb.events, la.count * sizeof(BattleEvent)) == 0);
+                for (unsigned i = 0; i < la.count; ++i)
+                    if (la.events[i].kind >= EV_WEATHER_START) ++weather_events[la.events[i].kind - EV_WEATHER_START];
+                for (unsigned side = 0; side < 2; ++side)
+                    for (unsigned i = 0; i < a.sides[side].count; ++i) {
+                        const Battler *x = &a.sides[side].battlers[i];
+                        assert(x->hp <= x->max_hp && (x->hp == 0) == x->fainted);
+                    }
+                assert(a.field.weather.kind < BWEATHER_COUNT && a.field.weather.turns <= BWEATHER_MAX_TURNS);
+            }
+            assert(memcmp(&a.sides, &b.sides, sizeof a.sides) == 0 && a.rng == b.rng &&
+                   memcmp(&a.field, &b.field, sizeof a.field) == 0);
+            ++battles;
+        }
+    for (unsigned i = 0; i < 4; ++i) assert(weather_events[i] > 20);
+    printf("v15 formats: %u battles, weather start %u continue %u end %u damage %u\n", battles, weather_events[0],
+           weather_events[1], weather_events[2], weather_events[3]);
+}
+
+// ------------------------------------------------------------- V15 against the Expansion engine
+//
+// Hits the Frontier build's test runner computes with the real Expansion
+// code in a weather (test/battle/gc_weather_reference.c in frontier-gc-m4w,
+// same stats, rolls 100/93/85, no crit; the weather is set by an ability).
+// The build keeps the Gen 3 powers of Surf, Flamethrower (95) and Heat Wave (100).
+typedef struct {
+    const char *name;
+    RefMon atk, def;
+    BattleMove move;
+    unsigned flags;
+    uint8_t weather;
+    uint16_t expansion[3];
+} WeatherRefCase;
+
+static void test_v15_expansion_reference(void) {
+    const WeatherRefCase cases[] = {
+        {"Rain x1.5 on Surf before the roll, STAB (Pelipper vs Snorlax)",
+         RMON(50, R_WATER, R_FLYING, 100, 999, 999, 65, 0, W_DRIZZLE),
+         RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 30, 0, R_NO_ABILITY),
+         ref_move(95, R_WATER, BCAT_SPECIAL), 0, BWEATHER_RAIN, {96, 88, 81}},
+        {"Rain x0.5 on Flamethrower (Pelipper vs Snorlax)",
+         RMON(50, R_WATER, R_FLYING, 100, 999, 999, 65, 0, W_DRIZZLE),
+         RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 30, 0, R_NO_ABILITY),
+         ref_move(95, R_FIRE, BCAT_SPECIAL), 0, BWEATHER_RAIN, {21, 19, 17}},
+        {"Sun after the spread x0.75: Heat Wave (100), STAB (Torkoal, Double)",
+         RMON(50, R_FIRE, R_FIRE, 85, 999, 999, 20, 0, W_DROUGHT),
+         RMON(50, R_NORMAL, R_NORMAL, 70, 999, 999, 30, 0, R_NO_ABILITY),
+         ref_move(100, R_FIRE, BCAT_SPECIAL), BCD_SPREAD, BWEATHER_SUN, {91, 84, 76}},
+        {"Sandstorm: a Rock type's Sp. Def x1.5 (Surf vs Golem)",
+         RMON(50, R_ROCK, R_ROCK, 95, 999, 999, 61, 0, W_SAND_STREAM),
+         RMON(50, R_ROCK, R_GROUND, 65, 999, 999, 45, 0, R_NO_ABILITY),
+         ref_move(95, R_WATER, BCAT_SPECIAL), 0, BWEATHER_SANDSTORM, {168, 156, 140}},
+        {"Snow: an Ice type's Defense x1.5 (Body Slam vs Glalie)",
+         RMON(50, R_ICE, R_ICE, 92, 999, 999, 60, 0, W_SNOW_WARNING),
+         RMON(50, R_ICE, R_ICE, 80, 999, 999, 80, 0, R_NO_ABILITY),
+         ref_move(85, R_NORMAL, BCAT_PHYSICAL), 0, BWEATHER_SNOW, {30, 27, 25}},
+        {"Solar Beam in rain: power x0.5 (Pelipper vs Snorlax)",
+         RMON(50, R_WATER, R_FLYING, 100, 999, 999, 65, 0, W_DRIZZLE),
+         RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 30, 0, R_NO_ABILITY),
+         w_solar_beam(), 0, BWEATHER_RAIN, {28, 26, 23}},
+        {"Weather Ball in sun: Fire 100, STAB and sun x1.5 (Ninetales)",
+         RMON(50, R_FIRE, R_FIRE, 101, 999, 999, 120, 0, W_DROUGHT),
+         RMON(50, R_NORMAL, R_NORMAL, 110, 999, 999, 30, 0, R_NO_ABILITY),
+         w_weather_ball(), 0, BWEATHER_SUN, {94, 87, 79}},
+        {"Sand Force x1.3: Rock Slide in sandstorm (Excadrill vs Hippowdon)",
+         RMON(50, R_GROUND, R_STEEL, 155, 999, 999, 108, 0, W_SAND_FORCE),
+         RMON(50, R_GROUND, R_GROUND, 138, 999, 999, 67, 0, W_SAND_STREAM),
+         ref_move(75, R_ROCK, BCAT_PHYSICAL), 0, BWEATHER_SANDSTORM, {25, 23, 21}},
+        {"Solar Power x1.5 and sun x1.5: Flamethrower, STAB (Charizard vs Ninetales)",
+         RMON(50, R_FIRE, R_FLYING, 129, 999, 999, 120, 0, W_SOLAR_POWER),
+         RMON(50, R_FIRE, R_FIRE, 120, 999, 999, 100, 0, W_DROUGHT),
+         ref_move(95, R_FIRE, BCAT_SPECIAL), 0, BWEATHER_SUN, {77, 71, 65}},
+        {"Dry Skin x1.25 power and sun x1.5: Flamethrower, STAB (Ninetales vs Toxicroak)",
+         RMON(50, R_FIRE, R_FIRE, 101, 999, 999, 120, 0, W_DROUGHT),
+         RMON(50, R_FIGHTING, R_FIGHTING, 85, 999, 999, 105, 0, W_DRY_SKIN),
+         ref_move(95, R_FIRE, BCAT_SPECIAL), 0, BWEATHER_SUN, {144, 133, 121}},
+        {"Cloud Nine on the field: no rain boost (Pelipper vs Golduck)",
+         RMON(50, R_WATER, R_FLYING, 100, 999, 999, 65, 0, W_DRIZZLE),
+         RMON(50, R_WATER, R_WATER, 100, 999, 999, 105, 0, W_CLOUD_NINE),
+         ref_move(95, R_WATER, BCAT_SPECIAL), 0, BWEATHER_RAIN, {32, 29, 27}},
+    };
+    for (unsigned i = 0; i < sizeof cases / sizeof *cases; ++i) {
+        const WeatherRefCase *k = &cases[i];
+        printf("  wref %2u %-72s", i + 1, k->name);
+        for (unsigned r = 0; r < 3; ++r) {
+            const uint16_t v15 = w_damage(&k->atk, &k->def, k->move, k->flags, k->weather, ref_rolls[r]);
+            const uint16_t none = w_damage(&k->atk, &k->def, k->move, k->flags, BWEATHER_NONE, ref_rolls[r]);
+            printf(" %u%%: v15=%u none=%u exp=%u", ref_rolls[r], v15, none, k->expansion[r]);
+            assert(v15 == k->expansion[r]);
+        }
+        printf("\n");
+    }
+}
+
 int main(void) {
     test_request_roundtrip();
     test_messages();
@@ -4926,6 +5894,19 @@ int main(void) {
     test_v14_order();
     test_v14_union_decode();
     test_v14_expansion_reference();
+    test_v15_wire();
+    test_v15_set_and_end();
+    test_v15_entry();
+    test_v15_suppress();
+    test_v15_damage();
+    test_v15_accuracy();
+    test_v15_speed_order();
+    test_v15_residual();
+    test_v15_moves();
+    test_v15_no_freeze();
+    test_v15_strict_moves();
+    test_v15_formats();
+    test_v15_expansion_reference();
     puts("battle tests passed");
     return 0;
 }

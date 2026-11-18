@@ -22,11 +22,15 @@
 // a contact ability (announcement, status or damage, the attacker's faint).
 // V11 adds per target an ability immunity (2), per effect an ability block,
 // entry abilities for every send-out (announcement, cure, a result per foe),
-// end-of-turn abilities and the battle-start notices.
+// end-of-turn abilities and the battle-start notices. V15 adds per entry a
+// weather change or its block and a suppression notice, the battle-start
+// weather, and at the end of the turn the weather's continuation or end and
+// per Pokemon its residual (ability, HP change, faint).
 #define BC_EVENTS_PER_TARGET (7 * BATTLE_MAX_HITS + 8 + 3 * BATTLE_MAX_EFFECTS)
-#define BC_ENTRY_EVENTS (3 + BC_MAX_ACTIVE)
+#define BC_ENTRY_EVENTS (5 + BC_MAX_ACTIVE)
+#define BC_WEATHER_TURN_EVENTS (1 + 3 * BC_MAX_ACTIONS)
 #define BC_MAX_EVENTS (BC_MAX_ACTIONS * (8 + 2 * BC_ENTRY_EVENTS + BC_MAX_ACTIVE * BC_EVENTS_PER_TARGET) + \
-                       5 * BC_MAX_ACTIONS + 8 + 2 * BATTLE_MAX_PER_SIDE)
+                       5 * BC_MAX_ACTIONS + 9 + 2 * BATTLE_MAX_PER_SIDE + BC_WEATHER_TURN_EVENTS)
 
 typedef struct { uint8_t side, slot; } Position;   // side 0 = player, 1 = opponent; slot = active position
 typedef struct { Position pos; } Target;
@@ -97,7 +101,12 @@ typedef enum { EV_MOVE_USED, EV_MISS, EV_DAMAGE, EV_NO_EFFECT, EV_FAINT, EV_FORF
               EV_ABILITY,             // the ability acts on target (its consequence follows)
               EV_ABILITY_BLOCK,       // the holder's ability stopped something from target
               EV_ABILITY_DAMAGE,      // target loses HP to the holder's ability
-              EV_ABILITY_UNSUPPORTED  // battle start: entry `battler` of side user.side is not simulated
+              EV_ABILITY_UNSUPPORTED, // battle start: entry `battler` of side user.side is not simulated
+              // V15 weather (docs/weather.md): condition = BWEATHER_* kind.
+              EV_WEATHER_START,       // user = setter (slot BATTLE_SLOT_NONE: the battle's rules); amount = turns
+              EV_WEATHER_CONTINUE,    // end of turn, the weather goes on (amount = turns left, 0 = no end)
+              EV_WEATHER_END,         // end of turn, the weather ends
+              EV_WEATHER_DAMAGE       // target loses HP to the weather (amount, hp_after)
 } EventKind;
 typedef struct {
     EventKind kind;
@@ -119,6 +128,7 @@ typedef struct { BattleEvent events[BC_MAX_EVENTS]; unsigned count; } EventLog;
 enum BattleInitError {
     BI_OK = 0, BI_FORMAT, BI_PARTY_SIZE, BI_NO_PLAYER_MOVES, BI_NO_OPPONENT_MOVES, BI_BAD_TYPES, BI_FAINTED_LEAD, BI_CONDITIONS,
     BI_UNSUPPORTED_ABILITY,  // RULE_STRICT_ABILITIES and an ability is UNSUPPORTED
+    BI_UNSUPPORTED_MOVE,     // V15 RULE_STRICT_MOVES and a known move cannot be run
 };
 
 // Action resolution state within a turn. A battler's own multi-turn state
@@ -141,6 +151,21 @@ typedef struct {
     bool waiting_for_pivot;
 } TurnResolution;
 
+// V15 field state (docs/weather.md). One effect per field condition, changed
+// only through the shared operations of battle_field.c, whatever its source;
+// a terrain (M4-T) is a second FieldEffect of the same shape.
+enum FieldSource { FSRC_NONE = 0, FSRC_RULE = 1, FSRC_MOVE = 2, FSRC_ABILITY = 3 };
+typedef struct {
+    uint8_t kind;        // BWEATHER_*, 0 = none
+    uint8_t turns;       // turns left; 0 with a kind = no end
+    uint8_t source_kind; // FSRC_*
+    Position source;     // who set it (slot BATTLE_SLOT_NONE for the rules)
+} FieldEffect;
+typedef struct {
+    FieldEffect weather;
+    bool locked;         // BFR_START_LOCKED: the start weather cannot be replaced
+} BattleField;
+
 typedef struct {
     const BattleRequest *request;
     Side sides[2];
@@ -149,6 +174,8 @@ typedef struct {
     uint8_t turn;     // turns completed
     uint8_t outcome;  // BattleOutcome, OUTCOME_NONE while running
     bool ability_mirroring;  // a Synchronize status is being given back (no second reflection)
+    BattleField field;       // V15
+    uint8_t entry_pending[2];  // V15: field slots replaced this round whose entry abilities wait
 } Battle;
 
 const char *battle_init_error_name(int error);
@@ -192,4 +219,8 @@ BattleActionState battle_action_state(const Battle *battle, Position position);
 bool battle_forced_action(const Battle *battle, Position position, Action *out);
 uint8_t battle_volatile_flags(const Battle *battle, Position position);  // BVF_*
 bool battle_resume_pivot(Battle *battle, uint8_t battler, EventLog *log);
+// V15 weather: the weather in effect (BWEATHER_NONE while a Pokemon on the
+// field suppresses it), and the weather on the field whether or not suppressed.
+uint8_t battle_weather(const Battle *battle);
+const FieldEffect *battle_field_weather(const Battle *battle);
 #endif

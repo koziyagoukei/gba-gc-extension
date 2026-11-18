@@ -74,6 +74,35 @@ typedef struct {
     unsigned base_power;
 } ModContext;
 uint64_t bc_modify(const ModContext *context, uint8_t stage, uint64_t value);
+// V15 integer stages: the holder's speed (its own ability records) and a move's
+// accuracy against a target (after the V12 accuracy hook).
+unsigned bc_modify_speed(const Battle *battle, const Battler *holder, unsigned speed);
+unsigned bc_modify_accuracy(const Battle *battle, const Battler *attacker, const BattleMove *move,
+                            const Battler *defender, unsigned accuracy);
+
+// V15 field state (battle_field.c, docs/weather.md). Every weather change goes
+// through bc_weather_set, whatever its source (move, ability, rules).
+bool bc_weather_rules(const Battle *battle);  // V15: the request has field rules
+// The weather in effect is one of `mask` (BWEATHER_BIT); false while suppressed.
+bool bc_weather_in(const Battle *battle, uint8_t mask);
+typedef enum { WEATHER_SET, WEATHER_SAME, WEATHER_LOCKED } WeatherResult;
+// Sets `kind` for `turns` (BWEATHER_TURNS_*), emitting EV_WEATHER_START; the
+// same weather again and a locked weather change nothing.
+WeatherResult bc_weather_set(Battle *battle, Position source, uint8_t source_kind, uint8_t kind, uint8_t turns,
+                             EventLog *log);
+void bc_weather_begin(Battle *battle, EventLog *log);  // the battle-start weather of the rules
+// End of turn, first: the countdown, then the residual of each Pokemon in `order`.
+void bc_weather_end_turn(Battle *battle, const Position *order, unsigned count, EventLog *log);
+// The type of `move` in the weather in effect (BEFF_WEATHER_TYPE), else its own.
+uint8_t bc_weather_move_type(const Battle *battle, const BattleMove *move);
+// BEFF_WEATHER_ACCURACY: true and *accuracy set if the move has a rule for the weather.
+bool bc_weather_accuracy(const Battle *battle, const BattleMove *move, unsigned *accuracy);
+// BWKF_NO_FREEZE: the weather in effect prevents freezing (harsh sunlight).
+bool bc_weather_prevents_freeze(const Battle *battle);
+// BEFF_CHARGE arg2: the move skips its charging turn in the weather in effect.
+bool bc_weather_skips_charge(const Battle *battle, const BattleEffect *charge);
+// BEFF_WEATHER_HEAL: the fraction of max HP the move's heal restores in the weather.
+void bc_weather_heal_fraction(const Battle *battle, const BattleMove *move, unsigned *num, unsigned *den);
 // 4.12 fixed point: a percent as the nearest 4.12 value, and value x factor
 // rounded to the nearest integer (an exact half down).
 uint32_t bc_fx_percent(unsigned percent);
@@ -125,4 +154,8 @@ void bc_ability_on_entry(Battle *battle, Position position, EventLog *log);
 void bc_ability_end_turn(Battle *battle, Position position, EventLog *log);
 void bc_ability_end_turn_cure(Battle *battle, Position position, EventLog *log);
 void bc_ability_begin_battle(Battle *battle, EventLog *log);
+// V15 weather hooks of a Pokemon (NULL if none applies).
+bool bc_ability_suppresses_weather(const Battle *battle, const Battler *mon);
+const BattleAbilityHook *bc_ability_weather_immunity(const Battle *battle, const Battler *mon, uint8_t kind);
+const BattleAbilityHook *bc_ability_weather_residual(const Battle *battle, const Battler *mon, uint8_t kind);
 #endif

@@ -11,7 +11,8 @@
 //
 //   cc -std=c11 -O2 -Iprotocol -Igamecube/battle protocol/*.c gamecube/battle/battle_core.c
 //      gamecube/battle/battle_effects.c gamecube/battle/battle_abilities.c
-//      gamecube/battle/battle_modifiers.c gamecube/battle/battle_replay.c -o build/battle-replay
+//      gamecube/battle/battle_modifiers.c gamecube/battle/battle_field.c gamecube/battle/battle_replay.c
+//      -o build/battle-replay
 //   build/battle-replay dolphin.log [-print | -without | -version N]
 // -without removes every V13 modifier record first (same bytes otherwise,
 // same seed and commands) and prints the damage events: the counterfactual.
