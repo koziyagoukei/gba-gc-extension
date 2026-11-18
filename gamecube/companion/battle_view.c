@@ -640,6 +640,16 @@ BattleViewStatus battle_view_update(bool start_pressed, const char **message) {
                    b.request.format, b.request.rules, b.request.trainer_id, b.request.trainer_class,
                    b.request.environment, b.request.result_policy, b.request.type_count, b.request.battle_id,
                    fetch.info.length, fetch.wire_length, b.request_us);
+        // Test fixtures (fixed seed): the request bytes, so a native run can replay them.
+        if (b.request.rules & RULE_FIXED_SEED)
+            for (unsigned at = 0; at < fetch.info.length; at += 32) {
+                char hex[65];
+                unsigned n = 0;
+                for (unsigned i = at; i < fetch.info.length && i < at + 32; ++i, n += 2)
+                    snprintf(hex + n, sizeof(hex) - n, "%02x", fetch.data[i]);
+                hex[n] = 0;
+                SYS_Report("PH9 REQ %04x %s\n", at, hex);
+            }
         if (b.request.version >= BATTLE_REQUEST_VERSION_VOLATILES) {
             const BattleVolatileRules *v = &b.request.volatiles;
             SYS_Report("PH7 VOLATILE rules flags=%02x confusion=%u%%/%u-%u/power %u substitute=1/%u\n", v->flags,
