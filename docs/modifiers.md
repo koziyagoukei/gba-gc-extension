@@ -273,6 +273,12 @@ Dolphin (release 8 DOL and ROM, Frontier save):
 | GC core per turn | 26-89 us peak (PoC 26-90 us) |
 | Native, 1,200 V12 battles | 47 ms (M4-A2 46, PoC 49); V14 labels 48 ms |
 
+Frontier `make check` (same tree and toolchain as the PoC baseline
+`frontier-battle-rule-poc`): 6,817 tests. Each of the 6,806 baseline
+entries has the same name and status (PASS 3,890 -> 3,901 with the 11 new
+reference tests, FAILED 2,455 both); the failures are the existing ones
+(mostly MESSAGE checks against the Japanese text).
+
 ## Known limits
 
 - Not modelled by the GC at all: critical hits, weather, terrain, items,
