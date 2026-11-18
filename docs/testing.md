@@ -155,3 +155,24 @@ build/battle-replay .dolphin/Logs/dolphin.log -without
 
 The same replay source builds against the M4-A2 tree (without
 `battle_modifiers.c`), so a V12 fixture log can be checked on both cores.
+
+## M4-P (release 8, [modifiers](modifiers.md))
+
+Native: `battle_test.c` adds `test_v14_arithmetic`, `test_v14_order`,
+`test_v14_battle`, `test_v14_union_decode` and
+`test_v14_expansion_reference` (the GC's V14 values for eleven hits that
+the Frontier's own test runner checks against Expansion). The
+largest-request test covers V12 to V14.
+
+Expansion reference (Frontier branch `frontier-gc-m4p`):
+
+```sh
+make check TESTS="GC V14 reference"
+```
+
+V12 / V13 trace equivalence as for the PoC (`battle_trace.c` against
+`milestone4a2` and `battle-rule-poc`; arguments 12, 13 and 14).
+
+Dolphin: Utilities -> GC Ability Lab... L26-L29 are V14 (Single, Double,
+Triple, Rotation). `battle-replay <log> -version 13` replays a V14 run with
+the V13 arithmetic (same bytes, seed and commands) and prints its damage.

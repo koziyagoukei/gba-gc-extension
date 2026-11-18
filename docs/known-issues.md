@@ -129,3 +129,21 @@
   treat Comatose as sleep. The decoded record grows `BattleRequest` and
   `Battle` by about 2 KB each (GC) and the GBA's temporary request
   structure by 2,352 bytes.
+
+## M4-P (release 8, development only)
+
+- V14 matches Expansion for the modelled parts (checked hit by hit in the
+  Frontier's test runner). Still outside the GC model: critical hits,
+  weather, terrain, items, screens, Parental Bond, Tera. Weather needs its
+  own step in the formula (between the spread and the random factor).
+- A record converts its percent to the nearest 4.12 value; Expansion
+  converts some item percents with a floor (Muscle Band, Wise Glasses), and
+  its Paradox defense modifiers chain half up. Items will need a flag.
+- A stat or the power stays at least 1 in V14, as before; Expansion has no
+  minimum there (reachable only with factors below 1/4096).
+- Brine, Toxic Boost, Flare Boost and Defeatist are exported only in V14
+  requests; below V14 they stay unsupported, so V13 requests are unchanged.
+- During the M4-P Dolphin runs, 8 of 46 sessions had one frame time out
+  and recover on its first retry (no link loss). The link code did not
+  change; heavy native builds ran on the same machine at the time. The
+  JoyBus first-word loss is still unexplained.

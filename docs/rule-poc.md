@@ -1,5 +1,8 @@
 # Data-driven modifiers (proof of concept, request V13)
 
+> Formalised by M4-P: compact storage, V14 fixed-point arithmetic and the
+> exporter split are in [modifiers](modifiers.md).
+
 Status: **proof of concept** on branches `battle-rule-poc` (this repository)
 and `frontier-battle-rule-poc` (Frontier), release 7 `rule-poc`. Nothing
 here is merged into a public branch. The question it answers: can the GBA
