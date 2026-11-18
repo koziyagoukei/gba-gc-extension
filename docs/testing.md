@@ -118,3 +118,40 @@ the same inputs: the log's `PH8 STATE` lines after each turn are the
 core's state. Inputs per turn: A (fight), the move (DOWN to the next one),
 A, then the target (RIGHT to the next legal foe) and A; spread and self
 moves have no target step.
+
+## V13 modifier PoC (release 7, [rule-poc](rule-poc.md))
+
+Native: `battle_test.c` adds `test_v13_*`: record validity (every reserved
+bit, unknown predicate and stage, packing, per-place rules), the wire
+(round trip, malformed bytes, V12-labelled bytes refused, the encoder
+refusing V13 records in V12), the largest V12 and V13 requests against
+`BATTLE_REQUEST_MAX_BYTES` (fits exactly, one byte short is refused and
+nothing is written), Hex and the custom ability against plain moves of the
+expected power, one record used from a move and from an ability, order and
+rounding inside each stage and the minimum rules, the V12 multiplier kinds
+against the same rules written as records (1,296 cases), predicates that
+never hold changing nothing (events, state and RNG), and a 4-format
+same-seed determinism run.
+
+V12 trace equivalence: `gamecube/battle/battle_trace.c` builds 1,200 V12
+battles (every multiplier kind and unusual hook combinations, four
+formats) and prints a hash per battle of the wire bytes, every event and
+the final state and RNG. Build it against the tree before the change and
+after it and compare the outputs (`cmp`); they must be identical.
+
+Dolphin: Utilities → GC Ability Lab... L21–L25 are V13. A fixed-seed run
+logs its request (`PH9 REQ`); `gamecube/battle/battle_replay.c` replays the
+log on the native core and compares every `PH3 EVENT` / `PH8 STATE` line,
+and `-without` replays the same bytes with the V13 records removed:
+
+```sh
+cc -std=c11 -O2 -Iprotocol -Igamecube/battle protocol/wire.c protocol/message.c \
+  protocol/pkmn_protocol.c protocol/battle_protocol.c gamecube/battle/battle_core.c \
+  gamecube/battle/battle_effects.c gamecube/battle/battle_abilities.c \
+  gamecube/battle/battle_modifiers.c gamecube/battle/battle_replay.c -o build/battle-replay
+build/battle-replay .dolphin/Logs/dolphin.log
+build/battle-replay .dolphin/Logs/dolphin.log -without
+```
+
+The same replay source builds against the M4-A2 tree (without
+`battle_modifiers.c`), so a V12 fixture log can be checked on both cores.

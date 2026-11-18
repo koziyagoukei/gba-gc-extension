@@ -123,3 +123,9 @@
   deferred. Measured for that review: a battle request takes 0.40–0.63 s
   over the link (about 1.4–2.2 KB/s effective), the battle sprites and
   labels 1.1–4.0 s cold.
+- V13 modifier PoC (branch `battle-rule-poc`, release 7, not merged): see
+  [rule-poc](rule-poc.md). Hex/Venoshock are supported only in V13; Facade
+  stays unsupported (its burn exception is not a multiplier); Hex does not
+  treat Comatose as sleep. The decoded record grows `BattleRequest` and
+  `Battle` by about 2 KB each (GC) and the GBA's temporary request
+  structure by 2,352 bytes.
