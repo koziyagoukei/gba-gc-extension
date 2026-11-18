@@ -398,10 +398,13 @@ uint16_t bc_calculate_damage(const Battle *b, const Battler *a, const BattleMove
         atk = bc_stage_scale(atk, a->stat_stages[physical ? BSTAT_ATK : BSTAT_SPA], 2);
         def = bc_stage_scale(def, d->stat_stages[physical ? BSTAT_DEF : BSTAT_SPD], 2);
     }
-    // V11/V12 abilities: attacking and defending stat modifiers, base power.
-    atk = bc_ability_attack(b, a, m, d, typeless, atk);
-    def = bc_ability_defense(b, m, d, def);
-    const unsigned power = bc_ability_power(b, a, m->power);
+    // Modifiers of the move (V13) and of both abilities (V11+), per stage
+    // (battle_modifiers.c): base power, power, attacking and defending stat.
+    ModContext c = {.b = b, .attacker = a, .defender = d, .move = m, .typeless = typeless, .base_power = m->power};
+    c.base_power = (unsigned)bc_modify(&c, BMOD_BASE_POWER, m->power);
+    const unsigned power = (unsigned)bc_modify(&c, BMOD_POWER, c.base_power);
+    atk = (unsigned)bc_modify(&c, BMOD_ATTACK, atk);
+    def = (unsigned)bc_modify(&c, BMOD_DEFENSE, def);
     uint64_t dmg = ((2u * a->level / 5u + 2u) * (uint64_t)power * atk / (def ? def : 1)) / 50u + 2u;
     dmg = dmg * random_percent / 100u;
     if (!typeless && (m->type == a->types[0] || (a->type_count == 2 && m->type == a->types[1])))
@@ -410,6 +413,7 @@ uint16_t bc_calculate_damage(const Battle *b, const Battler *a, const BattleMove
     if ((physical && bc_status_kind(b, a) == BST_BURN && !bc_ability_ignores_burn(b, a)) ||
         (!physical && bc_status_kind(b, a) == BST_FROSTBITE))
         dmg /= 2;
+    dmg = bc_modify(&c, BMOD_FINAL, dmg);
     if (dmg == 0) dmg = 1;
     return dmg > 0xffff ? 0xffff : (uint16_t)dmg;
 }

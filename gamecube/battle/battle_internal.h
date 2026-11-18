@@ -55,6 +55,19 @@ void bc_cancel_charge(Battle *battle, Position user, EventLog *log);
 // Confusion check before an action; true if the battler hurt itself instead.
 bool bc_confusion_check(Battle *battle, Position user, EventLog *log);
 
+// Shared damage modifiers (battle_modifiers.c, docs/rule-poc.md): the V13
+// records of the move and of both abilities, and the V12 multiplier hooks,
+// for one stage (BMOD_*) of one hit. base_power is the power after
+// BMOD_BASE_POWER (what BPRED_POWER_AT_MOST compares).
+typedef struct {
+    const Battle *b;
+    const Battler *attacker, *defender;
+    const BattleMove *move;
+    bool typeless;
+    unsigned base_power;
+} ModContext;
+uint64_t bc_modify(const ModContext *context, uint8_t stage, uint64_t value);
+
 // Ability hooks (battle_abilities.c, docs/abilities.md). All are inert unless
 // the request is V11+ without RULE_IGNORE_ABILITIES. An ability is a list of
 // hooks; a lookup returns a hook whose holder conditions (status, state) hold.
@@ -67,11 +80,8 @@ void bc_ability_event(const Battle *battle, EventLog *log, Position holder, Posi
                       const BattleAbilityHook *hook);
 void bc_ability_block(const Battle *battle, EventLog *log, Position holder, Position source,
                       const BattleAbilityHook *hook);
-// Damage calculation (per hit).
-unsigned bc_ability_power(const Battle *battle, const Battler *attacker, unsigned power);
-unsigned bc_ability_attack(const Battle *battle, const Battler *attacker, const BattleMove *move,
-                           const Battler *defender, bool typeless, unsigned attack);
-unsigned bc_ability_defense(const Battle *battle, const BattleMove *move, const Battler *defender, unsigned defense);
+// Damage calculation (per hit). The multipliers of moves and abilities run
+// through bc_modify (battle_modifiers.c); these are the remaining special rules.
 bool bc_ability_ignores_burn(const Battle *battle, const Battler *attacker);
 unsigned bc_ability_stab(const Battle *battle, const Battler *attacker);  // percent
 unsigned bc_ability_type_factor(const Battle *battle, const Battler *attacker, uint8_t move_type,

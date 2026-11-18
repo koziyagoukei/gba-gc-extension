@@ -87,31 +87,10 @@ static unsigned scaled(unsigned value, unsigned percent) {
     return v ? v : 1;
 }
 
-unsigned bc_ability_power(const Battle *b, const Battler *a, unsigned power) {
-    const BattleAbilityHook *x = bc_ability(b, a, BABIL_LOW_POWER);
-    return x && power <= x->arg0 ? scaled(power, x->percent) : power;
-}
-
-unsigned bc_ability_attack(const Battle *b, const Battler *a, const BattleMove *m, const Battler *d,
-                           bool typeless, unsigned atk) {
-    const BattleAbilityHook *x = NULL;
-    while ((x = bc_ability_next(b, a, BABIL_ATTACK_MULT, x)))
-        if ((!x->arg0 || m->category == x->arg0) &&
-            (!(x->flags & BAHF_TYPE_FILTER) || (!typeless && m->type == x->arg2)))
-            atk = scaled(atk, x->percent);
-    if (!typeless && (x = bc_ability(b, a, BABIL_PINCH)) && m->type == x->arg0 && a->hp <= a->max_hp / x->arg2)
-        atk = scaled(atk, x->percent);
-    if (!typeless && (x = bc_ability(b, d, BABIL_RESIST)) && (m->type == x->arg0 || m->type == x->arg2))
-        atk = scaled(atk, x->percent);
-    return atk;
-}
-
-unsigned bc_ability_defense(const Battle *b, const BattleMove *m, const Battler *d, unsigned def) {
-    const BattleAbilityHook *x = NULL;
-    while ((x = bc_ability_next(b, d, BABIL_DEFENSE_MULT, x)))
-        if (m->category == x->arg0) def = scaled(def, x->percent);
-    return def;
-}
+// The stat, power and final-damage multipliers (ATTACK_MULT, PINCH, LOW_POWER,
+// RESIST, DEFENSE_MULT and the V13 MODIFIER hooks) run in battle_modifiers.c.
+// The rules below are not multipliers: a burn exception, a replaced STAB
+// value, a type-chart change and an HP cap.
 
 bool bc_ability_ignores_burn(const Battle *b, const Battler *a) {
     return bc_ability(b, a, BABIL_IGNORE_BURN) != NULL;

@@ -80,6 +80,7 @@ bool bc_effects_supported(const BattleRequest *r, const BattleMove *m) {
     for (unsigned i = 0; i < m->effect_count; ++i) {
         const BattleEffect *e = &m->effects[i];
         if (!v9 && e->kind > BEFF_PROTECT) return false;
+        if (r->version < BATTLE_REQUEST_VERSION_MODIFIERS && e->kind > BEFF_V12_LAST) return false;
         if (r->version < BATTLE_REQUEST_VERSION_TIMING && (e->flags & BEFL_TIMING_MASK)) return false;
         switch (e->kind) {
         case BEFF_STATUS:
@@ -381,11 +382,12 @@ static unsigned timing_of(const BattleEffect *e) {
 }
 
 // Secondary effects of a damaging move, i.e. everything except the kinds
-// with fixed handling (damage, drain, recoil, recharge, charge, pivot, drag).
+// with fixed handling (damage, drain, recoil, recharge, charge, pivot, drag)
+// and the passive V13 modifiers, which act inside the damage calculation.
 static bool is_secondary(const BattleEffect *e) {
     switch (e->kind) {
     case BEFF_DAMAGE: case BEFF_DRAIN: case BEFF_RECOIL: case BEFF_RECHARGE:
-    case BEFF_CHARGE: case BEFF_PIVOT: case BEFF_FORCE_OUT:
+    case BEFF_CHARGE: case BEFF_PIVOT: case BEFF_FORCE_OUT: case BEFF_MODIFIER:
         return false;
     default:
         return true;
