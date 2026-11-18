@@ -268,6 +268,14 @@ CRC 0, queue overflows 0, 40 stale partial frames dropped; the GC sent
 64,787 frames, 55 retries, all recovered, no timeout outside the forced
 silences. The first-word loss is still unexplained (as before).
 
+Frontier `make check`, same tree, toolchain and options, run back to back:
+`frontier-gc-m4a2` (`f8c02476e1`, the PoC's parent) and
+`frontier-battle-rule-poc` (`04bec70cc7`) give the same status for every
+one of the 6,806 tests: PASS 3,890, FAIL 2,413, FLAKY 41, TO_DO 419,
+KNOWN_FAILING 19, ASSUMPTION_FAIL 14, EXPECTED_FAIL 7, CRASH 2, ERROR 1
+(summary: 2,455 failed). No new failure; the failures are the existing
+ones of this Frontier tree.
+
 Communication and load:
 
 | | M4-A2 (release 6) | PoC (release 7) |
