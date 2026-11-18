@@ -147,3 +147,20 @@
   and recover on its first retry (no link loss). The link code did not
   change; heavy native builds ran on the same machine at the time. The
   JoyBus first-word loss is still unexplained.
+
+## M4-W (release 9, development only)
+
+- Weather only; terrain (M4-T) and items (M4-B: rocks, Utility Umbrella,
+  Safety Goggles) are not simulated. Primal weather, Forecast, Flower Gift,
+  Hydration, Leaf Guard, Protosynthesis and the other weather abilities in
+  [weather](weather.md) stay UNSUPPORTED; so do the moves listed there and,
+  in V15, every powder move.
+- The overworld weather is not exported: the GBA refuses a V15 battle on a
+  map whose weather this build brings into battles.
+- V15 changes two V14 behaviours for V15 requests only: accuracy stages use
+  the game's ratio table, and replacements made after the same turn run
+  their entry abilities together in speed order. V7–V14 keep the old rules.
+- The GC core takes up to about 0.2 ms per turn in a V15 Triple (the weather
+  lookups are not cached); V12–V14 are unchanged.
+- During the M4-W Dolphin runs, 4 of 56 sessions had one frame time out and
+  recover on its first retry; the JoyBus first-word loss is still unexplained.

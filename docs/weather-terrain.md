@@ -1,12 +1,19 @@
 # Weather and terrain (design for M4-W and M4-T)
 
-Status: **design only**. Nothing here is implemented in release 6; the
-implementation starts after the M4-A2 review. The 2026-11-18 design review
-keeps V12 as the base and consolidates hooks, conditions and typed
-operations first, so the hook kinds proposed below may become conditions
-and operations of that model; the field state and its single writer stay. The reference is
-pokeemerald-expansion's battle code and its `B_*` configs, read for
-behaviour only (the GC engine stays an independent implementation).
+Status: **weather implemented in M4-W** (request V15, release 9; the
+implementation, its order and rounding and what changed from this design
+are in [weather](weather.md)). **Terrain is still design only** (M4-T).
+The field state below is implemented as `Battle.field` with one
+`FieldEffect` for the weather; the request block became the V15 field
+rules, the proposed hook kinds became V15 move effects, hooks, predicates
+and modifier stages. Corrections from checking this design against the
+Frontier build: the weather counts down at the start of the end-of-turn
+order (a weather that ends does nothing more that turn), the weather
+damage factor is its own step of the formula, ability weather before
+Gen 6 keeps the counter it finds, and harsh sunlight prevents freezing.
+The reference is pokeemerald-expansion's battle code and its `B_*`
+configs, read for behaviour only (the GC engine stays an independent
+implementation).
 
 ## Goals
 
@@ -97,9 +104,10 @@ a field change. `bc_field_end_turn` counts down and emits `EV_FIELD_END`.
   move's effect, per use).
 - Entry setters run in the entry-ability step, in speed order (the same
   order the leads use now).
-- End of turn: weather residual first, then the existing status residuals,
-  then terrain healing, then end-of-turn abilities, then the countdown
-  (each with its message), following the reference's end-of-turn blocks.
+- End of turn: the weather countdown first (as implemented in M4-W), then
+  the weather residual, then the existing status residuals, then terrain
+  healing, then end-of-turn abilities, then the terrain countdown, following
+  the reference's end-of-turn blocks.
 - Damage and accuracy modifiers are per hit / per target, like the
   existing ability modifiers.
 

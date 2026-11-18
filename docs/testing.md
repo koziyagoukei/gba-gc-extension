@@ -176,3 +176,27 @@ V12 / V13 trace equivalence as for the PoC (`battle_trace.c` against
 Dolphin: Utilities -> GC Ability Lab... L26-L29 are V14 (Single, Double,
 Triple, Rotation). `battle-replay <log> -version 13` replays a V14 run with
 the V13 arithmetic (same bytes, seed and commands) and prints its damage.
+
+## M4-W (release 9, [weather](weather.md))
+
+Native: `battle_test.c` adds `test_v15_*` (wire and validation, weather
+set / end / KEEP / start / lock, entry order and deferred replacements,
+suppression, the weather damage step, accuracy, speed order, residuals,
+moves in a weather, no freeze, strict moves, 240 random weather battles in
+four formats run twice, and `test_v15_expansion_reference`).
+
+Expansion reference (Frontier branch `frontier-gc-m4w`):
+
+```sh
+make check TESTS="GC V15 reference"
+```
+
+Trace: `battle_trace 15` plays the same corpus with weather added (field
+rules, weather abilities and moves); 12 to 14 are unchanged and compare
+with M4-P. Compile the trace main inside each tree when comparing trees
+(its quoted includes resolve next to the source file).
+
+Dolphin: Utilities -> GC Ability Lab... L30-L36 are V15 (L30 Single, L31
+Double, L32 Triple, L33 Rotation, L34 strict refusal of primal weather, L35
+= L32 with the Gen 5 weather rules and the same seed, L36 a battle-start
+weather). The companion logs the field rules as `PH10` lines.
