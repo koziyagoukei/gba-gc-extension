@@ -191,7 +191,8 @@ static bool poll_multi_action(BattleMultiAction *a) {
     if (!host_app_to(b.link, b.mode.app_id, opcode, NULL, 0, &d, &n, &status)) return false;
     if (status == APP_OK) {
         switch (b.mode.app_version) {
-        case BATTLE_APP_VERSION_MODIFIERS:  // V13, V12, V11, V10 and V9 keep the V6 action layout
+        case BATTLE_APP_VERSION_FIXED_POINT:  // V14, V13, V12, V11, V10 and V9 keep the V6 action layout
+        case BATTLE_APP_VERSION_MODIFIERS:
         case BATTLE_APP_VERSION_ABILITY_HOOKS:
         case BATTLE_APP_VERSION_ABILITIES:
         case BATTLE_APP_VERSION_TIMING:
@@ -313,7 +314,7 @@ static void log_entry(const char *side, const BattleEntry *e) {
             if (h->kind == BABIL_MODIFIER) {
                 const BattleModifier *x = &h->mod;
                 SYS_Report("PH8   ability id=%u hook%u modifier stage=%02x percent=%u flags=%02x pred=%02x:%02x,%02x:%02x%s\n",
-                           a->source, i, x->stage, x->percent, x->flags, x->pred[0].kind, x->pred[0].arg,
+                           a->source, i, x->stage, x->percent, h->flags, x->pred[0].kind, x->pred[0].arg,
                            x->pred[1].kind, x->pred[1].arg, note);
                 continue;
             }

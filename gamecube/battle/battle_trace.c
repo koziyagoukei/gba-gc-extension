@@ -10,7 +10,7 @@
 //
 //   cc -std=c11 -O2 -Iprotocol -Igamecube/battle protocol/*.c gamecube/battle/battle_*.c
 //      (without battle_test.c) -o build/battle-trace
-//   build/battle-trace [version] > trace.txt     (version 12 by default; 13 relabels the same data)
+//   build/battle-trace [version] > trace.txt     (version 12 by default; 13 and 14 relabel the same data)
 //
 // It uses only the public core API and the protocol records, so the same
 // source builds against older trees.

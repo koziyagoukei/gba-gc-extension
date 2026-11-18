@@ -1,5 +1,5 @@
 // Replays a fixed-seed battle from a Dolphin log on the native core
-// (docs/rule-poc.md).
+// (docs/rule-poc.md, docs/modifiers.md).
 //
 // The companion logs the request bytes of a RULE_FIXED_SEED battle
 // ("PH9 REQ"), the player's commands ("MULTI ACTION", "ROSTER PLAYER") and
@@ -12,9 +12,11 @@
 //   cc -std=c11 -O2 -Iprotocol -Igamecube/battle protocol/*.c gamecube/battle/battle_core.c
 //      gamecube/battle/battle_effects.c gamecube/battle/battle_abilities.c
 //      gamecube/battle/battle_modifiers.c gamecube/battle/battle_replay.c -o build/battle-replay
-//   build/battle-replay dolphin.log [-print | -without]
+//   build/battle-replay dolphin.log [-print | -without | -version N]
 // -without removes every V13 modifier record first (same bytes otherwise,
 // same seed and commands) and prints the damage events: the counterfactual.
+// -version N relabels the request (V13 <-> V14 share the layout, so a V14
+// run replays with the V13 arithmetic) and prints its damage events too.
 
 #include "battle_core.h"
 
@@ -26,6 +28,7 @@
 static char *expected[MAX_LINES];
 static unsigned expected_count, compared, mismatches;
 static bool print_all, without;
+static int relabel = -1;
 
 typedef struct { unsigned turn, actor, kind, slot, target, rotation; } Command;
 static Command commands[512];
@@ -132,6 +135,10 @@ int main(int argc, char **argv) {
     }
     print_all = argc > 2 && strcmp(argv[2], "-print") == 0;
     without = argc > 2 && strcmp(argv[2], "-without") == 0;
+    if (argc > 3 && strcmp(argv[2], "-version") == 0) {
+        relabel = atoi(argv[3]);
+        without = true;  // a counterfactual: print its damage lines, do not compare
+    }
     static BattleRequest r;
     static Battle b;
     static EventLog log;
@@ -140,7 +147,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 #ifdef BATTLE_REQUEST_VERSION_MODIFIERS  // (absent when built against a V12 tree)
-    for (unsigned side = 0; without && side < 2; ++side)
+    for (unsigned side = 0; without && relabel < 0 && side < 2; ++side)  // -without only
         for (unsigned i = 0; i < (side ? r.opponent_count : r.player_count); ++i) {
             BattleMon *m = side ? &r.opponent[i].mon : &r.player[i].mon;
             for (unsigned k = 0; k < 4; ++k) {
@@ -157,6 +164,10 @@ int main(int argc, char **argv) {
             m->ability.count = (uint8_t)kept;
         }
 #endif
+    if (relabel >= 0) {
+        r.version = (uint8_t)relabel;
+        without = true;
+    }
     const int init = battle_init(&b, &r, seed);
     printf("request v%u format=%u bytes=%u seed=%08x init=%d, %u logged lines, %u commands\n", r.version, r.format,
            byte_count, seed, init, expected_count, command_count);
