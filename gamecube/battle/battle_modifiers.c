@@ -1,5 +1,5 @@
 // Shared predicates and damage modifiers of the GameCube battle core
-// (request V13 PoC, docs/rule-poc.md).
+// (requests V13 and V14, docs/modifiers.md).
 //
 // A modifier is one record type for moves (BEFF_MODIFIER) and abilities
 // (BABIL_MODIFIER): a stage, a category, a percent and up to two predicates
@@ -10,9 +10,9 @@
 //
 // What the record cannot change is fixed per stage below: where the stage
 // applies in the damage formula (bc_calculate_damage), the order of its
-// sources, the rounding (floor after each step) and the minimum (1, except
-// the final damage, whose minimum of 1 is applied once afterwards). No
-// modifier draws a random number.
+// sources, the rounding (V13: floor after each step; V14: one 4.12 chain,
+// rounded once) and the minimum (1, except the final damage, whose minimum
+// of 1 is applied once afterwards). No modifier draws a random number.
 
 #include "battle_internal.h"
 
@@ -92,60 +92,132 @@ static bool holds(const ModContext *c, const Mod *m) {
     return true;
 }
 
-// The one multiplication: floor, then the stage's minimum.
-static uint64_t apply(uint8_t stage, uint64_t value, unsigned percent) {
-    value = value * percent / 100u;
-    return value || stage == BMOD_FINAL ? value : 1;
+// ---------------------------------------------------------------- arithmetic
+//
+// V13 and earlier: each modifier multiplies the value by percent / 100,
+// floored, then the stage's minimum. V14 (fixed point, docs/modifiers.md):
+// the stage's modifiers are first chained into one 4.12 factor, then the
+// value is multiplied by it once and rounded to the nearest integer (an
+// exact half rounds down), as the Gen 5+ damage formula does. A percent is
+// the nearest 4.12 value (150 -> 6144, 130 -> 5325, 33 -> 1352). The chain
+// rounds half up for the power stage and half down for the others.
+
+uint32_t bc_fx_percent(unsigned percent) { return (uint32_t)((percent * 4096u + 50u) / 100u); }
+
+uint64_t bc_fx_apply(uint64_t factor, uint64_t value) {
+    if (factor > UINT32_MAX) factor = UINT32_MAX;  // far beyond any valid request; keeps the product in range
+    if (value > UINT32_MAX) value = UINT32_MAX;
+    return (factor * value + 2047u) >> 12;
 }
 
-// Sources of one stage, in order. The V12 kinds come first, as in V12
-// (first-only where V12 used the first hook of the kind), then the V13
-// records: the move's, the attacker's, the defender's.
+static uint64_t fx_chain(uint8_t stage, uint64_t chain, uint32_t factor) {
+    if (chain > UINT32_MAX) chain = UINT32_MAX;
+    return (chain * factor + (stage == BMOD_POWER ? 2048u : 2047u)) >> 12;
+}
+
+static bool fixed_point(const ModContext *c, uint8_t stage) {
+    return stage != BMOD_BASE_POWER && c->b->request->version >= BATTLE_REQUEST_VERSION_FIXED_POINT;
+}
+
+// One stage in progress: the value itself (V13), or the chain (V14).
+typedef struct {
+    uint8_t stage;
+    bool fixed;
+    uint64_t value;
+} Acc;
+
+static void step(Acc *a, unsigned percent) {
+    if (a->fixed) {
+        a->value = fx_chain(a->stage, a->value, bc_fx_percent(percent));
+    } else {
+        a->value = a->value * percent / 100u;
+        if (!a->value && a->stage != BMOD_FINAL) a->value = 1;
+    }
+}
+
+// ---------------------------------------------------------------- sources
+
+// Sources of one stage, in order (first-only where V12 used the first hook
+// of the kind). V13: the V12 kinds first, then the records of the move, the
+// attacker and the defender. V14 orders the sources by holder as the Gen 5+
+// formula does: the move, then the attacker's ability, then the defender's
+// (the defender's first for its defending stat); the final modifiers of the
+// abilities go in speed order (the faster Pokemon's first, the attacker's
+// on a tie).
 enum { SRC_MOVE, SRC_ATTACKER, SRC_DEFENDER };
 typedef struct { uint8_t source, kind; bool first_only; } Pass;
-#define V13_PASSES {SRC_MOVE, BEFF_MODIFIER, false}, {SRC_ATTACKER, BABIL_MODIFIER, false}, \
-                   {SRC_DEFENDER, BABIL_MODIFIER, false}
+typedef struct { const Pass *passes; unsigned count; } PassList;
+#define MOVE_PASS {SRC_MOVE, BEFF_MODIFIER, false}
+#define ATTACKER_PASS {SRC_ATTACKER, BABIL_MODIFIER, false}
+#define DEFENDER_PASS {SRC_DEFENDER, BABIL_MODIFIER, false}
+#define V13_PASSES MOVE_PASS, ATTACKER_PASS, DEFENDER_PASS
+#define LIST(list) {list, sizeof(list) / sizeof(*list)}
+
 static const Pass base_power_passes[] = {V13_PASSES};
 static const Pass power_passes[] = {{SRC_ATTACKER, BABIL_LOW_POWER, true}, V13_PASSES};
 static const Pass attack_passes[] = {{SRC_ATTACKER, BABIL_ATTACK_MULT, false}, {SRC_ATTACKER, BABIL_PINCH, true},
                                      {SRC_DEFENDER, BABIL_RESIST, true}, V13_PASSES};
 static const Pass defense_passes[] = {{SRC_DEFENDER, BABIL_DEFENSE_MULT, false}, V13_PASSES};
 static const Pass final_passes[] = {V13_PASSES};
-static const struct { const Pass *passes; unsigned count; } stages[BMOD_COUNT] = {
-#define STAGE(id, list) [id] = {list, sizeof(list) / sizeof(*list)}
-    STAGE(BMOD_BASE_POWER, base_power_passes), STAGE(BMOD_POWER, power_passes), STAGE(BMOD_ATTACK, attack_passes),
-    STAGE(BMOD_DEFENSE, defense_passes), STAGE(BMOD_FINAL, final_passes),
-#undef STAGE
+static const PassList v13_stages[BMOD_COUNT] = {
+    [BMOD_BASE_POWER] = LIST(base_power_passes), [BMOD_POWER] = LIST(power_passes),
+    [BMOD_ATTACK] = LIST(attack_passes), [BMOD_DEFENSE] = LIST(defense_passes), [BMOD_FINAL] = LIST(final_passes),
 };
 
-static uint64_t run_move(const ModContext *c, uint8_t stage, uint64_t value) {
-    if (c->b->request->version < BATTLE_REQUEST_VERSION_MODIFIERS) return value;
+static const Pass fx_power_passes[] = {MOVE_PASS, {SRC_ATTACKER, BABIL_LOW_POWER, true}, ATTACKER_PASS, DEFENDER_PASS};
+static const Pass fx_attack_passes[] = {MOVE_PASS, {SRC_ATTACKER, BABIL_ATTACK_MULT, false},
+                                        {SRC_ATTACKER, BABIL_PINCH, true}, ATTACKER_PASS,
+                                        {SRC_DEFENDER, BABIL_RESIST, true}, DEFENDER_PASS};
+static const Pass fx_defense_passes[] = {MOVE_PASS, {SRC_DEFENDER, BABIL_DEFENSE_MULT, false}, DEFENDER_PASS,
+                                         ATTACKER_PASS};
+static const Pass fx_final_passes[] = {MOVE_PASS, ATTACKER_PASS, DEFENDER_PASS};
+static const Pass fx_final_slower_passes[] = {MOVE_PASS, DEFENDER_PASS, ATTACKER_PASS};
+static const PassList fx_stages[BMOD_COUNT] = {
+    [BMOD_POWER] = LIST(fx_power_passes), [BMOD_ATTACK] = LIST(fx_attack_passes),
+    [BMOD_DEFENSE] = LIST(fx_defense_passes), [BMOD_FINAL] = LIST(fx_final_passes),
+};
+static const PassList fx_final_slower = LIST(fx_final_slower_passes);
+#undef LIST
+
+static void run_move(const ModContext *c, Acc *a) {
+    if (c->b->request->version < BATTLE_REQUEST_VERSION_MODIFIERS) return;
     for (unsigned i = 0; i < c->move->effect_count; ++i) {
         const BattleEffect *e = &c->move->effects[i];
         if (e->kind != BEFF_MODIFIER) continue;
         const Mod m = from_record(&e->mod);
-        if (m.stage == stage && holds(c, &m)) value = apply(stage, value, m.percent);
+        if (m.stage == a->stage && holds(c, &m)) step(a, m.percent);
     }
-    return value;
 }
 
-static uint64_t run_hooks(const ModContext *c, const Pass *p, uint8_t stage, uint64_t value) {
+static void run_hooks(const ModContext *c, const Pass *p, Acc *a) {
     const Battler *holder = p->source == SRC_DEFENDER ? c->defender : c->attacker;
     const BattleAbilityHook *h = NULL;
     while ((h = bc_ability_next(c->b, holder, p->kind, h))) {
         const Mod m = from_hook(h);
-        if (m.stage == stage && m.defender == (p->source == SRC_DEFENDER) && holds(c, &m))
-            value = apply(stage, value, m.percent);
+        if (m.stage == a->stage && m.defender == (p->source == SRC_DEFENDER) && holds(c, &m)) step(a, m.percent);
         if (p->first_only) break;
     }
-    return value;
+}
+
+static const PassList *passes(const ModContext *c, uint8_t stage, bool fixed) {
+    if (!fixed) return &v13_stages[stage];
+    if (stage == BMOD_FINAL && c->attacker->speed < c->defender->speed) return &fx_final_slower;
+    return &fx_stages[stage];
 }
 
 uint64_t bc_modify(const ModContext *c, uint8_t stage, uint64_t value) {
     if (stage == BMOD_NONE || stage >= BMOD_COUNT) return value;
-    for (unsigned i = 0; i < stages[stage].count; ++i) {
-        const Pass *p = &stages[stage].passes[i];
-        value = p->source == SRC_MOVE ? run_move(c, stage, value) : run_hooks(c, p, stage, value);
+    const bool fixed = fixed_point(c, stage);
+    Acc a = {.stage = stage, .fixed = fixed, .value = fixed ? 4096u : value};
+    // The semi-invulnerable double damage (Earthquake on Dig) heads the final chain.
+    if (fixed && stage == BMOD_FINAL && c->doubled) a.value = 8192u;
+    const PassList *list = passes(c, stage, fixed);
+    for (unsigned i = 0; i < list->count; ++i) {
+        const Pass *p = &list->passes[i];
+        if (p->source == SRC_MOVE) run_move(c, &a);
+        else run_hooks(c, p, &a);
     }
-    return value;
+    if (!fixed) return a.value;
+    value = bc_fx_apply(a.value, value);
+    return value || stage == BMOD_FINAL ? value : 1;
 }

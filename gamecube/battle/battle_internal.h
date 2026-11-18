@@ -16,8 +16,14 @@ Battler *bc_mutable_at(Battle *battle, Position position);
 uint8_t bc_effectiveness(const Battle *battle, const Battler *attacker, uint8_t move_type, const Battler *defender);
 // True once either side has no Pokemon left (the battle is decided).
 bool bc_battle_decided(const Battle *battle);
+// `flags` (BCD_*) are where the hit is: V14 applies them inside the formula,
+// earlier requests after it (in the caller, as before).
+#define BCD_SPREAD  (1u << 0)  // a move hitting more than one target (x0.75)
+#define BCD_DOUBLED (1u << 1)  // a move doubled against a semi-invulnerable target (x2)
 uint16_t bc_calculate_damage(const Battle *battle, const Battler *attacker, const BattleMove *move,
-                             const Battler *defender, unsigned random_percent, bool typeless, uint8_t *effectiveness);
+                             const Battler *defender, unsigned random_percent, bool typeless, unsigned flags,
+                             uint8_t *effectiveness);
+bool bc_fixed_point(const Battle *battle);  // V14: 4.12 damage arithmetic
 void bc_emit(EventLog *log, BattleEvent event);
 void bc_execute_switch(Battle *battle, Position user, uint8_t index, EventKind reason, EventLog *log);
 bool bc_drag_out(Battle *battle, Position target, EventLog *log);
@@ -55,18 +61,23 @@ void bc_cancel_charge(Battle *battle, Position user, EventLog *log);
 // Confusion check before an action; true if the battler hurt itself instead.
 bool bc_confusion_check(Battle *battle, Position user, EventLog *log);
 
-// Shared damage modifiers (battle_modifiers.c, docs/rule-poc.md): the V13
+// Shared damage modifiers (battle_modifiers.c, docs/modifiers.md): the V13
 // records of the move and of both abilities, and the V12 multiplier hooks,
 // for one stage (BMOD_*) of one hit. base_power is the power after
-// BMOD_BASE_POWER (what BPRED_POWER_AT_MOST compares).
+// BMOD_BASE_POWER (what BPRED_POWER_AT_MOST compares); doubled heads the V14
+// final chain with x2 (semi-invulnerable target).
 typedef struct {
     const Battle *b;
     const Battler *attacker, *defender;
     const BattleMove *move;
-    bool typeless;
+    bool typeless, doubled;
     unsigned base_power;
 } ModContext;
 uint64_t bc_modify(const ModContext *context, uint8_t stage, uint64_t value);
+// 4.12 fixed point: a percent as the nearest 4.12 value, and value x factor
+// rounded to the nearest integer (an exact half down).
+uint32_t bc_fx_percent(unsigned percent);
+uint64_t bc_fx_apply(uint64_t factor, uint64_t value);
 
 // Ability hooks (battle_abilities.c, docs/abilities.md). All are inert unless
 // the request is V11+ without RULE_IGNORE_ABILITIES. An ability is a list of

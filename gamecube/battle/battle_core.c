@@ -387,8 +387,16 @@ bool bc_battle_decided(const Battle *b) {
     return false;
 }
 
+bool bc_fixed_point(const Battle *b) { return b->request->version >= BATTLE_REQUEST_VERSION_FIXED_POINT; }
+
+// The damage of one hit. V13 and earlier: integer steps, each floored, and
+// the spread and semi-invulnerable factors applied by the caller after the
+// damage minimum. V14 (docs/modifiers.md) follows the Gen 5+ formula: base
+// damage, spread x0.75, random factor, same-type bonus, type, burn, then the
+// final modifiers (semi-invulnerable x2 first), each a 4.12 factor rounded
+// to the nearest integer (an exact half down).
 uint16_t bc_calculate_damage(const Battle *b, const Battler *a, const BattleMove *m, const Battler *d,
-                                 unsigned random_percent, bool typeless, uint8_t *eff) {
+                             unsigned random_percent, bool typeless, unsigned flags, uint8_t *eff) {
     *eff = typeless ? 4 : bc_effectiveness(b, a, m->type, d);
     if (*eff == 0) return 0;
     const bool physical = m->category == BCAT_PHYSICAL;
@@ -400,19 +408,24 @@ uint16_t bc_calculate_damage(const Battle *b, const Battler *a, const BattleMove
     }
     // Modifiers of the move (V13) and of both abilities (V11+), per stage
     // (battle_modifiers.c): base power, power, attacking and defending stat.
-    ModContext c = {.b = b, .attacker = a, .defender = d, .move = m, .typeless = typeless, .base_power = m->power};
+    const bool fx = bc_fixed_point(b);
+    ModContext c = {.b = b, .attacker = a, .defender = d, .move = m, .typeless = typeless,
+                    .doubled = (flags & BCD_DOUBLED) != 0, .base_power = m->power};
     c.base_power = (unsigned)bc_modify(&c, BMOD_BASE_POWER, m->power);
     const unsigned power = (unsigned)bc_modify(&c, BMOD_POWER, c.base_power);
     atk = (unsigned)bc_modify(&c, BMOD_ATTACK, atk);
     def = (unsigned)bc_modify(&c, BMOD_DEFENSE, def);
     uint64_t dmg = ((2u * a->level / 5u + 2u) * (uint64_t)power * atk / (def ? def : 1)) / 50u + 2u;
+    if (fx && (flags & BCD_SPREAD)) dmg = bc_fx_apply(3072u, dmg);
     dmg = dmg * random_percent / 100u;
-    if (!typeless && (m->type == a->types[0] || (a->type_count == 2 && m->type == a->types[1])))
-        dmg = dmg * bc_ability_stab(b, a) / 100u;
-    dmg = dmg * *eff / 4u;
+    if (!typeless && (m->type == a->types[0] || (a->type_count == 2 && m->type == a->types[1]))) {
+        const unsigned stab = bc_ability_stab(b, a);
+        dmg = fx ? bc_fx_apply(bc_fx_percent(stab), dmg) : dmg * stab / 100u;
+    }
+    dmg = fx ? bc_fx_apply(*eff * 1024u, dmg) : dmg * *eff / 4u;
     if ((physical && bc_status_kind(b, a) == BST_BURN && !bc_ability_ignores_burn(b, a)) ||
         (!physical && bc_status_kind(b, a) == BST_FROSTBITE))
-        dmg /= 2;
+        dmg = fx ? bc_fx_apply(2048u, dmg) : dmg / 2;
     dmg = bc_modify(&c, BMOD_FINAL, dmg);
     if (dmg == 0) dmg = 1;
     return dmg > 0xffff ? 0xffff : (uint16_t)dmg;
@@ -420,7 +433,7 @@ uint16_t bc_calculate_damage(const Battle *b, const Battler *a, const BattleMove
 
 uint16_t battle_damage(const Battle *b, const Battler *a, const BattleMove *m, const Battler *d,
                        unsigned random_percent, uint8_t *eff) {
-    return bc_calculate_damage(b, a, m, d, random_percent, false, eff);
+    return bc_calculate_damage(b, a, m, d, random_percent, false, 0, eff);
 }
 
 void bc_emit(EventLog *log, BattleEvent ev) {

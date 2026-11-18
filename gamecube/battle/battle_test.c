@@ -1,5 +1,6 @@
 // Desktop tests for the battle protocol codecs and the battle core.
 #include "battle_core.h"
+#include "battle_internal.h"  // bc_calculate_damage (spread / semi-invulnerable flags)
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -2670,7 +2671,7 @@ static BattleAbility ab(uint8_t kind, uint8_t arg0, int8_t arg1, uint8_t arg2, u
     if (kind == BABIL_NONE || kind == BABIL_UNSUPPORTED)
         return (BattleAbility){.cls = kind == BABIL_NONE ? BACLASS_NONE : BACLASS_UNSUPPORTED, .source = source};
     return (BattleAbility){.cls = BACLASS_HOOKS, .count = 1, .source = source,
-                           .hooks = {{kind, arg0, arg1, arg2, chance, (uint8_t)(chance ? 100 : 0), percent, 0, {0}}}};
+                           .hooks = {{kind, {{arg0, arg1, arg2, chance, (uint8_t)(chance ? 100 : 0), percent}}, 0}}};
 }
 #define HOOK0(e) ((e).mon.ability.hooks[0])
 static bool hook_ok(BattleAbilityHook h) { return battle_ability_hook_valid(&h, NTYPES, BATTLE_REQUEST_VERSION_ABILITIES); }
@@ -3322,7 +3323,7 @@ static void make_hooks(BattleRequest *r, uint8_t format) {
 
 static BattleAbilityHook hk(uint8_t kind, uint8_t arg0, int8_t arg1, uint8_t arg2, uint8_t num, uint8_t den,
                             uint8_t percent, uint8_t flags) {
-    return (BattleAbilityHook){kind, arg0, arg1, arg2, num, den, percent, flags, {0}};
+    return (BattleAbilityHook){kind, {{arg0, arg1, arg2, num, den, percent}}, flags};
 }
 
 static BattleAbility hooks(uint16_t source, unsigned n, const BattleAbilityHook *list) {
@@ -3906,9 +3907,6 @@ static void test_v13_validation(void) {
     assert(mod_ok(HEX_MOD, false) && mod_ok(CUSTOM_MOD, true) && mod_ok(HEX_MOD, true));
     assert(mod_ok(modr(BMOD_FINAL, 1, 0, 0, 0, 0), false));
     assert(mod_ok(modr(ST(BMOD_DEFENSE, BCAT_SPECIAL) | BMODF_DEFENDER, 255, BPRED_MOVE_TYPE, T_GHOST, 0, 0), true));
-    BattleModifier breakable = CUSTOM_MOD;
-    breakable.flags = BAHF_BREAKABLE;
-    assert(mod_ok(breakable, true) && !mod_ok(breakable, false));
     // Stage, category, reserved bits, percent.
     assert(!mod_ok(modr(BMOD_NONE, 100, 0, 0, 0, 0), true));
     assert(!mod_ok(modr(BMOD_COUNT, 100, 0, 0, 0, 0), true) && !mod_ok(modr(7, 100, 0, 0, 0, 0), true));
@@ -3920,9 +3918,6 @@ static void test_v13_validation(void) {
     assert(!mod_ok(modr(BMOD_POWER | BMODF_DEFENDER, 150, 0, 0, 0, 0), false));
     assert(!mod_ok(modr(BMOD_POWER, 150, BPRED_MOVE_TYPE, T_FIRE, 0, 0), false));
     assert(!mod_ok(modr(BMOD_POWER, 150, BPRED_POWER_AT_MOST, 60, 0, 0), false));
-    BattleModifier flagged = HEX_MOD;
-    flagged.flags = 1;
-    assert(!mod_ok(flagged, false) && !mod_ok(flagged, true));
     // Predicates: unknown kinds, reserved bit, arguments, packing.
     assert(!mod_ok(modr(BMOD_POWER, 150, BPRED_COUNT, 1, 0, 0), true));
     assert(!mod_ok(modr(BMOD_POWER, 150, 0x3f, 1, 0, 0), true));
@@ -3936,28 +3931,29 @@ static void test_v13_validation(void) {
     assert(!mod_ok(modr(BMOD_BASE_POWER, 150, BPRED_POWER_AT_MOST, 60, 0, 0), true));
     assert(!mod_ok(modr(BMOD_POWER, 150, 0, 0, BPRED_STATUS, ANY_STATUS), true));
     assert(!mod_ok(modr(BMOD_POWER, 150, 0, 1, 0, 0), true) && !mod_ok(modr(BMOD_POWER, 150, BPRED_DEFENDER, 0, 0, 0), true));
-    // A hook keeps the old fields at zero; the kind is V13 only.
+    // A hook: the kind is V13 only; of the slot flags only BAHF_BREAKABLE (wire byte 3).
     BattleAbilityHook h = mod_hook(CUSTOM_MOD);
     assert(battle_ability_hook_valid(&h, NTYPES, BATTLE_REQUEST_VERSION_MODIFIERS));
     assert(!battle_ability_hook_valid(&h, NTYPES, BATTLE_REQUEST_VERSION_ABILITY_HOOKS));
-    h.percent = 150;
-    assert(!battle_ability_hook_valid(&h, NTYPES, BATTLE_REQUEST_VERSION_MODIFIERS));
+    h.flags = BAHF_BREAKABLE;
+    assert(battle_ability_hook_valid(&h, NTYPES, BATTLE_REQUEST_VERSION_MODIFIERS));
+    for (unsigned bit = 0; bit < 7; ++bit) {
+        h.flags = (uint8_t)(1u << bit);
+        assert(!battle_ability_hook_valid(&h, NTYPES, BATTLE_REQUEST_VERSION_MODIFIERS));
+    }
     h = mod_hook(CUSTOM_MOD);
-    h.flags = BAHF_BREAKABLE;  // in the record (mod.flags), not in the old field
-    assert(!battle_ability_hook_valid(&h, NTYPES, BATTLE_REQUEST_VERSION_MODIFIERS));
     h = (BattleAbilityHook){.kind = BABIL_COUNT, .percent = 100};
     assert(!battle_ability_hook_valid(&h, NTYPES, BATTLE_REQUEST_VERSION_MODIFIERS));
-    // An effect: damaging moves only, old fields zero.
+    // An effect: damaging moves only, no slot flags (no timing, no type chart).
     BattleMove hex = with_mod(damaging(65, T_FIRE, 100), HEX_MOD);
     assert(battle_move_effects_valid(&hex));
-    hex.effects[1].chance = 30;
-    assert(!battle_move_effects_valid(&hex));
-    hex.effects[1].chance = 0;
-    hex.effects[1].who = BWHO_USER;
-    assert(!battle_move_effects_valid(&hex));
-    hex.effects[1].who = 0;
-    hex.effects[1].flags = BEFL_TIMING(BETIME_PER_HIT);
-    assert(!battle_move_effects_valid(&hex));
+    for (unsigned bit = 0; bit < 8; ++bit) {
+        hex.effects[1].flags = (uint8_t)(1u << bit);
+        assert(!battle_move_effects_valid(&hex));
+    }
+    hex.effects[1].flags = 0;
+    // The record shares the legacy fields' storage: 8 bytes, as on the wire.
+    assert(sizeof(BattleEffect) == BATTLE_EFFECT_BYTES && sizeof(BattleAbilityHook) == BATTLE_ABILITY_HOOK_BYTES);
     BattleMove status = status_move(BTARGET_SINGLE, 100);
     push(&status, fx(BEFF_STATUS, BWHO_TARGET, 0, BST_PARALYSIS, 0, 0));
     push(&status, mod_effect(HEX_MOD));
@@ -3970,17 +3966,17 @@ static void test_v13_wire(void) {
     make_mods(&r, BATTLE_FORMAT_DOUBLE);
     set_move(&r.player[0], 0, 506, with_mod(damaging(65, T_FIRE, 100), HEX_MOD), 10);
     BattleAbility custom = MODS(250, CUSTOM_MOD);
-    custom.hooks[0].mod.flags = BAHF_BREAKABLE;
+    custom.hooks[0].flags = BAHF_BREAKABLE;
     give(&r.player[1], custom);
     give(&r.opponent[0], GUTS);  // V12 kinds stay valid in V13
     uint32_t n = battle_request_encode(&r, bytes, sizeof bytes);
     assert(n == battle_request_size(&r) && bytes[0] == BATTLE_REQUEST_VERSION_MODIFIERS);
     assert(battle_request_decode(bytes, n, &d));
     const BattleEffect *e = &d.player[0].mon.moves[0].effects[1];
-    assert(e->kind == BEFF_MODIFIER && !e->who && !e->chance && !e->arg0 && !e->flags &&
+    assert(e->kind == BEFF_MODIFIER && !e->flags &&
            memcmp(&e->mod, &r.player[0].mon.moves[0].effects[1].mod, sizeof e->mod) == 0);
     const BattleAbilityHook *h = &d.player[1].mon.ability.hooks[0];
-    assert(h->kind == BABIL_MODIFIER && !h->percent && !h->flags && h->mod.flags == BAHF_BREAKABLE &&
+    assert(h->kind == BABIL_MODIFIER && h->flags == BAHF_BREAKABLE &&
            memcmp(&h->mod, &custom.hooks[0].mod, sizeof h->mod) == 0);
     Battle b;
     assert(battle_init(&b, &d, 1) == BI_OK);
@@ -4015,7 +4011,11 @@ static void test_v13_wire(void) {
         raw[0] = BATTLE_REQUEST_VERSION_ABILITY_HOOKS;
         assert(!battle_request_decode(raw, k, &d));
     }
-    bytes[0] = BATTLE_REQUEST_VERSION_MODIFIERS + 1;
+    // V14 has the V13 layout (only the damage arithmetic differs); later versions are unknown.
+    bytes[0] = BATTLE_REQUEST_VERSION_FIXED_POINT;
+    assert(battle_request_decode(bytes, n, &d) && d.version == BATTLE_REQUEST_VERSION_FIXED_POINT &&
+           d.player[1].mon.ability.hooks[0].flags == BAHF_BREAKABLE);
+    bytes[0] = BATTLE_REQUEST_VERSION_LATEST + 1;
     assert(!battle_request_decode(bytes, n, &d));
     // The encoder refuses V13 records in an earlier request (moves and abilities).
     r.version = BATTLE_REQUEST_VERSION_ABILITY_HOOKS;
@@ -4068,7 +4068,7 @@ static void test_v13_largest_request(void) {
     const struct { uint8_t format; unsigned per_side; } cases[] = {
         {BATTLE_FORMAT_TRIPLE, 3}, {BATTLE_FORMAT_SINGLE, 6}, {BATTLE_FORMAT_DOUBLE, 6}};
     for (unsigned c = 0; c < 3; ++c)
-        for (uint8_t v = BATTLE_REQUEST_VERSION_ABILITY_HOOKS; v <= BATTLE_REQUEST_VERSION_MODIFIERS; ++v) {
+        for (uint8_t v = BATTLE_REQUEST_VERSION_ABILITY_HOOKS; v <= BATTLE_REQUEST_VERSION_LATEST; ++v) {  // V12..V14
             build_largest(&r, cases[c].format, cases[c].per_side, v);
             const uint32_t max = BATTLE_REQUEST_MAX_BYTES(2 * cases[c].per_side, NTYPES);
             assert(battle_request_size(&r) == max);
@@ -4436,6 +4436,412 @@ static void test_v13_determinism(void) {
     printf("v13 determinism: %u damage events\n", damage);
 }
 
+// ------------------------------------------------------------- V14 fixed-point arithmetic (docs/modifiers.md)
+
+static uint64_t mod_at(Battle *b, const BattleMove *m, uint8_t stage, uint64_t value, bool doubled) {
+    const ModContext c = {.b = b, .attacker = battle_active(b, 0), .defender = battle_active(b, 1), .move = m,
+                          .doubled = doubled, .base_power = m->power};
+    return bc_modify(&c, stage, value);
+}
+
+static void test_v14_arithmetic(void) {
+    // A percent is the nearest 4.12 value (as UQ_4_12(n) in the game).
+    assert(bc_fx_percent(150) == 6144 && bc_fx_percent(130) == 5325 && bc_fx_percent(120) == 4915);
+    assert(bc_fx_percent(133) == 5448 && bc_fx_percent(33) == 1352 && bc_fx_percent(50) == 2048);
+    assert(bc_fx_percent(1) == 41 && bc_fx_percent(255) == 10445 && bc_fx_percent(100) == 4096);
+    // value x factor to the nearest integer, an exact half down.
+    assert(bc_fx_apply(6144, 7) == 10 && bc_fx_apply(3072, 5) == 4 && bc_fx_apply(3072, 3) == 2);
+    assert(bc_fx_apply(1024, 7) == 2 && bc_fx_apply(1024, 6) == 1 && bc_fx_apply(4096, 12345) == 12345);
+    assert(bc_fx_apply(UINT64_MAX, UINT64_MAX) == bc_fx_apply(UINT32_MAX, UINT32_MAX));  // capped, no overflow
+
+    static BattleRequest r;
+    Battle b;
+    make_mods(&r, BATTLE_FORMAT_SINGLE);
+    const BattleMove plain = damaging(50, T_FIRE, 100);
+    // One chain per stage: 1.5 x 1.3 = 7987.5 / 4096. The power chain rounds
+    // that half up, the stat chains down; V13 floors each step (6144 -> 7987).
+    give(&r.player[0], MODS(260, modr(BMOD_POWER, 150, 0, 0, 0, 0), modr(BMOD_POWER, 130, 0, 0, 0, 0),
+                            modr(BMOD_ATTACK, 150, 0, 0, 0, 0), modr(BMOD_ATTACK, 130, 0, 0, 0, 0)));
+    r.version = BATTLE_REQUEST_VERSION_FIXED_POINT;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    assert(mod_at(&b, &plain, BMOD_POWER, 4096, false) == 7988 && mod_at(&b, &plain, BMOD_ATTACK, 4096, false) == 7987);
+    r.version = BATTLE_REQUEST_VERSION_MODIFIERS;
+    assert(battle_init(&b, &r, 1) == BI_OK && mod_at(&b, &plain, BMOD_POWER, 4096, false) == 7987);
+    // Rounded once: x1.5 (attacker) then x0.5 (defender) on 101 is 75.75 -> 76; V13 gives 151 -> 75.
+    give(&r.player[0], MODS(261, modr(BMOD_ATTACK, 150, 0, 0, 0, 0)));
+    give(&r.opponent[0], MODS(262, modr(BMOD_ATTACK | BMODF_DEFENDER, 50, 0, 0, 0, 0)));
+    assert(battle_init(&b, &r, 1) == BI_OK && mod_at(&b, &plain, BMOD_ATTACK, 101, false) == 75);
+    r.version = BATTLE_REQUEST_VERSION_FIXED_POINT;
+    assert(battle_init(&b, &r, 1) == BI_OK && mod_at(&b, &plain, BMOD_ATTACK, 101, false) == 76);
+    // Minimums: the stats and the power stay at least 1; the final stage may reach 0.
+    give(&r.player[0], MODS(263, modr(BMOD_ATTACK, 50, 0, 0, 0, 0), modr(BMOD_FINAL, 50, 0, 0, 0, 0)));
+    give(&r.opponent[0], (BattleAbility){0});
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    assert(mod_at(&b, &plain, BMOD_ATTACK, 1, false) == 1 && mod_at(&b, &plain, BMOD_FINAL, 1, false) == 0);
+    // The base power stage stays integer (Hex: x2) in V14.
+    give(&r.player[0], MODS(264, modr(BMOD_BASE_POWER, 150, 0, 0, 0, 0)));
+    assert(battle_init(&b, &r, 1) == BI_OK && mod_at(&b, &plain, BMOD_BASE_POWER, 45, false) == 67);
+
+    // Source order. With 1.10 (move), 1.01 and 1.25 the half-down chain is
+    // 5689 in that order and 5688 with the last two swapped.
+    const BattleMove m110[] = {with_mod(plain, modr(BMOD_ATTACK, 110, 0, 0, 0, 0)),
+                               with_mod(plain, modr(BMOD_DEFENSE, 110, 0, 0, 0, 0)),
+                               with_mod(plain, modr(BMOD_FINAL, 110, 0, 0, 0, 0))};
+    // Attack: move, attacker, defender.
+    give(&r.player[0], MODS(265, modr(BMOD_ATTACK, 101, 0, 0, 0, 0)));
+    give(&r.opponent[0], MODS(266, modr(BMOD_ATTACK | BMODF_DEFENDER, 125, 0, 0, 0, 0)));
+    assert(battle_init(&b, &r, 1) == BI_OK && mod_at(&b, &m110[0], BMOD_ATTACK, 4096, false) == 5689);
+    // Defense: move, defender, attacker (an attacker's record lowering the target's stat comes last).
+    give(&r.player[0], MODS(267, modr(BMOD_DEFENSE, 125, 0, 0, 0, 0)));
+    give(&r.opponent[0], MODS(268, modr(BMOD_DEFENSE | BMODF_DEFENDER, 101, 0, 0, 0, 0)));
+    assert(battle_init(&b, &r, 1) == BI_OK && mod_at(&b, &m110[1], BMOD_DEFENSE, 4096, false) == 5689);
+    // Final: move, then the faster Pokemon's ability (the attacker's on a tie).
+    give(&r.player[0], MODS(269, modr(BMOD_FINAL, 101, 0, 0, 0, 0)));
+    give(&r.opponent[0], MODS(270, modr(BMOD_FINAL | BMODF_DEFENDER, 125, 0, 0, 0, 0)));
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    const uint16_t speeds[][2] = {{100, 50}, {60, 60}, {10, 50}};
+    const uint64_t final[] = {5689, 5689, 5688};
+    for (unsigned i = 0; i < 3; ++i) {
+        battle_active(&b, 0)->speed = speeds[i][0];
+        battle_active(&b, 1)->speed = speeds[i][1];
+        assert(mod_at(&b, &m110[2], BMOD_FINAL, 4096, false) == final[i]);
+    }
+    // The semi-invulnerable x2 heads the final chain (exact); V13 leaves it to the caller.
+    give(&r.player[0], (BattleAbility){0});
+    give(&r.opponent[0], (BattleAbility){0});
+    assert(battle_init(&b, &r, 1) == BI_OK && mod_at(&b, &plain, BMOD_FINAL, 77, true) == 154);
+    r.version = BATTLE_REQUEST_VERSION_MODIFIERS;
+    assert(battle_init(&b, &r, 1) == BI_OK && mod_at(&b, &plain, BMOD_FINAL, 77, true) == 77);
+
+    // Largest chains: every record and hook at 255% on one stage stays in range.
+    r.version = BATTLE_REQUEST_VERSION_FIXED_POINT;
+    BattleMove many = plain;
+    for (unsigned i = 1; i < BATTLE_MAX_EFFECTS; ++i) push(&many, mod_effect(modr(BMOD_FINAL, 255, 0, 0, 0, 0)));
+    const BattleModifier max_mod = modr(BMOD_FINAL, 255, 0, 0, 0, 0);
+    const BattleModifier max_def = modr(BMOD_FINAL | BMODF_DEFENDER, 255, 0, 0, 0, 0);
+    give(&r.player[0], MODS(271, max_mod, max_mod, max_mod, max_mod));
+    give(&r.opponent[0], MODS(272, max_def, max_def, max_def, max_def));
+    set_move(&r.player[0], 0, 33, many, 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    assert(mod_at(&b, &many, BMOD_FINAL, UINT64_MAX, true) > UINT32_MAX);  // a chain of 2 x 2.55^13
+    uint8_t eff;
+    assert(bc_calculate_damage(&b, battle_active(&b, 0), &many, battle_active(&b, 1), 100, false,
+                               BCD_SPREAD | BCD_DOUBLED, &eff) == 0xffff);
+}
+
+// The spread and semi-invulnerable factors are applied once, inside the
+// formula, in a real V14 turn (strike no longer applies them afterwards).
+static bool from_roll(Battle *before, Position user, Position target, const BattleMove *m, unsigned flags,
+                      uint16_t amount, uint16_t *highest) {
+    bool found = false;
+    *highest = 0;
+    for (unsigned roll = 85; roll <= 100; ++roll) {
+        uint8_t eff;
+        const uint16_t v = bc_calculate_damage(before, battle_at(before, user), m, battle_at(before, target), roll,
+                                               false, flags, &eff);
+        found |= v == amount;
+        if (v > *highest) *highest = v;
+    }
+    return found;
+}
+
+static void test_v14_battle(void) {
+    static BattleRequest r;
+    static Battle b, before;
+    EventLog log;
+    uint16_t highest;
+    // Double: a spread hit on each foe is one of its V14 values with BCD_SPREAD, not x0.75 again.
+    make_mods(&r, BATTLE_FORMAT_DOUBLE);
+    r.version = BATTLE_REQUEST_VERSION_FIXED_POINT;
+    BattleMove spread = damaging(80, T_WATER, 0);
+    spread.category = BCAT_SPECIAL;
+    spread.target = BTARGET_ALL_FOES;
+    set_move(&r.player[0], 1, 57, spread, 10);
+    assert(battle_init(&b, &r, 5) == BI_OK);
+    before = b;
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1)}, 1, &log);
+    unsigned hits = 0;
+    for (unsigned i = 0; i < log.count; ++i) {
+        const BattleEvent *e = &log.events[i];
+        if (e->kind != EV_DAMAGE || e->user.side != 0 || e->user.slot != 0) continue;
+        ++hits;
+        assert(from_roll(&before, e->user, e->target, &spread, BCD_SPREAD, e->amount, &highest));
+        assert(e->amount * 4u > highest * 3u);
+    }
+    assert(hits == 2);
+    // Single: Earthquake on a Pokemon underground is doubled once.
+    make_mods(&r, BATTLE_FORMAT_SINGLE);
+    r.version = BATTLE_REQUEST_VERSION_FIXED_POINT;
+    BattleMove quake = damaging(100, T_NORMAL, 0);
+    quake.move_flags = BMF_DOUBLE_UNDERGROUND;
+    set_move(&r.player[0], 1, 91, charge_move(80, BSEMI_UNDERGROUND), 10);
+    set_move(&r.opponent[0], 1, 89, quake, 10);
+    r.opponent[0].record.speed = 1;
+    assert(battle_init(&b, &r, 3) == BI_OK);
+    before = b;
+    battle_run_turn(&b, (Action[]){slot_move(0, 0, 0, 1), slot_move(1, 0, 0, 1)}, 2, &log);
+    const BattleEvent *hit = find(&log, EV_DAMAGE);
+    assert(hit && hit->target.side == 0);
+    // The target was already underground when hit: compute against that state.
+    bc_mutable_at(&before, (Position){0, 0})->vol.semi_invulnerable = BSEMI_UNDERGROUND;
+    assert(from_roll(&before, hit->user, hit->target, &quake, BCD_DOUBLED, hit->amount, &highest));
+    assert(hit->amount <= highest);
+}
+
+// Source order where it changes a chain (three or more factors; two leading
+// factors commute exactly). Each expected value is the chain in the
+// documented order; the swapped order gives the other value shown.
+static void test_v14_order(void) {
+    static BattleRequest r;
+    Battle b;
+    make_mods(&r, BATTLE_FORMAT_SINGLE);
+    r.version = BATTLE_REQUEST_VERSION_FIXED_POINT;
+    const BattleMove plain = damaging(50, T_FIRE, 100);
+    // Power: the move's records, then Technician (LOW_POWER first would give 6268).
+    BattleMove two = with_mod(with_mod(plain, modr(BMOD_POWER, 101, 0, 0, 0, 0)), modr(BMOD_POWER, 101, 0, 0, 0, 0));
+    give(&r.player[0], HOOKS(101, hk(BABIL_LOW_POWER, 60, 0, 0, 0, 0, 150, 0)));
+    assert(battle_init(&b, &r, 1) == BI_OK && mod_at(&b, &two, BMOD_POWER, 4096, false) == 6267);
+    // Attack: ATTACK_MULT, PINCH, then the attacker's records (records before PINCH: 6330).
+    give(&r.player[0], (BattleAbility){.cls = BACLASS_HOOKS, .count = 3, .source = 102,
+                                       .hooks = {mod_hook(modr(BMOD_ATTACK, 102, 0, 0, 0, 0)),
+                                                 hk(BABIL_PINCH, T_FIRE, 0, 2, 0, 0, 150, 0),
+                                                 hk(BABIL_ATTACK_MULT, 0, 0, 0, 0, 0, 101, 0)}});
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_active(&b, 0)->hp = battle_active(&b, 0)->max_hp / 2;
+    assert(mod_at(&b, &plain, BMOD_ATTACK, 4096, false) == 6329);
+    // Attack: the attacker's record, then RESIST, then the defender's records (2110 swapped).
+    give(&r.player[0], MODS(273, modr(BMOD_ATTACK, 101, 0, 0, 0, 0)));
+    give(&r.opponent[0], (BattleAbility){.cls = BACLASS_HOOKS, .count = 2, .source = 47,
+                                         .hooks = {mod_hook(modr(BMOD_ATTACK | BMODF_DEFENDER, 102, 0, 0, 0, 0)),
+                                                   hk(BABIL_RESIST, T_FIRE, 0, BABIL_NO_TYPE, 0, 0, 50, 0)}});
+    assert(battle_init(&b, &r, 1) == BI_OK && mod_at(&b, &plain, BMOD_ATTACK, 4096, false) == 2109);
+    // Final: the move's records before the faster Pokemon's (5539 with the ability first).
+    BattleMove fin = with_mod(with_mod(plain, modr(BMOD_FINAL, 101, 0, 0, 0, 0)), modr(BMOD_FINAL, 103, 0, 0, 0, 0));
+    give(&r.player[0], MODS(274, modr(BMOD_FINAL, 130, 0, 0, 0, 0)));
+    give(&r.opponent[0], (BattleAbility){0});
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_active(&b, 0)->speed = 200;
+    assert(mod_at(&b, &fin, BMOD_FINAL, 4096, false) == 5540);
+    // A same-type bonus that is not a multiple of x0.5 rounds to the nearest in
+    // V14 (it floors in V13): some power shows the difference.
+    give(&r.player[0], HOOKS(91, hk(BABIL_STAB_MULT, 0, 0, 0, 0, 0, 133, 0)));
+    r.player[0].mon.types[0] = r.player[0].mon.types[1] = T_FIRE;
+    static BattleRequest r13;  // a Battle keeps a pointer to its request
+    static Battle v13;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    r13 = r;
+    r13.version = BATTLE_REQUEST_VERSION_MODIFIERS;
+    assert(battle_init(&v13, &r13, 1) == BI_OK);
+    unsigned differ = 0;
+    for (uint16_t power = 10; power <= 120; ++power) {
+        const BattleMove m = damaging(power, T_FIRE, 100);
+        differ += dmg(&b, &m) != dmg(&v13, &m);
+        assert(dmg(&b, &m) >= dmg(&v13, &m));
+    }
+    assert(differ > 0);
+}
+
+// Decoding writes the whole 8-byte slot, and before V13 the modifier kind
+// keeps its old meaning: refused on a supported move even when its bytes
+// would form a valid record, kept on an unsupported one.
+static void test_v14_union_decode(void) {
+    static BattleRequest r, d;
+    static uint8_t bytes[4096];
+    make_mods(&r, BATTLE_FORMAT_DOUBLE);
+    // pred[1].arg is the union's last byte, which a legacy effect does not use.
+    const BattleModifier wide = modr(BMOD_POWER, 150, BPRED_HP_AT_MOST | BPRED_DEFENDER, 2, BPRED_STATUS | BPRED_DEFENDER,
+                                     ANY_STATUS);
+    set_move(&r.player[0], 0, 506, with_mod(damaging(65, T_FIRE, 100), wide), 10);
+    uint32_t n = battle_request_encode(&r, bytes, sizeof bytes);
+    assert(n && battle_request_decode(bytes, n, &d) && d.player[0].mon.moves[0].effects[1].mod.pred[1].arg == ANY_STATUS);
+    BattleMove stat = damaging(65, T_FIRE, 100);
+    push(&stat, fx(BEFF_STAT, BWHO_TARGET, 30, BSTAT_ATK, -1, 0));
+    set_move(&r.player[0], 0, 506, stat, 10);
+    n = battle_request_encode(&r, bytes, sizeof bytes);
+    assert(n && battle_request_decode(bytes, n, &d));
+    assert(d.player[0].mon.moves[0].effects[1].kind == BEFF_STAT && d.player[0].mon.moves[0].effects[1].mod.pred[1].arg == 0);
+    // V12 bytes {16, 1, 200, 0x82, 0xfe, 0, 0, 0}: as a legacy effect who = 1 and chance = 200 (refused
+    // before V13); read as a record they would be valid Hex.
+    make_mods(&r, BATTLE_FORMAT_DOUBLE);
+    set_move(&r.player[0], 0, 506, with_mod(damaging(65, T_FIRE, 100), HEX_MOD), 10);
+    n = battle_request_encode(&r, bytes, sizeof bytes);
+    const uint32_t fixed = BATTLE_REQUEST_HEADER + 4 * BATTLE_ENTRY_BYTES + NTYPES * NTYPES + BATTLE_CONDITION_RULE_BYTES;
+    uint8_t *q = bytes + fixed + BATTLE_MOVE_EFFECTS_HEADER + BATTLE_EFFECT_BYTES;
+    const uint8_t legacy_view[8] = {BEFF_MODIFIER, BMOD_BASE_POWER, 200, BPRED_STATUS | BPRED_DEFENDER, ANY_STATUS, 0, 0, 0};
+    memcpy(q, legacy_view, sizeof legacy_view);
+    bytes[0] = BATTLE_REQUEST_VERSION_ABILITY_HOOKS;
+    assert(!battle_request_decode(bytes, n, &d));
+    // The same bytes on an unsupported move decode, as they did in V12.
+    r.player[0].mon.moves[0].unsupported = UNSUP_SECONDARY;
+    n = battle_request_encode(&r, bytes, sizeof bytes);
+    memcpy(q, legacy_view, sizeof legacy_view);
+    bytes[0] = BATTLE_REQUEST_VERSION_ABILITY_HOOKS;
+    assert(battle_request_decode(bytes, n, &d) && d.player[0].mon.moves[0].effects[1].kind == BEFF_MODIFIER);
+}
+
+// ------------------------------------------------------------- V14 against the Expansion engine (docs/modifiers.md)
+//
+// Each case is a hit the Frontier build's own test runner computes with the
+// real Expansion damage code (test/battle/gc_damage_reference.c in the
+// Frontier branch, same stats, rolls 100/93/85, no crit). `expansion` holds
+// those numbers; V14 must give them exactly. The abilities and move records
+// are what the Frontier exporter sends for those abilities and moves. V13
+// (the V12 arithmetic) is printed beside them to show what V14 changed.
+
+enum { R_NORMAL, R_FIRE, R_WATER, R_GHOST, R_ICE, R_DRAGON, R_GROUND, R_ROCK, R_FIGHTING, R_FLYING, R_BUG,
+       R_STEEL, R_COUNT };
+
+typedef struct {
+    uint8_t level, t0, t1;
+    uint16_t stat, max_hp, hp, speed;
+    uint32_t status;
+    BattleAbility ability;
+} RefMon;
+typedef struct {
+    const char *name;
+    RefMon atk, def;
+    BattleMove move;
+    unsigned flags;  // BCD_*
+    uint16_t expansion[3];
+} RefCase;
+static const unsigned ref_rolls[3] = {100, 93, 85};
+
+static void ref_chart(BattleRequest *r) {
+    static const uint8_t pairs[][3] = {
+        {R_ICE, R_DRAGON, 8}, {R_ICE, R_GROUND, 8}, {R_ICE, R_FLYING, 8}, {R_ICE, R_FIRE, 2}, {R_ICE, R_WATER, 2},
+        {R_ICE, R_ICE, 2}, {R_ICE, R_STEEL, 2}, {R_FIRE, R_ROCK, 2}, {R_FIRE, R_WATER, 2}, {R_FIRE, R_FIRE, 2},
+        {R_FIRE, R_DRAGON, 2}, {R_FIRE, R_BUG, 8}, {R_FIRE, R_STEEL, 8}, {R_FIRE, R_ICE, 8},
+        {R_ROCK, R_FIRE, 8}, {R_ROCK, R_FLYING, 8}, {R_ROCK, R_ICE, 8}, {R_ROCK, R_BUG, 8},
+        {R_ROCK, R_FIGHTING, 2}, {R_ROCK, R_GROUND, 2}, {R_ROCK, R_STEEL, 2},
+        {R_FIGHTING, R_NORMAL, 8}, {R_FIGHTING, R_ROCK, 8}, {R_FIGHTING, R_ICE, 8}, {R_FIGHTING, R_STEEL, 8},
+        {R_FIGHTING, R_FLYING, 2}, {R_FIGHTING, R_BUG, 2}, {R_FIGHTING, R_GHOST, 0},
+        {R_GHOST, R_GHOST, 8}, {R_GHOST, R_NORMAL, 0}, {R_WATER, R_FIRE, 8}, {R_WATER, R_ROCK, 8},
+        {R_WATER, R_GROUND, 8}, {R_WATER, R_WATER, 2}, {R_WATER, R_DRAGON, 2},
+        {R_GROUND, R_FIRE, 8}, {R_GROUND, R_ROCK, 8}, {R_GROUND, R_STEEL, 8}, {R_GROUND, R_FLYING, 0},
+        {R_GROUND, R_BUG, 2}, {R_NORMAL, R_ROCK, 2}, {R_NORMAL, R_GHOST, 0}, {R_NORMAL, R_STEEL, 2},
+    };
+    r->type_count = R_COUNT;
+    memset(r->type_chart, 4, sizeof r->type_chart);
+    for (unsigned i = 0; i < sizeof pairs / sizeof *pairs; ++i)
+        r->type_chart[pairs[i][0] * R_COUNT + pairs[i][1]] = pairs[i][2];
+}
+
+static void ref_mon(BattleEntry *e, uint8_t slot, const RefMon *m) {
+    make_entry(e, slot, 1, m->level, m->max_hp, m->stat, m->speed, m->t0);
+    e->record.hp = m->hp;
+    e->record.status = m->status;
+    e->mon.types[1] = m->t1;
+    e->mon.type_count = m->t1 != m->t0 ? 2 : 1;
+    give(e, m->ability);
+}
+
+static uint16_t ref_damage(const RefCase *k, uint8_t version, unsigned roll) {
+    static BattleRequest r;
+    static Battle b;
+    make_hooks(&r, BATTLE_FORMAT_SINGLE);
+    r.version = version;
+    ref_chart(&r);
+    ref_mon(&r.player[0], 0, &k->atk);
+    set_move(&r.player[0], 0, 100, k->move, 10);
+    ref_mon(&r.opponent[0], 0x80, &k->def);
+    set_move(&r.opponent[0], 0, 101, damaging(10, R_NORMAL, 100), 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    const Battler *a = battle_active(&b, 0);
+    uint8_t eff;
+    uint16_t amount = bc_calculate_damage(&b, a, &a->moves[0], battle_active(&b, 1), roll, false, k->flags, &eff);
+    if (version < BATTLE_REQUEST_VERSION_FIXED_POINT) {  // the caller's steps before V14 (battle_effects.c strike)
+        if (k->flags & BCD_SPREAD) amount = amount * 3u / 4u ? (uint16_t)(amount * 3u / 4u) : 1u;
+        if (k->flags & BCD_DOUBLED) amount = (uint16_t)(amount * 2u);
+    }
+    return amount;
+}
+
+static BattleMove ref_move(uint16_t power, uint8_t type, uint8_t category) {
+    BattleMove m = damaging(power, type, 100);
+    m.category = category;
+    return m;
+}
+
+#define REF_FLAGS BAHF_BREAKABLE
+#define R_NO_ABILITY ((BattleAbility){.cls = BACLASS_NONE, .source = 0})
+#define R_THICK_FAT HOOKS(47, hk(BABIL_RESIST, R_FIRE, 0, R_ICE, 0, 0, 50, REF_FLAGS))
+#define R_GUTS HOOKS(62, hk(BABIL_ATTACK_MULT, BCAT_PHYSICAL, 0, 0, 0, 0, 150, BAHF_REQUIRES_STATUS), \
+                     hk(BABIL_IGNORE_BURN, 0, 0, 0, 0, 0, 0, 0))
+#define R_BLAZE HOOKS(66, hk(BABIL_PINCH, R_FIRE, 0, 3, 0, 0, 150, 0))
+#define R_TECHNICIAN HOOKS(101, hk(BABIL_LOW_POWER, 60, 0, 0, 0, 0, 150, 0))
+// The game-data records the Frontier exporter adds in V14 (docs/modifiers.md).
+#define R_DEFEATIST MODS(129, modr(BMOD_ATTACK, 50, BPRED_HP_AT_MOST, 2, 0, 0))
+#define R_FLARE_BOOST MODS(138, modr(ST(BMOD_POWER, BCAT_SPECIAL), 150, BPRED_STATUS, 1u << BST_BURN, 0, 0))
+#define R_TOXIC_BOOST MODS(137, modr(ST(BMOD_POWER, BCAT_PHYSICAL), 150, BPRED_STATUS, \
+                                     (1u << BST_POISON) | (1u << BST_TOXIC), 0, 0))
+#define R_BRINE_MOD modr(BMOD_POWER, 200, BPRED_HP_AT_MOST | BPRED_DEFENDER, 2, 0, 0)
+#define R_HEX_MOD HEX_MOD
+#define RMON(level, t0, t1, stat, max_hp, hp, speed, status, ability) \
+    {level, t0, t1, stat, max_hp, hp, speed, status, ability}
+
+static void test_v14_expansion_reference(void) {
+    const RefCase cases[] = {
+        {"Gen 5 example: Ice Fang x4 STAB (Glaceon L75 vs Garchomp)",
+         RMON(75, R_ICE, R_ICE, 123, 999, 999, 65, 0, R_NO_ABILITY),
+         RMON(50, R_DRAGON, R_GROUND, 163, 999, 999, 102, 0, R_NO_ABILITY),
+         ref_move(65, R_ICE, BCAT_PHYSICAL), 0, {196, 180, 168}},
+        {"Guts (poisoned) x1.5 and Thick Fat x0.5: attack x0.75 (Ice Punch)",
+         RMON(50, R_FIGHTING, R_FIGHTING, 101, 999, 999, 55, BATTLE_CONDITION(BST_POISON, 0), R_GUTS),
+         RMON(50, R_NORMAL, R_NORMAL, 80, 999, 999, 30, 0, R_THICK_FAT),
+         ref_move(75, R_ICE, BCAT_PHYSICAL), 0, {33, 30, 28}},
+        {"Blaze at 1/3 HP x1.5 and Thick Fat x0.5, STAB (Fire Punch)",
+         RMON(50, R_FIRE, R_FLYING, 103, 150, 50, 100, 0, R_BLAZE),
+         RMON(50, R_NORMAL, R_NORMAL, 77, 999, 999, 30, 0, R_THICK_FAT),
+         ref_move(75, R_FIRE, BCAT_PHYSICAL), 0, {52, 48, 43}},
+        {"Defeatist at 1/2 HP x0.5 and Thick Fat x0.5: attack x0.25 (Fire Punch)",
+         RMON(50, R_ROCK, R_FLYING, 111, 150, 75, 110, 0, R_DEFEATIST),
+         RMON(50, R_NORMAL, R_NORMAL, 61, 999, 999, 30, 0, R_THICK_FAT),
+         ref_move(75, R_FIRE, BCAT_PHYSICAL), 0, {17, 15, 14}},
+        {"Double resist x0.25, STAB (Ember vs Omastar)",
+         RMON(50, R_FIRE, R_FIRE, 90, 999, 999, 65, 0, R_NO_ABILITY),
+         RMON(50, R_ROCK, R_WATER, 57, 999, 999, 55, 0, R_NO_ABILITY),
+         ref_move(40, R_FIRE, BCAT_SPECIAL), 0, {11, 10, 9}},
+        {"Spread x0.75 before the roll, STAB (Rock Slide in a Double)",
+         RMON(50, R_ROCK, R_GROUND, 100, 999, 999, 45, 0, R_NO_ABILITY),
+         RMON(50, R_NORMAL, R_NORMAL, 64, 999, 999, 30, 0, R_NO_ABILITY),
+         ref_move(75, R_ROCK, BCAT_PHYSICAL), BCD_SPREAD, {60, 55, 51}},
+        {"Technician x1.5 per hit (Double Kick, 2 hits)",
+         RMON(50, R_BUG, R_STEEL, 130, 999, 999, 65, 0, R_TECHNICIAN),
+         RMON(50, R_NORMAL, R_NORMAL, 83, 999, 999, 30, 0, R_NO_ABILITY),
+         ref_move(30, R_FIGHTING, BCAT_PHYSICAL), 0, {66, 60, 56}},
+        {"Hex against a poisoned target: base power x2, STAB",
+         RMON(50, R_GHOST, R_GHOST, 85, 999, 999, 85, 0, R_NO_ABILITY),
+         RMON(50, R_FIGHTING, R_FIGHTING, 67, 999, 999, 35, BATTLE_CONDITION(BST_POISON, 0), R_NO_ABILITY),
+         with_mod(ref_move(65, R_GHOST, BCAT_SPECIAL), R_HEX_MOD), 0, {111, 102, 93}},
+        {"Brine at 1/2 HP x2 then Flare Boost (burned) x1.5",
+         RMON(50, R_GHOST, R_FLYING, 90, 999, 999, 80, BATTLE_CONDITION(BST_BURN, 0), R_FLARE_BOOST),
+         RMON(50, R_NORMAL, R_NORMAL, 73, 999, 499, 30, 0, R_NO_ABILITY),
+         with_mod(ref_move(65, R_WATER, BCAT_SPECIAL), R_BRINE_MOD), 0, {107, 99, 90}},
+        {"Toxic Boost (poisoned) x1.5: power 112 (Ice Punch)",
+         RMON(50, R_NORMAL, R_NORMAL, 115, 999, 999, 90, BATTLE_CONDITION(BST_POISON, 0), R_TOXIC_BOOST),
+         RMON(50, R_NORMAL, R_NORMAL, 79, 999, 999, 30, 0, R_NO_ABILITY),
+         ref_move(75, R_ICE, BCAT_PHYSICAL), 0, {73, 67, 62}},
+        {"Earthquake on a Pokemon underground: final x2, STAB",
+         RMON(50, R_ROCK, R_GROUND, 110, 999, 999, 10, 0, R_NO_ABILITY),
+         RMON(50, R_NORMAL, R_NORMAL, 87, 999, 999, 100, 0, R_NO_ABILITY),
+         ref_move(100, R_GROUND, BCAT_PHYSICAL), BCD_DOUBLED, {170, 158, 144}},
+    };
+    unsigned changed = 0;
+    for (unsigned i = 0; i < sizeof cases / sizeof *cases; ++i) {
+        const RefCase *k = &cases[i];
+        printf("  ref %2u %-70s", i + 1, k->name);
+        for (unsigned r = 0; r < 3; ++r) {
+            const uint16_t v13 = ref_damage(k, BATTLE_REQUEST_VERSION_MODIFIERS, ref_rolls[r]);
+            const uint16_t v14 = ref_damage(k, BATTLE_REQUEST_VERSION_FIXED_POINT, ref_rolls[r]);
+            printf(" %u%%: v13=%u v14=%u exp=%u", ref_rolls[r], v13, v14, k->expansion[r]);
+            changed += v13 != v14;
+            assert(v14 == k->expansion[r]);
+        }
+        printf("\n");
+    }
+    printf("  ref: V13 and V14 differ in %u of %u values\n", changed, (unsigned)(3 * sizeof cases / sizeof *cases));
+}
+
 int main(void) {
     test_request_roundtrip();
     test_messages();
@@ -4515,6 +4921,11 @@ int main(void) {
     test_v13_expresses_v12();
     test_v13_no_rng();
     test_v13_determinism();
+    test_v14_arithmetic();
+    test_v14_battle();
+    test_v14_order();
+    test_v14_union_decode();
+    test_v14_expansion_reference();
     puts("battle tests passed");
     return 0;
 }

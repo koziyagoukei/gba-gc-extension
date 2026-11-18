@@ -427,19 +427,22 @@ static unsigned strike(MoveContext *c, const BattleEffect *damage, Position targ
     const bool twice = doubled(c, battle_at(b, target));
     for (unsigned h = 0; ; ++h) {
         const Battler *defender = battle_at(b, target);
+        const bool fx = bc_fixed_point(b);
         uint16_t amount = bc_calculate_damage(b, battle_at(b, c->user), c->move, defender,
-                                              85u + bc_next_random(b) % 16u, c->typeless, &ev.effectiveness);
+                                              85u + bc_next_random(b) % 16u, c->typeless,
+                                              (c->spread ? BCD_SPREAD : 0u) | (twice ? BCD_DOUBLED : 0u),
+                                              &ev.effectiveness);
         if (!ev.effectiveness) {
             ev.kind = EV_NO_EFFECT;
             bc_emit(c->log, ev);
             return 0;
         }
         if (!total) total = roll_hits(b, damage);
-        if (c->spread) {
+        if (c->spread && !fx) {
             amount = (uint16_t)(amount * 3u / 4u);
             if (!amount) amount = 1;
         }
-        if (twice) amount = (uint16_t)(amount > 0x7fff ? 0xffff : amount * 2u);
+        if (twice && !fx) amount = (uint16_t)(amount > 0x7fff ? 0xffff : amount * 2u);
         ++hits;
         *landed = true;
         if (behind_substitute(c, target)) {
