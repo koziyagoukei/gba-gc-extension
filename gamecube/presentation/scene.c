@@ -177,6 +177,25 @@ static const char *weather_text(const SceneMessage *msg) {
     }
 }
 
+static const char *terrain_name(uint8_t kind) {
+    static const char *const names[] = {"", "ELECTRIC", "GRASSY", "MISTY", "PSYCHIC"};
+    return kind < sizeof(names) / sizeof(*names) ? names[kind] : "TERRAIN";
+}
+
+static const char *terrain_text(const SceneMessage *msg) {
+    static const char *const start[] = {"", "Electricity ran across the field!", "Grass grew over the field!",
+                                        "Mist swirled over the field!", "The field turned weird!"};
+    static const char *const end[] = {"", "The electricity faded.", "The grass withdrew.", "The mist faded.",
+                                      "The weirdness faded."};
+    const uint8_t k = msg->condition < BTERRAIN_COUNT ? msg->condition : BTERRAIN_NONE;
+    switch (msg->kind) {
+    case MSG_TERRAIN_START: return start[k];
+    case MSG_TERRAIN_END: return end[k];
+    case MSG_TERRAIN_HEAL: return "Healed by the grassy terrain.";
+    default: return "Protected by the terrain!";
+    }
+}
+
 static const char *message_text(const SceneMessage *msg) {
     switch (msg->kind) {
     case MSG_INTRO: return "The trainer wants to battle!";
@@ -228,6 +247,10 @@ static const char *message_text(const SceneMessage *msg) {
     case MSG_WEATHER_CONTINUE:
     case MSG_WEATHER_END:
     case MSG_WEATHER_DAMAGE: return weather_text(msg);
+    case MSG_TERRAIN_START:
+    case MSG_TERRAIN_END:
+    case MSG_TERRAIN_HEAL:
+    case MSG_TERRAIN_BLOCK: return terrain_text(msg);
     case MSG_NONE: return "";
     }
     return "";
@@ -240,6 +263,9 @@ static void draw_message(const BattleLayout *layout) {
     if (scene.animation.weather)
         render_text(layout->command.x + 112, layout->command.y + 5, 1, UI_MUTED, "%s",
                     weather_name(scene.animation.weather));
+    if (scene.animation.terrain)
+        render_text(layout->command.x + 232, layout->command.y + 5, 1, UI_MUTED, "%s",
+                    terrain_name(scene.animation.terrain));
     render_text(layout->command.x + layout->command.w - 139, layout->command.y + 5, 1, UI_MUTED, "GBA CONTROLS");
     panel(layout->message, UI_SKY);
     const SceneMessage *msg = &scene.animation.message;
@@ -266,7 +292,7 @@ static void draw_message(const BattleLayout *layout) {
             if (ability) draw_label(ability, x + 210, y + 27, 220, 23);
             else render_text(x + 210, y + 28, 1, UI_MUTED, "Ability #%u", msg->ability);
         }
-    } else if (msg->kind == MSG_WEATHER_DAMAGE) {
+    } else if (msg->kind == MSG_WEATHER_DAMAGE || msg->kind == MSG_TERRAIN_HEAL || msg->kind == MSG_TERRAIN_BLOCK) {
         const Battler *b = battler_at(msg->subject);
         CacheEntry *name = b ? battle_label(scene.build, &b->entry->record) : NULL;
         if (name) draw_label(name, x, y + 27, 190, 23);

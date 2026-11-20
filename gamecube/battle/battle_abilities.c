@@ -215,8 +215,11 @@ bool bc_ability_no_recoil(const Battle *b, Position user) {
 // Whether `target` could be given `kind` now (status, type and ability immunity).
 static bool can_take_status(const Battle *b, Position target, uint8_t kind) {
     const Battler *mon = battle_at(b, target);
+    // V16: a terrain keeps a status from an affected Pokemon (Electric: sleep; Misty: any).
     return mon && !mon->fainted && !mon->status &&
-           !bc_immune_to_status(&b->request->conditions, mon, kind) && !bc_ability_status_immunity(b, target, kind);
+           !bc_immune_to_status(&b->request->conditions, mon, kind) && !bc_ability_status_immunity(b, target, kind) &&
+           !(kind == BST_SLEEP && bc_terrain_prevents(b, mon, BTKF_NO_SLEEP)) &&
+           !bc_terrain_prevents(b, mon, BTKF_NO_STATUS);
 }
 
 // Synchronize: right after `holder` got a status from another battler.
@@ -332,6 +335,11 @@ void bc_ability_on_entry(Battle *b, Position p, EventLog *log) {
             bc_weather_set(b, p, FSRC_ABILITY, x->arg0, x->arg2, log);
         } else if (x->kind == BABIL_WEATHER_SUPPRESS) {
             bc_ability_event(b, log, p, p, x);  // Cloud Nine's notice; the suppression is not a state
+        } else if (x->kind == BABIL_ENTRY_TERRAIN) {
+            // V16 (Electric Surge ...): the shared terrain change; the same terrain again does nothing.
+            if (b->field.terrain.kind == x->arg0) continue;
+            bc_ability_event(b, log, p, p, x);
+            bc_terrain_set(b, p, FSRC_ABILITY, x->arg0, x->arg2, log);
         }
     }
 }
@@ -355,6 +363,10 @@ void bc_ability_end_turn(Battle *b, Position p, EventLog *log) {
 }
 
 // ------------------------------------------------------------- V15 weather
+
+bool bc_ability_ungrounded(const Battle *b, const Battler *mon) {
+    return bc_ability(b, mon, BABIL_UNGROUNDED) != NULL;
+}
 
 bool bc_ability_suppresses_weather(const Battle *b, const Battler *mon) {
     return bc_ability(b, mon, BABIL_WEATHER_SUPPRESS) != NULL;

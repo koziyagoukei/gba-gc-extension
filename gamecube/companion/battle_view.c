@@ -191,7 +191,8 @@ static bool poll_multi_action(BattleMultiAction *a) {
     if (!host_app_to(b.link, b.mode.app_id, opcode, NULL, 0, &d, &n, &status)) return false;
     if (status == APP_OK) {
         switch (b.mode.app_version) {
-        case BATTLE_APP_VERSION_WEATHER:  // V15, V14, V13, V12, V11, V10 and V9 keep the V6 action layout
+        case BATTLE_APP_VERSION_TERRAIN:  // V16 to V9 keep the V6 action layout
+        case BATTLE_APP_VERSION_WEATHER:
         case BATTLE_APP_VERSION_FIXED_POINT:
         case BATTLE_APP_VERSION_MODIFIERS:
         case BATTLE_APP_VERSION_ABILITY_HOOKS:
@@ -657,6 +658,18 @@ BattleViewStatus battle_view_update(bool start_pressed, const char **message) {
             SYS_Report("PH7 VOLATILE rules flags=%02x confusion=%u%%/%u-%u/power %u substitute=1/%u\n", v->flags,
                        v->confusion_hit_percent, v->confusion_min, v->confusion_max, v->confusion_power,
                        v->substitute_divisor);
+        }
+        if (b.request.version >= BATTLE_REQUEST_VERSION_TERRAIN) {  // V16 terrain rules (docs/terrain.md)
+            const BattleTerrainRules *t = &b.request.terrain;
+            SYS_Report("PH11 TERRAIN rules start=%u/%u airborne=%u records=%u kinds=%02x:%02x,%02x:%02x,%02x:%02x,%02x:%02x\n",
+                       t->start_terrain, t->start_turns, t->airborne_type, t->modifier_count,
+                       t->terrain[0].heal_divisor, t->terrain[0].flags, t->terrain[1].heal_divisor, t->terrain[1].flags,
+                       t->terrain[2].heal_divisor, t->terrain[2].flags, t->terrain[3].heal_divisor, t->terrain[3].flags);
+            for (unsigned i = 0; i < t->modifier_count && i < BATTLE_MAX_TERRAIN_MODIFIERS; ++i) {
+                const BattleModifier *x = &t->modifiers[i];
+                SYS_Report("PH11   record%u stage=%02x percent=%u pred=%02x:%02x,%02x:%02x\n", i, x->stage, x->percent,
+                           x->pred[0].kind, x->pred[0].arg, x->pred[1].kind, x->pred[1].arg);
+            }
         }
         if (b.request.version >= BATTLE_REQUEST_VERSION_WEATHER) {  // V15 field rules (docs/weather.md)
             const BattleFieldRules *f = &b.request.field;

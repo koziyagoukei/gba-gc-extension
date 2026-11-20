@@ -102,6 +102,7 @@ bool bc_effects_supported(const BattleRequest *r, const BattleMove *m) {
             if (target != BTARGET_SINGLE) return false;
             break;
         case BEFF_WEATHER:  // V15: a field move, used on no Pokemon (the user stands for the field)
+        case BEFF_TERRAIN:  // V16
             if (target != BTARGET_SELF) return false;
             break;
         case BEFF_WEATHER_TYPE:
@@ -249,15 +250,31 @@ void bc_set_status(Battle *b, Position source, Position target, uint8_t kind, ui
     bc_ability_status_set(b, source, target, kind, move_id, log);
 }
 
+// V16: a terrain kept an effect off the Pokemon: shown for a certain effect,
+// silent for a chance (as an ability's block).
+static bool terrain_blocked(MoveContext *c, const BattleEffect *e, Position target, uint8_t terrain) {
+    if (!e->chance)
+        bc_emit(c->log, (BattleEvent){.kind = EV_TERRAIN_BLOCK, .user = c->user, .target = target, .move_id = c->id,
+                                      .condition = terrain});
+    return !e->chance;
+}
+
+// The reference's order (CanSetNonVolatileStatus): the status already there,
+// the type, Electric Terrain for sleep, the target's ability, then Misty
+// Terrain for any status.
 static bool apply_status(MoveContext *c, const BattleEffect *e, Position target) {
     Battler *mon = bc_mutable_at(c->b, target);
     const BattleConditionRules *rules = &c->b->request->conditions;
     const uint8_t kind = e->arg0;
+    uint8_t terrain;
     if (mon->status || bc_immune_to_status(rules, mon, kind) ||
         ((e->flags & BEFL_TYPE_CHART) && !bc_effectiveness(c->b, battle_at(c->b, c->user), c->move->type, mon)) ||
         ((kind == BST_FREEZE || kind == BST_FROSTBITE) && bc_weather_prevents_freeze(c->b)))
         return false;
+    if (kind == BST_SLEEP && (terrain = bc_terrain_prevents(c->b, mon, BTKF_NO_SLEEP)))
+        return terrain_blocked(c, e, target, terrain);
     if (blocked(c, e, target, bc_ability_status_immunity(c->b, target, kind))) return !e->chance;
+    if ((terrain = bc_terrain_prevents(c->b, mon, BTKF_NO_STATUS))) return terrain_blocked(c, e, target, terrain);
     bc_set_status(c->b, c->user, target, kind, c->id, c->log);
     return true;
 }
@@ -300,9 +317,18 @@ static bool apply_weather(MoveContext *c, const BattleEffect *e) {
     return true;  // a failure message is the result
 }
 
+// V16: the shared terrain change; the same terrain again fails.
+static bool apply_terrain(MoveContext *c, const BattleEffect *e) {
+    if (bc_terrain_set(c->b, c->user, FSRC_MOVE, e->arg0, e->arg2, c->log) != WEATHER_SET) fail(c, c->user);
+    return true;
+}
+
+// CanBeConfused: already confused, Misty Terrain (V16), then Own Tempo.
 static bool apply_confuse(MoveContext *c, const BattleEffect *e, Position target) {
     Battler *mon = bc_mutable_at(c->b, target);
     if (mon->vol.confusion) return false;
+    const uint8_t terrain = bc_terrain_prevents(c->b, mon, BTKF_NO_CONFUSION);
+    if (terrain) return terrain_blocked(c, e, target, terrain);
     if (blocked(c, e, target, bc_ability_volatile_immunity(c->b, target, BABIL_VOL_CONFUSION))) return !e->chance;
     const BattleVolatileRules *rules = &c->b->request->volatiles;
     mon->vol.confusion = (uint8_t)(rules->confusion_min +
@@ -351,6 +377,7 @@ static bool apply(MoveContext *c, const BattleEffect *e, Position target) {
     case BEFF_FLINCH: return apply_flinch(c, e, who);
     case BEFF_SUBSTITUTE: return apply_substitute(c, who);
     case BEFF_WEATHER: return apply_weather(c, e);
+    case BEFF_TERRAIN: return apply_terrain(c, e);
     default: return false;  // passive kinds (modifiers, weather rules) act elsewhere
     }
 }
@@ -513,8 +540,10 @@ static bool evaded(MoveContext *c, Position target) {
     return true;
 }
 
+// V16: Psychic Terrain comes before Protect (the reference's target-failure order).
 static void damaging_target(MoveContext *c, const BattleEffect *damage, Position target) {
-    if (blocked_by_protect(c, target) || evaded(c, target) ||
+    if (bc_terrain_blocks_move(c->b, c->user, target, c->move, c->id, c->log) ||
+        blocked_by_protect(c, target) || evaded(c, target) ||
         bc_ability_blocks_move(c->b, c->user, target, c->move, c->typeless, c->id, c->log)) return;
     bool landed, struck;
     const uint8_t index = c->b->sides[target.side].active[target.slot];
@@ -552,7 +581,8 @@ static void damaging_target(MoveContext *c, const BattleEffect *damage, Position
 }
 
 static void status_target(MoveContext *c, Position target) {
-    if (blocked_by_protect(c, target) || evaded(c, target) ||
+    if (bc_terrain_blocks_move(c->b, c->user, target, c->move, c->id, c->log) ||
+        blocked_by_protect(c, target) || evaded(c, target) ||
         bc_ability_blocks_move(c->b, c->user, target, c->move, false, c->id, c->log)) return;
     if (behind_substitute(c, target)) {
         fail(c, target);

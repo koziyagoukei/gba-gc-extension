@@ -4070,11 +4070,13 @@ static void test_v13_largest_request(void) {
     const struct { uint8_t format; unsigned per_side; } cases[] = {
         {BATTLE_FORMAT_TRIPLE, 3}, {BATTLE_FORMAT_SINGLE, 6}, {BATTLE_FORMAT_DOUBLE, 6}};
     for (unsigned c = 0; c < 3; ++c)
-        for (uint8_t v = BATTLE_REQUEST_VERSION_ABILITY_HOOKS; v <= BATTLE_REQUEST_VERSION_LATEST; ++v) {  // V12..V15
+        for (uint8_t v = BATTLE_REQUEST_VERSION_ABILITY_HOOKS; v <= BATTLE_REQUEST_VERSION_LATEST; ++v) {  // V12..V16
             build_largest(&r, cases[c].format, cases[c].per_side, v);
-            // The bound covers every version; requests before V15 have no field rules.
+            // The bound covers every version; requests before V15 have no field rules,
+            // before V16 no terrain rules.
             const uint32_t max = BATTLE_REQUEST_MAX_BYTES(2 * cases[c].per_side, NTYPES) -
-                                 (v < BATTLE_REQUEST_VERSION_WEATHER ? BATTLE_FIELD_RULE_BYTES : 0);
+                                 (v < BATTLE_REQUEST_VERSION_WEATHER ? BATTLE_FIELD_RULE_BYTES : 0) -
+                                 (v < BATTLE_REQUEST_VERSION_TERRAIN ? BATTLE_TERRAIN_RULE_BYTES : 0);
             assert(battle_request_size(&r) == max);
             assert(battle_request_encode(&r, bytes, max) == max);
             assert(battle_request_decode(bytes, max, &d));
@@ -4084,9 +4086,9 @@ static void test_v13_largest_request(void) {
             assert(bytes[0] == 0xee);  // nothing written when it does not fit
         }
     // The Frontier case: six Pokemon in all and its 21 types (the M4-A2 buffer size
-    // was 2789; V15 adds the 88-byte field rules).
-    assert(BATTLE_FIELD_RULE_BYTES == 88);
-    assert(BATTLE_REQUEST_MAX_BYTES(6, 21) == 2789 + 88);
+    // was 2789; V15 adds the 88-byte field rules, V16 the 72-byte terrain rules).
+    assert(BATTLE_FIELD_RULE_BYTES == 88 && BATTLE_TERRAIN_RULE_BYTES == 72);
+    assert(BATTLE_REQUEST_MAX_BYTES(6, 21) == 2789 + 88 + 72);
 }
 
 static void test_v13_hex_and_custom(void) {
@@ -4695,7 +4697,7 @@ static void test_v14_union_decode(void) {
 // (the V12 arithmetic) is printed beside them to show what V14 changed.
 
 enum { R_NORMAL, R_FIRE, R_WATER, R_GHOST, R_ICE, R_DRAGON, R_GROUND, R_ROCK, R_FIGHTING, R_FLYING, R_BUG,
-       R_STEEL, R_COUNT };
+       R_STEEL, R_GRASS, R_ELECTRIC, R_PSYCHIC, R_COUNT };
 
 typedef struct {
     uint8_t level, t0, t1;
@@ -4725,6 +4727,10 @@ static void ref_chart(BattleRequest *r) {
         {R_WATER, R_GROUND, 8}, {R_WATER, R_WATER, 2}, {R_WATER, R_DRAGON, 2},
         {R_GROUND, R_FIRE, 8}, {R_GROUND, R_ROCK, 8}, {R_GROUND, R_STEEL, 8}, {R_GROUND, R_FLYING, 0},
         {R_GROUND, R_BUG, 2}, {R_NORMAL, R_ROCK, 2}, {R_NORMAL, R_GHOST, 0}, {R_NORMAL, R_STEEL, 2},
+        // V16 cases: the Electric, Grass and Psychic rows they use.
+        {R_ELECTRIC, R_ELECTRIC, 2}, {R_ELECTRIC, R_WATER, 8}, {R_ELECTRIC, R_FLYING, 8}, {R_ELECTRIC, R_GROUND, 0},
+        {R_GRASS, R_WATER, 8}, {R_GRASS, R_FLYING, 2}, {R_GRASS, R_GRASS, 2}, {R_GRASS, R_FIRE, 2},
+        {R_PSYCHIC, R_PSYCHIC, 2}, {R_DRAGON, R_DRAGON, 8},
     };
     r->type_count = R_COUNT;
     memset(r->type_chart, 4, sizeof r->type_chart);
@@ -5810,6 +5816,861 @@ static void test_v15_expansion_reference(void) {
     }
 }
 
+// ------------------------------------------------------------- V16 terrain (docs/terrain.md)
+//
+// The weather world of the V15 tests plus the terrain rules the Frontier
+// exporter sends for this build (Gen 9: type boost x1.3): Flying is the
+// airborne type; Electric Terrain stops sleep, Grassy heals 1/16, Misty
+// stops major status and confusion, Psychic stops foes' priority moves; the
+// power records in this build's order (grassy, misty, electric, psychic).
+
+#define TB(kind) BTERRAIN_BIT(kind)
+#define T_ELEC TB(BTERRAIN_ELECTRIC)
+#define T_GRASS TB(BTERRAIN_GRASSY)
+#define T_MIST TB(BTERRAIN_MISTY)
+#define T_PSY TB(BTERRAIN_PSYCHIC)
+
+static void frontier_terrain(BattleTerrainRules *t, uint8_t boost) {
+    memset(t, 0, sizeof *t);
+    t->airborne_type = R_FLYING;
+    t->terrain[BTERRAIN_ELECTRIC - 1].flags = BTKF_NO_SLEEP;
+    t->terrain[BTERRAIN_GRASSY - 1].heal_divisor = 16;
+    t->terrain[BTERRAIN_MISTY - 1].flags = BTKF_NO_STATUS | BTKF_NO_CONFUSION;
+    t->terrain[BTERRAIN_PSYCHIC - 1].flags = BTKF_BLOCK_PRIORITY;
+    const BattleModifier records[] = {
+        modr(BMOD_POWER, boost, BPRED_ON_TERRAIN, T_GRASS, BPRED_MOVE_TYPE, R_GRASS),
+        modr(BMOD_POWER, 50, BPRED_ON_TERRAIN | BPRED_DEFENDER, T_MIST, BPRED_MOVE_TYPE, R_DRAGON),
+        modr(BMOD_POWER, boost, BPRED_ON_TERRAIN, T_ELEC, BPRED_MOVE_TYPE, R_ELECTRIC),
+        modr(BMOD_POWER, boost, BPRED_ON_TERRAIN, T_PSY, BPRED_MOVE_TYPE, R_PSYCHIC),
+    };
+    t->modifier_count = sizeof records / sizeof *records;
+    for (unsigned i = 0; i < t->modifier_count; ++i) t->modifiers[i] = records[i];
+}
+
+static void make_terrain(BattleRequest *r, uint8_t format) {
+    make_weather(r, format);
+    r->version = BATTLE_REQUEST_VERSION_TERRAIN;
+    frontier_terrain(&r->terrain, 130);
+}
+
+#define T_SURGE(id, kind) HOOKS(id, W_HOOK(BABIL_ENTRY_TERRAIN, kind, 0, 5, 0))
+#define T_ELECTRIC_SURGE T_SURGE(226, BTERRAIN_ELECTRIC)
+#define T_GRASSY_SURGE T_SURGE(229, BTERRAIN_GRASSY)
+#define T_MISTY_SURGE T_SURGE(228, BTERRAIN_MISTY)
+#define T_PSYCHIC_SURGE T_SURGE(227, BTERRAIN_PSYCHIC)
+#define T_LEVITATE HOOKS(26, hk(BABIL_TYPE_IMMUNE, R_GROUND, 0, 0, 0, 0, 0, 0), W_HOOK(BABIL_UNGROUNDED, 0, 0, 0, 0))
+#define T_SURGE_SURFER MODS(207, modr(BMOD_SPEED, 200, BPRED_TERRAIN, T_ELEC, 0, 0))
+#define T_GRASS_PELT MODS(179, modr(ST(BMOD_DEFENSE, BCAT_PHYSICAL) | BMODF_DEFENDER, 150, BPRED_TERRAIN, T_GRASS, 0, 0))
+
+static BattleMove terrain_move(uint8_t kind) {
+    BattleMove m = status_move(BTARGET_SELF, 0);
+    push(&m, fx(BEFF_TERRAIN, BWHO_USER, 0, kind, 0, 5));
+    return m;
+}
+
+// Earthquake / Bulldoze: x0.5 power on Grassy Terrain unless the target is
+// semi-invulnerable (then it doubles against an underground one).
+static BattleMove t_earthquake(void) {
+    BattleMove m = damaging(100, R_GROUND, 100);
+    m.move_flags = BMF_DOUBLE_UNDERGROUND;
+    push(&m, mod_effect(modr(BMOD_POWER, 50, BPRED_TERRAIN, T_GRASS, BPRED_EXPOSED | BPRED_DEFENDER, 0)));
+    return m;
+}
+
+static BattleMove t_priority(uint16_t power, int8_t priority) {
+    BattleMove m = damaging(power, R_NORMAL, 100);
+    m.priority = priority;
+    return m;
+}
+
+static void test_v16_wire(void) {
+    static BattleRequest r, d, old;
+    static uint8_t bytes[4096];
+    make_terrain(&r, BATTLE_FORMAT_DOUBLE);
+    give(&r.player[0], T_ELECTRIC_SURGE);
+    give(&r.player[1], T_LEVITATE);
+    give(&r.opponent[0], T_GRASS_PELT);
+    give(&r.opponent[1], T_SURGE_SURFER);
+    set_move(&r.player[0], 1, 604, terrain_move(BTERRAIN_ELECTRIC), 10);
+    set_move(&r.opponent[0], 1, 89, t_earthquake(), 10);
+    r.terrain.start_terrain = BTERRAIN_MISTY;
+    r.terrain.start_turns = 0;
+    uint32_t n = battle_request_encode(&r, bytes, sizeof bytes);
+    assert(n && n == battle_request_size(&r));
+    assert(battle_request_decode(bytes, n, &d));
+    assert(memcmp(&d.terrain, &r.terrain, sizeof r.terrain) == 0 && memcmp(&d.field, &r.field, sizeof r.field) == 0);
+    // The terrain rules close the request: V15 size + 72.
+    old = r;
+    old.version = BATTLE_REQUEST_VERSION_WEATHER;
+    assert(battle_request_size(&r) == battle_request_size(&old) + BATTLE_TERRAIN_RULE_BYTES);
+    assert(battle_request_encode(&old, bytes, sizeof bytes) == 0);  // V16 kinds cannot be written as V15
+    n = battle_request_encode(&r, bytes, sizeof bytes);
+    bytes[0] = BATTLE_REQUEST_VERSION_WEATHER;
+    assert(!battle_request_decode(bytes, n, &d));
+    // Version gates of every new value.
+    const BattleMove tm = terrain_move(BTERRAIN_GRASSY), eq = t_earthquake();
+    assert(battle_move_effects_valid_for(&tm, BATTLE_REQUEST_VERSION_TERRAIN) &&
+           !battle_move_effects_valid_for(&tm, BATTLE_REQUEST_VERSION_WEATHER));
+    assert(battle_move_effects_valid_for(&eq, BATTLE_REQUEST_VERSION_TERRAIN) &&
+           !battle_move_effects_valid_for(&eq, BATTLE_REQUEST_VERSION_WEATHER));
+    const BattleAbility v16_abilities[] = {T_ELECTRIC_SURGE, T_GRASSY_SURGE, T_MISTY_SURGE, T_PSYCHIC_SURGE,
+                                           T_LEVITATE, T_SURGE_SURFER, T_GRASS_PELT};
+    for (unsigned i = 0; i < sizeof v16_abilities / sizeof *v16_abilities; ++i) {
+        assert(battle_ability_valid(&v16_abilities[i], R_COUNT, BATTLE_REQUEST_VERSION_TERRAIN));
+        assert(!battle_ability_valid(&v16_abilities[i], R_COUNT, BATTLE_REQUEST_VERSION_WEATHER));
+    }
+    const BattleModifier field_power = modr(BMOD_POWER, 130, BPRED_ON_TERRAIN, T_GRASS, BPRED_MOVE_TYPE, R_GRASS);
+    assert(battle_modifier_valid(&field_power, R_COUNT, BMSRC_FIELD, BATTLE_REQUEST_VERSION_TERRAIN));
+    assert(!battle_modifier_valid(&field_power, R_COUNT, BMSRC_FIELD, BATTLE_REQUEST_VERSION_WEATHER));
+    const BattleModifier bad[] = {
+        modr(BMOD_POWER, 130, BPRED_TERRAIN | BPRED_DEFENDER, T_GRASS, 0, 0),  // the terrain has no subject
+        modr(BMOD_POWER, 130, BPRED_TERRAIN, 0, 0, 0),                          // empty mask
+        modr(BMOD_POWER, 130, BPRED_TERRAIN, (uint8_t)(BTERRAIN_ALL + 1), 0, 0),
+        modr(BMOD_POWER, 130, BPRED_ON_TERRAIN, 0, 0, 0),
+        modr(BMOD_POWER, 130, BPRED_EXPOSED, 1, 0, 0),                          // EXPOSED has no argument
+        modr(BMOD_SPEED, 200, BPRED_ON_TERRAIN | BPRED_DEFENDER, T_ELEC, 0, 0), // speed: the holder only
+        modr(BMOD_POWER, 130, BPRED_COUNT, 0, 0, 0),
+    };
+    for (unsigned i = 0; i < sizeof bad / sizeof *bad; ++i)
+        assert(!battle_modifier_valid(&bad[i], R_COUNT, BMSRC_ABILITY, BATTLE_REQUEST_VERSION_TERRAIN));
+    const BattleModifier v16_pred = modr(BMOD_POWER, 130, BPRED_TERRAIN, T_GRASS, 0, 0);
+    assert(battle_modifier_valid(&v16_pred, R_COUNT, BMSRC_ABILITY, BATTLE_REQUEST_VERSION_TERRAIN) &&
+           !battle_modifier_valid(&v16_pred, R_COUNT, BMSRC_ABILITY, BATTLE_REQUEST_VERSION_WEATHER));
+    // Effect and hook fields.
+    BattleMove m = terrain_move(BTERRAIN_COUNT);
+    assert(!battle_move_effects_valid(&m));
+    m = terrain_move(BTERRAIN_MISTY);
+    m.effects[0].arg2 = BWEATHER_TURNS_KEEP;  // no KEEP for terrain
+    assert(!battle_move_effects_valid(&m));
+    m = terrain_move(BTERRAIN_MISTY);
+    push(&m, fx(BEFF_STAT, BWHO_USER, 0, BSTAT_DEF, 1, 0));
+    assert(!battle_move_effects_valid(&m));
+    BattleAbilityHook h = W_HOOK(BABIL_ENTRY_TERRAIN, BTERRAIN_PSYCHIC, 0, 16, 0);
+    assert(!battle_ability_hook_valid(&h, R_COUNT, BATTLE_REQUEST_VERSION_TERRAIN));
+    h = W_HOOK(BABIL_UNGROUNDED, 1, 0, 0, 0);
+    assert(!battle_ability_hook_valid(&h, R_COUNT, BATTLE_REQUEST_VERSION_TERRAIN));
+    h = W_HOOK(BABIL_ENTRY_TERRAIN, BTERRAIN_NONE, 0, 5, 0);  // a surge names a terrain
+    assert(!battle_ability_hook_valid(&h, R_COUNT, BATTLE_REQUEST_VERSION_TERRAIN));
+    // Malformed terrain rules: each byte that has no meaning, and a record past the count.
+    n = battle_request_encode(&r, bytes, sizeof bytes);
+    const uint32_t base = n - BATTLE_TERRAIN_RULE_BYTES;
+    const struct { unsigned at; uint8_t value; } bad_bytes[] = {
+        {0, 1}, {1, BTERRAIN_COUNT}, {2, BTERRAIN_MAX_TURNS + 1}, {3, R_COUNT}, {4, BATTLE_MAX_TERRAIN_MODIFIERS + 1},
+        {4, 5}, {5, 1}, {7, 1}, {8, 1}, {9, 0x10}, {16 + 2, 1}, {16 + 4 * BATTLE_MODIFIER_BODY_BYTES, BMOD_POWER},
+        {16, BMOD_SPEED}, {16 + 3, BPRED_COUNT},
+    };
+    assert(battle_request_decode(bytes, n, &d));
+    for (unsigned i = 0; i < sizeof bad_bytes / sizeof *bad_bytes; ++i) {
+        const uint8_t keep = bytes[base + bad_bytes[i].at];
+        bytes[base + bad_bytes[i].at] = bad_bytes[i].value;
+        assert(!battle_request_decode(bytes, n, &d));
+        bytes[base + bad_bytes[i].at] = keep;
+    }
+    assert(battle_request_decode(bytes, n, &d));
+    BattleTerrainRules t = r.terrain;
+    t.start_terrain = BTERRAIN_NONE;
+    t.start_turns = 3;
+    assert(!battle_terrain_rules_valid(&t, R_COUNT));
+    t.airborne_type = BABIL_NO_TYPE;
+    t.start_turns = 0;
+    assert(battle_terrain_rules_valid(&t, R_COUNT));
+    assert(!strcmp(battle_effect_kind_name(BEFF_TERRAIN), "terrain") &&
+           !strcmp(battle_ability_kind_name(BABIL_UNGROUNDED), "ungrounded"));
+}
+
+// Start, same terrain again, replacement, independent of the weather, the late countdown.
+static void test_v16_set_and_end(void) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    make_terrain(&r, BATTLE_FORMAT_SINGLE);
+    r.player[0].record.speed = 50;
+    r.opponent[0].record.speed = 90;
+    r.player[0].mon.moves[0].power = r.opponent[0].mon.moves[0].power = 1;
+    set_move(&r.player[0], 1, 580, terrain_move(BTERRAIN_GRASSY), 10);
+    set_move(&r.player[0], 2, 240, weather_move(BWEATHER_RAIN, 5), 10);
+    set_move(&r.opponent[0], 1, 604, terrain_move(BTERRAIN_ELECTRIC), 10);
+    r.player[0].record.max_hp = 160;
+    r.player[0].record.hp = 100;
+    r.player[0].record.status = BST_POISON;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    Action grass = move(0, 0, 0), rain = move(0, 0, 0), elec = move(1, 0, 0);
+    grass.move_slot = 1;
+    rain.move_slot = 2;
+    elec.move_slot = 1;
+    run1(&b, grass, move(1, 0, 0), &log);
+    const BattleEvent *e = find_event(&log, EV_TERRAIN_START, 0);
+    assert(e && e->condition == BTERRAIN_GRASSY && e->amount == 5 && battle_terrain(&b) == BTERRAIN_GRASSY);
+    assert(battle_field_terrain(&b)->turns == 4 && battle_field_terrain(&b)->source_kind == FSRC_MOVE);
+    // The heal (1/16 = 10) comes before the poison damage at the end of the same turn.
+    const int heal = event_index(&log, EV_TERRAIN_HEAL, 0), poison = event_index(&log, EV_RESIDUAL, 0);
+    assert(heal >= 0 && poison > heal && log.events[heal].amount == 10);
+    run1(&b, grass, move(1, 0, 0), &log);  // the same terrain fails, the count goes on
+    assert(event_count(&log, EV_FAIL) == 1 && battle_field_terrain(&b)->turns == 3);
+    // Rain and grassy terrain together; each keeps its own count.
+    run1(&b, rain, move(1, 0, 0), &log);
+    assert(battle_weather(&b) == BWEATHER_RAIN && battle_terrain(&b) == BTERRAIN_GRASSY);
+    assert(battle_field_weather(&b)->turns == 4 && battle_field_terrain(&b)->turns == 2);
+    // Electric Terrain replaces it; the weather stays.
+    run1(&b, move(0, 0, 0), elec, &log);
+    assert(battle_terrain(&b) == BTERRAIN_ELECTRIC && battle_field_terrain(&b)->turns == 4 &&
+           battle_weather(&b) == BWEATHER_RAIN && battle_field_weather(&b)->turns == 3);
+    // Same turn ends: the weather ends first (start of the end of turn), the terrain late.
+    b.field.weather.turns = 1;
+    b.field.terrain.turns = 1;
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    const int w_end = event_index(&log, EV_WEATHER_END, 0), t_end = event_index(&log, EV_TERRAIN_END, 0);
+    assert(w_end >= 0 && t_end > w_end && t_end > event_index(&log, EV_RESIDUAL, 0));
+    assert(battle_weather(&b) == BWEATHER_NONE && battle_terrain(&b) == BTERRAIN_NONE);
+    // Its last turn still heals: grassy with one turn left heals, then ends.
+    b.field.terrain = (FieldEffect){.kind = BTERRAIN_GRASSY, .turns = 1};
+    battle_active(&b, 0)->hp = 100;
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    assert(event_index(&log, EV_TERRAIN_HEAL, 0) >= 0 &&
+           event_index(&log, EV_TERRAIN_END, 0) > event_index(&log, EV_TERRAIN_HEAL, 0));
+    // A permanent battle-start terrain from the rules (after the start weather).
+    r.terrain.start_terrain = BTERRAIN_PSYCHIC;
+    r.terrain.start_turns = 0;
+    r.player[0].record.status = 0;
+    r.field.start_weather = BWEATHER_SUN;
+    r.field.start_turns = 5;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(event_index(&log, EV_WEATHER_START, 0) < event_index(&log, EV_TERRAIN_START, 0));
+    for (unsigned i = 0; i < 6; ++i) run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    assert(battle_terrain(&b) == BTERRAIN_PSYCHIC && battle_weather(&b) == BWEATHER_NONE);
+}
+
+// Surge abilities: speed order (the slower one's terrain stays), the same
+// terrain, replacements entering together, and switching back in.
+static void test_v16_entry(void) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    make_terrain(&r, BATTLE_FORMAT_DOUBLE);
+    give(&r.player[0], T_ELECTRIC_SURGE);
+    give(&r.opponent[0], T_PSYCHIC_SURGE);
+    give(&r.opponent[1], W_DROUGHT);
+    r.player[0].record.speed = 100;
+    r.opponent[0].record.speed = 50;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(event_count(&log, EV_TERRAIN_START) == 2 && find_event(&log, EV_TERRAIN_START, 0)->condition == BTERRAIN_ELECTRIC);
+    assert(battle_terrain(&b) == BTERRAIN_PSYCHIC && battle_weather(&b) == BWEATHER_SUN);
+    give(&r.opponent[0], T_ELECTRIC_SURGE);  // the same terrain twice: one start, no second notice
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(event_count(&log, EV_TERRAIN_START) == 1 && battle_field_terrain(&b)->turns == 5);
+    for (unsigned i = 0; i < log.count; ++i)
+        assert(!(log.events[i].kind == EV_ABILITY && log.events[i].user.side == 1 && log.events[i].user.slot == 0));
+    // Replacements after a turn: entry abilities after the last one, in speed order.
+    give(&r.opponent[0], T_PSYCHIC_SURGE);
+    add_reserve(&r, 0);
+    add_reserve(&r, 1);
+    give(&r.player[2], T_MISTY_SURGE);
+    give(&r.opponent[2], T_GRASSY_SURGE);
+    r.player[2].record.speed = 30;
+    r.opponent[2].record.speed = 120;
+    assert(battle_init(&b, &r, 3) == BI_OK);
+    battle_begin(&b, &log);
+    for (uint8_t side = 0; side < 2; ++side) {
+        Battler *x = at_pos(&b, side, 0);
+        x->hp = 0;
+        x->fainted = true;
+        b.sides[side].active[0] = BATTLE_SLOT_NONE;
+    }
+    Position p;
+    assert(battle_pending_replacement(&b, &p) && battle_replace(&b, p, 2, &log) && log.count == 1);
+    assert(battle_pending_replacement(&b, &p) && battle_replace(&b, p, 2, &log));
+    assert(find_event(&log, EV_TERRAIN_START, 0)->condition == BTERRAIN_GRASSY &&
+           find_event(&log, EV_TERRAIN_START, 1)->condition == BTERRAIN_MISTY && battle_terrain(&b) == BTERRAIN_MISTY);
+    // Out and in again: the surge again.
+    make_terrain(&r, BATTLE_FORMAT_SINGLE);
+    add_reserve(&r, 0);
+    give(&r.player[0], T_GRASSY_SURGE);
+    r.player[0].record.speed = 10;
+    set_move(&r.opponent[0], 1, 604, terrain_move(BTERRAIN_ELECTRIC), 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    Action elec = move(1, 0, 0), out = {.kind = ACT_SWITCH, .user = {0, 0}, .reserve = 1};
+    elec.move_slot = 1;
+    run1(&b, out, elec, &log);
+    assert(battle_terrain(&b) == BTERRAIN_ELECTRIC);
+    Action back = {.kind = ACT_SWITCH, .user = {0, 0}, .reserve = 0};
+    run1(&b, back, move(1, 0, 0), &log);
+    assert(battle_terrain(&b) == BTERRAIN_GRASSY);
+}
+
+// The shared grounded rule and terrain-affected (grounded, not semi-invulnerable).
+static void test_v16_grounded(void) {
+    static BattleRequest r;
+    static Battle b;
+    make_terrain(&r, BATTLE_FORMAT_TRIPLE);
+    r.player[1].mon.types[0] = R_FLYING;
+    give(&r.player[2], T_LEVITATE);
+    r.opponent[0].mon.type_count = 2;
+    r.opponent[0].mon.types[1] = R_FLYING;  // a second type counts too
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    assert(battle_grounded(&b, at_pos(&b, 0, 0)) && !battle_grounded(&b, at_pos(&b, 0, 1)) &&
+           !battle_grounded(&b, at_pos(&b, 0, 2)) && !battle_grounded(&b, at_pos(&b, 1, 0)) &&
+           battle_grounded(&b, at_pos(&b, 1, 1)));
+    b.field.terrain = (FieldEffect){.kind = BTERRAIN_GRASSY, .turns = 5};
+    assert(bc_on_terrain(&b, at_pos(&b, 0, 0), T_GRASS) && !bc_on_terrain(&b, at_pos(&b, 0, 0), T_ELEC) &&
+           !bc_on_terrain(&b, at_pos(&b, 0, 1), T_GRASS));
+    for (uint8_t semi = BSEMI_AIR; semi <= BSEMI_UNDERGROUND; ++semi) {
+        at_pos(&b, 0, 0)->vol.semi_invulnerable = semi;
+        assert(!bc_on_terrain(&b, at_pos(&b, 0, 0), T_GRASS) && battle_grounded(&b, at_pos(&b, 0, 0)));
+    }
+    at_pos(&b, 0, 0)->vol.semi_invulnerable = BSEMI_NONE;
+    // Abilities normalised away: Levitate does nothing (the request's own choice).
+    r.rules |= RULE_IGNORE_ABILITIES;
+    assert(battle_init(&b, &r, 1) == BI_OK && battle_grounded(&b, at_pos(&b, 0, 2)));
+    // No airborne type in the rules: a Flying type is grounded (the GBA decides).
+    r.rules &= (uint16_t)~RULE_IGNORE_ABILITIES;
+    r.terrain.airborne_type = BABIL_NO_TYPE;
+    assert(battle_init(&b, &r, 1) == BI_OK && battle_grounded(&b, at_pos(&b, 0, 1)));
+    // Items can ground or lift a Pokemon (Air Balloon, Iron Ball) and the core
+    // runs none: a V16 request must normalise them away, or it is refused
+    // (never a silent "grounded"). Earlier versions keep their meaning.
+    r.terrain.airborne_type = R_FLYING;
+    r.rules &= (uint16_t)~RULE_IGNORE_ITEMS;
+    assert(battle_init(&b, &r, 1) == BI_ITEMS);
+    assert(!strcmp(battle_init_error_name(BI_ITEMS), "V16: held items are not simulated (grounding)"));
+    r.version = BATTLE_REQUEST_VERSION_WEATHER;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    // Before V16 there is no terrain at all.
+    make_weather(&r, BATTLE_FORMAT_SINGLE);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    b.field.terrain = (FieldEffect){.kind = BTERRAIN_GRASSY, .turns = 5};
+    assert(battle_terrain(&b) == BTERRAIN_NONE && !bc_on_terrain(&b, battle_active(&b, 0), T_GRASS));
+}
+
+// Electric: no new sleep; Misty: no major status, no confusion; the order
+// against abilities; only affected (grounded) Pokemon; contact abilities too.
+static void test_v16_status(void) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    make_terrain(&r, BATTLE_FORMAT_DOUBLE);
+    BattleMove sleep = status_move(BTARGET_SINGLE, 0), para = status_move(BTARGET_SINGLE, 0);
+    BattleMove confuse = status_move(BTARGET_SINGLE, 0);
+    push(&sleep, fx(BEFF_STATUS, BWHO_TARGET, 0, BST_SLEEP, 0, 0));
+    push(&para, fx(BEFF_STATUS, BWHO_TARGET, 0, BST_PARALYSIS, 0, 0));
+    push(&confuse, fx(BEFF_CONFUSE, BWHO_TARGET, 0, 0, 0, 0));
+    set_move(&r.player[0], 0, 79, sleep, 10);
+    set_move(&r.player[0], 1, 86, para, 10);
+    set_move(&r.player[0], 2, 109, confuse, 10);
+    r.player[0].record.speed = 200;
+    r.opponent[1].mon.types[0] = R_FLYING;
+    for (unsigned i = 0; i < 2; ++i) r.opponent[i].mon.moves[0].power = 1, r.player[1].mon.moves[0].power = 1;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    Action use = move(0, 0, 0);
+    const Action idle[] = {move(0, 1, 0), move(1, 0, 0), move(1, 1, 0)};
+    // Electric: the grounded foe stays awake (shown), the Flying one falls asleep.
+    b.field.terrain = (FieldEffect){.kind = BTERRAIN_ELECTRIC, .turns = 5};
+    Action turn[4] = {use, idle[0], idle[1], idle[2]};
+    battle_run_turn(&b, turn, 4, &log);
+    const BattleEvent *blk = find_event(&log, EV_TERRAIN_BLOCK, 0);
+    assert(blk && blk->target.side == 1 && blk->target.slot == 0 && blk->condition == BTERRAIN_ELECTRIC &&
+           !at_pos(&b, 1, 0)->status);
+    turn[0].target.pos.slot = 1;
+    battle_run_turn(&b, turn, 4, &log);
+    assert(BATTLE_CONDITION_KIND(at_pos(&b, 1, 1)->status) == BST_SLEEP);
+    // Electric does not stop paralysis.
+    turn[0] = use;
+    turn[0].move_slot = 1;
+    battle_run_turn(&b, turn, 4, &log);
+    assert(BATTLE_CONDITION_KIND(at_pos(&b, 1, 0)->status) == BST_PARALYSIS);
+    // Misty: no status and no confusion on the grounded foe.
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    b.field.terrain = (FieldEffect){.kind = BTERRAIN_MISTY, .turns = 5};
+    for (unsigned s = 0; s < 3; ++s) {
+        turn[0] = use;
+        turn[0].move_slot = (uint8_t)s;
+        battle_run_turn(&b, turn, 4, &log);
+        assert(event_count(&log, EV_TERRAIN_BLOCK) == 1 && !at_pos(&b, 1, 0)->status &&
+               !at_pos(&b, 1, 0)->vol.confusion);
+    }
+    // The order against abilities: paralysis checks Limber first (its block is shown),
+    // sleep checks Electric Terrain before Insomnia.
+    give(&r.opponent[0], HOOKS(7, hk(BABIL_STATUS_IMMUNE, (1u << BST_PARALYSIS) | (1u << BST_SLEEP), 0, 0, 0, 0, 0, 0)));
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    b.field.terrain = (FieldEffect){.kind = BTERRAIN_MISTY, .turns = 5};
+    turn[0] = use;
+    turn[0].move_slot = 1;
+    battle_run_turn(&b, turn, 4, &log);
+    assert(event_count(&log, EV_ABILITY_BLOCK) == 1 && !event_count(&log, EV_TERRAIN_BLOCK));
+    b.field.terrain.kind = BTERRAIN_ELECTRIC;
+    turn[0].move_slot = 0;
+    battle_run_turn(&b, turn, 4, &log);
+    assert(event_count(&log, EV_TERRAIN_BLOCK) == 1 && !event_count(&log, EV_ABILITY_BLOCK));
+    // An existing status stays; a semi-invulnerable Pokemon is not affected.
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    b.field.terrain = (FieldEffect){.kind = BTERRAIN_MISTY, .turns = 5};
+    at_pos(&b, 1, 0)->status = BST_BURN;
+    battle_run_turn(&b, turn, 4, &log);
+    assert(at_pos(&b, 1, 0)->status == BST_BURN);
+    // Contact abilities go through the same rule: Static cannot paralyse a grounded attacker in Misty Terrain.
+    make_terrain(&r, BATTLE_FORMAT_SINGLE);
+    give(&r.opponent[0], HOOKS(9, hk(BABIL_CONTACT_STATUS, BST_PARALYSIS, 0, 0, 1, 1, 0, 0)));
+    set_move(&r.player[0], 0, 33, contact(10, 1), 30);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    b.field.terrain = (FieldEffect){.kind = BTERRAIN_MISTY, .turns = 5};
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    assert(!battle_active(&b, 0)->status && !event_count(&log, EV_STATUS));
+    b.field.terrain.kind = BTERRAIN_NONE;
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    assert(BATTLE_CONDITION_KIND(battle_active(&b, 0)->status) == BST_PARALYSIS);
+}
+
+// Psychic Terrain: a foe's move with priority > 0 fails against an affected
+// target, per target; not against an airborne one, an ally, or with priority 0.
+static void test_v16_priority(void) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    make_terrain(&r, BATTLE_FORMAT_DOUBLE);
+    r.opponent[1].mon.types[0] = R_FLYING;
+    BattleMove quick = t_priority(40, 1), spread = t_priority(30, 1), slow = t_priority(40, 0);
+    spread.target = BTARGET_ALL_ADJACENT;
+    set_move(&r.player[0], 0, 98, quick, 30);
+    set_move(&r.player[0], 1, 500, spread, 30);
+    set_move(&r.player[0], 2, 33, slow, 30);
+    set_move(&r.player[0], 3, 1, terrain_move(BTERRAIN_PSYCHIC), 10);
+    for (unsigned i = 0; i < 2; ++i) r.opponent[i].mon.moves[0].power = 1, r.player[1].mon.moves[0].power = 1;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    b.field.terrain = (FieldEffect){.kind = BTERRAIN_PSYCHIC, .turns = 5};
+    Action turn[4] = {move(0, 0, 0), move(0, 1, 0), move(1, 0, 0), move(1, 1, 0)};
+    battle_run_turn(&b, turn, 4, &log);  // Quick Attack on the grounded foe: stopped, PP spent
+    const BattleEvent *blk = find_event(&log, EV_TERRAIN_BLOCK, 0);
+    assert(blk && blk->user.side == 0 && blk->target.side == 1 && blk->target.slot == 0 && blk->move_id == 98);
+    assert(battle_active(&b, 0)->pp[0] == 29);
+    for (unsigned i = 0; i < log.count; ++i)
+        assert(!(log.events[i].kind == EV_DAMAGE && log.events[i].user.side == 0 && log.events[i].user.slot == 0));
+    turn[0].target.pos.slot = 1;  // the airborne foe is hit
+    battle_run_turn(&b, turn, 4, &log);
+    assert(!event_count(&log, EV_TERRAIN_BLOCK));
+    // A spread priority move: the grounded foe is protected, the airborne foe and the ally are hit.
+    turn[0] = move(0, 0, 0);
+    turn[0].move_slot = 1;
+    battle_run_turn(&b, turn, 4, &log);
+    assert(event_count(&log, EV_TERRAIN_BLOCK) == 1);
+    unsigned hit_ally = 0, hit_air = 0;
+    for (unsigned i = 0; i < log.count; ++i) {
+        const BattleEvent *e = &log.events[i];
+        if (e->kind != EV_DAMAGE || e->move_id != 500) continue;
+        hit_ally += e->target.side == 0;
+        hit_air += e->target.side == 1 && e->target.slot == 1;
+        assert(!(e->target.side == 1 && e->target.slot == 0));
+    }
+    assert(hit_ally == 1 && hit_air == 1);
+    // Priority 0 and the user's own field move are never stopped.
+    turn[0] = move(0, 0, 0);
+    turn[0].move_slot = 2;
+    battle_run_turn(&b, turn, 4, &log);
+    assert(!event_count(&log, EV_TERRAIN_BLOCK));
+    // The foe's priority move against the player's grounded Pokemon: stopped too (either side).
+    make_terrain(&r, BATTLE_FORMAT_SINGLE);
+    set_move(&r.opponent[0], 0, 98, quick, 30);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    b.field.terrain = (FieldEffect){.kind = BTERRAIN_PSYCHIC, .turns = 5};
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    blk = find_event(&log, EV_TERRAIN_BLOCK, 0);
+    assert(blk && blk->target.side == 0);
+    // Another terrain does not stop priority moves.
+    b.field.terrain.kind = BTERRAIN_MISTY;
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    assert(!event_count(&log, EV_TERRAIN_BLOCK));
+}
+
+// The terrain power records, the Earthquake record, Grass Pelt, Surge Surfer, with the weather.
+static uint16_t t_damage(const RefMon *atk, const RefMon *def, BattleMove move, unsigned flags, uint8_t weather,
+                         uint8_t terrain, unsigned roll) {
+    static BattleRequest r;
+    static Battle b;
+    make_terrain(&r, BATTLE_FORMAT_SINGLE);
+    ref_mon(&r.player[0], 0, atk);
+    set_move(&r.player[0], 0, 100, move, 10);
+    ref_mon(&r.opponent[0], 0x80, def);
+    set_move(&r.opponent[0], 0, 101, damaging(10, R_NORMAL, 100), 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    b.field.weather = (FieldEffect){.kind = weather, .turns = 5};
+    b.field.terrain = (FieldEffect){.kind = terrain, .turns = 5};
+    const Battler *a = battle_active(&b, 0);
+    BattleMove m = a->moves[0];
+    m.type = bc_weather_move_type(&b, &m);
+    uint8_t eff;
+    return bc_calculate_damage(&b, a, &m, battle_active(&b, 1), roll, false, flags, &eff);
+}
+
+static void test_v16_damage(void) {
+    const RefMon atk = RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 60, 0, R_NO_ABILITY);
+    const RefMon flyer = RMON(50, R_FLYING, R_FLYING, 100, 999, 999, 60, 0, R_NO_ABILITY);
+    const RefMon def = RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 30, 0, R_NO_ABILITY);
+    const RefMon def_fly = RMON(50, R_FLYING, R_FLYING, 100, 999, 999, 30, 0, R_NO_ABILITY);
+    const BattleMove thunderbolt = ref_move(90, R_ELECTRIC, BCAT_SPECIAL), energy = ref_move(90, R_GRASS, BCAT_SPECIAL);
+    const BattleMove psychic = ref_move(90, R_PSYCHIC, BCAT_SPECIAL), dragon = ref_move(80, R_DRAGON, BCAT_SPECIAL);
+    // x1.3 power for a grounded attacker: 90 x 5325 / 4096 = 117.0 -> as a 117-power move.
+    const uint16_t p117 = t_damage(&atk, &def, ref_move(117, R_ELECTRIC, BCAT_SPECIAL), 0, 0, 0, 100);
+    assert(t_damage(&atk, &def, thunderbolt, 0, 0, BTERRAIN_ELECTRIC, 100) == p117);
+    assert(t_damage(&atk, &def, energy, 0, 0, BTERRAIN_GRASSY, 100) ==
+           t_damage(&atk, &def, ref_move(117, R_GRASS, BCAT_SPECIAL), 0, 0, 0, 100));
+    assert(t_damage(&atk, &def, psychic, 0, 0, BTERRAIN_PSYCHIC, 100) ==
+           t_damage(&atk, &def, ref_move(117, R_PSYCHIC, BCAT_SPECIAL), 0, 0, 0, 100));
+    // Only its own terrain, only a grounded attacker; the defender does not matter.
+    assert(t_damage(&atk, &def, thunderbolt, 0, 0, BTERRAIN_GRASSY, 100) == t_damage(&atk, &def, thunderbolt, 0, 0, 0, 100));
+    assert(t_damage(&flyer, &def, thunderbolt, 0, 0, BTERRAIN_ELECTRIC, 100) ==
+           t_damage(&flyer, &def, thunderbolt, 0, 0, 0, 100));
+    assert(t_damage(&atk, &def_fly, thunderbolt, 0, 0, BTERRAIN_ELECTRIC, 100) ==
+           t_damage(&atk, &def_fly, ref_move(117, R_ELECTRIC, BCAT_SPECIAL), 0, 0, 0, 100));
+    // Misty: x0.5 Dragon against a grounded target, from any attacker.
+    assert(t_damage(&flyer, &def, dragon, 0, 0, BTERRAIN_MISTY, 100) ==
+           t_damage(&flyer, &def, ref_move(40, R_DRAGON, BCAT_SPECIAL), 0, 0, 0, 100));
+    assert(t_damage(&atk, &def_fly, dragon, 0, 0, BTERRAIN_MISTY, 100) == t_damage(&atk, &def_fly, dragon, 0, 0, 0, 100));
+    // Earthquake on Grassy Terrain: x0.5 (50); doubled, not halved, against an underground target.
+    assert(t_damage(&atk, &def, t_earthquake(), 0, 0, BTERRAIN_GRASSY, 100) ==
+           t_damage(&atk, &def, ref_move(50, R_GROUND, BCAT_PHYSICAL), 0, 0, 0, 100));
+    {
+        static BattleRequest r;
+        static Battle b;
+        make_terrain(&r, BATTLE_FORMAT_SINGLE);
+        set_move(&r.player[0], 0, 89, t_earthquake(), 10);
+        assert(battle_init(&b, &r, 1) == BI_OK);
+        b.field.terrain = (FieldEffect){.kind = BTERRAIN_GRASSY, .turns = 5};
+        uint8_t eff;
+        Battler *d = battle_active(&b, 1);
+        const BattleMove *m = &battle_active(&b, 0)->moves[0];
+        const uint16_t open = bc_calculate_damage(&b, battle_active(&b, 0), m, d, 100, false, 0, &eff);
+        d->vol.semi_invulnerable = BSEMI_UNDERGROUND;
+        const uint16_t dug = bc_calculate_damage(&b, battle_active(&b, 0), m, d, 100, false, BCD_DOUBLED, &eff);
+        b.field.terrain.kind = BTERRAIN_NONE;
+        assert(dug == bc_calculate_damage(&b, battle_active(&b, 0), m, d, 100, false, BCD_DOUBLED, &eff) && dug > 2 * open);
+    }
+    // With the weather: Solar Beam in rain on Grassy Terrain: the power chain 120 x0.5 x1.3 = 78.
+    BattleMove beam = w_solar_beam();
+    beam.type = R_GRASS;
+    assert(t_damage(&atk, &def, beam, 0, BWEATHER_RAIN, BTERRAIN_GRASSY, 100) ==
+           t_damage(&atk, &def, ref_move(78, R_GRASS, BCAT_SPECIAL), 0, 0, 0, 100));
+    // Rain x1.5 (weather step) and nothing from Electric Terrain on a Water move.
+    const BattleMove surf = ref_move(90, R_WATER, BCAT_SPECIAL);
+    assert(t_damage(&atk, &def, surf, 0, BWEATHER_RAIN, BTERRAIN_ELECTRIC, 100) ==
+           t_damage(&atk, &def, surf, 0, BWEATHER_RAIN, 0, 100));
+    // Grass Pelt: Defense x1.5 on Grassy Terrain (any defender, physical only).
+    RefMon pelt = def;
+    pelt.ability = T_GRASS_PELT;
+    const BattleMove tackle = ref_move(80, R_NORMAL, BCAT_PHYSICAL);
+    assert(t_damage(&atk, &pelt, tackle, 0, 0, BTERRAIN_GRASSY, 100) < t_damage(&atk, &pelt, tackle, 0, 0, 0, 100));
+    assert(t_damage(&atk, &pelt, ref_move(80, R_NORMAL, BCAT_SPECIAL), 0, 0, BTERRAIN_GRASSY, 100) ==
+           t_damage(&atk, &pelt, ref_move(80, R_NORMAL, BCAT_SPECIAL), 0, 0, 0, 100));
+    // The Gen 7 boost (x1.5) from the same GC: only the GBA's record changes.
+    {
+        static BattleRequest r;
+        static Battle b;
+        make_terrain(&r, BATTLE_FORMAT_SINGLE);
+        frontier_terrain(&r.terrain, 150);
+        ref_mon(&r.player[0], 0, &atk);
+        set_move(&r.player[0], 0, 100, thunderbolt, 10);
+        ref_mon(&r.opponent[0], 0x80, &def);
+        assert(battle_init(&b, &r, 1) == BI_OK);
+        b.field.terrain = (FieldEffect){.kind = BTERRAIN_ELECTRIC, .turns = 5};
+        uint8_t eff;
+        assert(bc_calculate_damage(&b, battle_active(&b, 0), &battle_active(&b, 0)->moves[0], battle_active(&b, 1),
+                                   100, false, 0, &eff) ==
+               t_damage(&atk, &def, ref_move(135, R_ELECTRIC, BCAT_SPECIAL), 0, 0, 0, 100));
+    }
+}
+
+// Surge Surfer doubles speed on Electric Terrain (dynamic turn order).
+static void test_v16_speed(void) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    make_terrain(&r, BATTLE_FORMAT_DOUBLE);
+    give(&r.player[0], T_SURGE_SURFER);
+    r.player[0].record.speed = 50;
+    r.player[1].record.speed = 200;
+    r.opponent[0].record.speed = 90;
+    r.opponent[1].record.speed = 80;
+    set_move(&r.player[1], 1, 604, terrain_move(BTERRAIN_ELECTRIC), 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    Action elec = move(0, 1, 0);
+    elec.move_slot = 1;
+    const Action turn[] = {move(0, 0, 0), elec, move(1, 0, 0), move(1, 1, 0)};
+    battle_run_turn(&b, turn, 4, &log);
+    assert(find_event(&log, EV_MOVE_USED, 1)->user.side == 0 && find_event(&log, EV_MOVE_USED, 1)->user.slot == 0);
+}
+
+// The orders the reference fixes and the other tests do not reach: a priority
+// status move on Psychic Terrain, Misty before Own Tempo, a chance effect kept
+// off silently, the Grassy heal before Shed Skin (FIRST_EVENT_BLOCK_GRASSY_
+// TERRAIN_HEAL, then FIRST_EVENT_BLOCK_ABILITIES), the start terrain without
+// abilities, and the terrain records between the move's own and the
+// attacker's power modifiers (CalcMoveBasePowerAfterModifiers).
+static void test_v16_order(void) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    // A status move with priority 1 is stopped like a damaging one.
+    make_terrain(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove spore = status_move(BTARGET_SINGLE, 0);
+    spore.priority = 1;
+    push(&spore, fx(BEFF_STATUS, BWHO_TARGET, 0, BST_SLEEP, 0, 0));
+    set_move(&r.player[0], 0, 147, spore, 10);
+    r.opponent[0].mon.moves[0].power = 1;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    b.field.terrain = (FieldEffect){.kind = BTERRAIN_PSYCHIC, .turns = 5};
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    assert(event_count(&log, EV_TERRAIN_BLOCK) == 1 && !battle_active(&b, 1)->status);
+    // Misty Terrain before Own Tempo: the terrain's block is the one shown.
+    make_terrain(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove confuse = status_move(BTARGET_SINGLE, 0);
+    push(&confuse, fx(BEFF_CONFUSE, BWHO_TARGET, 0, 0, 0, 0));
+    set_move(&r.player[0], 0, 109, confuse, 10);
+    r.opponent[0].mon.moves[0].power = 1;
+    give(&r.opponent[0], HOOKS(20, hk(BABIL_VOLATILE_IMMUNE, BABIL_VOL_CONFUSION, 0, 0, 0, 0, 0, 0)));
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    b.field.terrain = (FieldEffect){.kind = BTERRAIN_MISTY, .turns = 5};
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    assert(event_count(&log, EV_TERRAIN_BLOCK) == 1 && !event_count(&log, EV_ABILITY_BLOCK) &&
+           !battle_active(&b, 1)->vol.confusion);
+    // A chance effect (100%) is kept off without a notice; without the terrain it lands.
+    make_terrain(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove spark = damaging(20, R_NORMAL, 100);
+    push(&spark, fx(BEFF_STATUS, BWHO_TARGET, 100, BST_PARALYSIS, 0, 0));
+    set_move(&r.player[0], 0, 209, spark, 10);
+    r.opponent[0].mon.moves[0].power = 1;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    b.field.terrain = (FieldEffect){.kind = BTERRAIN_MISTY, .turns = 5};
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    assert(!event_count(&log, EV_TERRAIN_BLOCK) && !battle_active(&b, 1)->status);
+    b.field.terrain.kind = BTERRAIN_NONE;
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    assert(BATTLE_CONDITION_KIND(battle_active(&b, 1)->status) == BST_PARALYSIS);
+    // The Grassy heal before Shed Skin (made certain here).
+    make_terrain(&r, BATTLE_FORMAT_SINGLE);
+    give(&r.player[0], HOOKS(61, hk(BABIL_END_TURN_CURE, 0xfe, 0, 0, 1, 1, 0, 0)));
+    r.player[0].record.max_hp = 160;
+    r.player[0].record.hp = 100;
+    r.player[0].record.status = BST_POISON;
+    r.player[0].mon.moves[0].power = r.opponent[0].mon.moves[0].power = 1;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    b.field.terrain = (FieldEffect){.kind = BTERRAIN_GRASSY, .turns = 5};
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    int heal = -1;
+    for (unsigned i = 0; i < log.count && heal < 0; ++i)
+        if (log.events[i].kind == EV_TERRAIN_HEAL && log.events[i].target.side == 0) heal = (int)i;
+    const int cure = event_index(&log, EV_CURE, 0);
+    assert(heal >= 0 && cure > heal && !event_count(&log, EV_RESIDUAL) && !battle_active(&b, 0)->status);
+    // Only a grounded Pokemon heals, and never past its max HP (155/160 heals 5, not 10).
+    make_terrain(&r, BATTLE_FORMAT_SINGLE);
+    set_move(&r.player[0], 0, 580, terrain_move(BTERRAIN_GRASSY), 10);
+    set_move(&r.opponent[0], 0, 580, terrain_move(BTERRAIN_GRASSY), 10);
+    r.player[0].mon.types[0] = R_FLYING;
+    r.player[0].record.max_hp = r.opponent[0].record.max_hp = 160;
+    r.player[0].record.hp = 100;
+    r.opponent[0].record.hp = 155;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    b.field.terrain = (FieldEffect){.kind = BTERRAIN_GRASSY, .turns = 5};
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    const BattleEvent *healed = find_event(&log, EV_TERRAIN_HEAL, 0);
+    assert(event_count(&log, EV_TERRAIN_HEAL) == 1 && healed->target.side == 1 && healed->amount == 5 &&
+           battle_active(&b, 1)->hp == 160 && battle_active(&b, 0)->hp == 100);
+    // Psychic Terrain before Protect (the target-failure order): the terrain's block is shown.
+    make_terrain(&r, BATTLE_FORMAT_SINGLE);
+    BattleMove guard = status_move(BTARGET_SELF, 0);
+    guard.priority = 4;
+    push(&guard, fx(BEFF_PROTECT, BWHO_USER, 0, 3, 0, 0));
+    set_move(&r.player[0], 0, 98, t_priority(40, 1), 30);
+    set_move(&r.opponent[0], 0, 182, guard, 10);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    b.field.terrain = (FieldEffect){.kind = BTERRAIN_PSYCHIC, .turns = 5};
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    assert(event_count(&log, EV_PROTECT) == 1 && event_count(&log, EV_TERRAIN_BLOCK) == 1 &&
+           !event_count(&log, EV_PROTECTED) && !event_count(&log, EV_DAMAGE));
+    // Abilities normalised away: the rules' start terrain still comes (after the start weather).
+    make_terrain(&r, BATTLE_FORMAT_SINGLE);
+    r.rules |= RULE_IGNORE_ABILITIES;
+    r.terrain.start_terrain = BTERRAIN_GRASSY;
+    r.terrain.start_turns = 5;
+    r.field.start_weather = BWEATHER_RAIN;
+    r.field.start_turns = 5;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(battle_terrain(&b) == BTERRAIN_GRASSY && battle_field_terrain(&b)->source_kind == FSRC_RULE &&
+           event_index(&log, EV_WEATHER_START, 0) >= 0 &&
+           event_index(&log, EV_TERRAIN_START, 0) > event_index(&log, EV_WEATHER_START, 0));
+    // The power chain: the move's own x0.5 (rain), the terrain x1.3, then the attacker's x1.2:
+    // 4096 -> 2048 -> 2663 -> 3195, so 116 power becomes 90. The terrain after the ability
+    // would give 2048 -> 2458 -> 3196 and 91.
+    const RefMon atk = RMON(50, R_NORMAL, R_NORMAL, 400, 999, 999, 60, 0,
+                            MODS(4, modr(BMOD_POWER, 120, BPRED_MOVE_TYPE, R_GRASS, 0, 0)));
+    const RefMon plain = RMON(50, R_NORMAL, R_NORMAL, 400, 999, 999, 60, 0, R_NO_ABILITY);
+    const RefMon def = RMON(50, R_NORMAL, R_NORMAL, 50, 999, 999, 30, 0, R_NO_ABILITY);
+    BattleMove beam = w_solar_beam();
+    beam.type = R_GRASS;
+    beam.power = 116;
+    const uint16_t got = t_damage(&atk, &def, beam, 0, BWEATHER_RAIN, BTERRAIN_GRASSY, 100);
+    const uint16_t p90 = t_damage(&plain, &def, ref_move(90, R_GRASS, BCAT_SPECIAL), 0, 0, 0, 100);
+    const uint16_t p91 = t_damage(&plain, &def, ref_move(91, R_GRASS, BCAT_SPECIAL), 0, 0, 0, 100);
+    assert(p90 != p91 && got == p90);
+}
+
+// Random terrain battles in every format: the same request and seed give the
+// same events, state and RNG; HP in range; every terrain event happens.
+static void test_v16_formats(void) {
+    static BattleRequest r;
+    static Battle a, b;
+    static EventLog la, lb;
+    const BattleAbility pool[] = {T_ELECTRIC_SURGE, T_GRASSY_SURGE, T_MISTY_SURGE, T_PSYCHIC_SURGE, T_LEVITATE,
+                                  T_SURGE_SURFER, T_GRASS_PELT, W_DRIZZLE, W_SAND_STREAM, W_CLOUD_NINE, R_NO_ABILITY,
+                                  STATIC};
+    const unsigned n = sizeof pool / sizeof *pool;
+    const uint8_t formats[] = {BATTLE_FORMAT_SINGLE, BATTLE_FORMAT_DOUBLE, BATTLE_FORMAT_TRIPLE, BATTLE_FORMAT_ROTATION};
+    unsigned counts[4] = {0}, battles = 0;
+    for (unsigned f = 0; f < 4; ++f)
+        for (uint32_t seed = 1; seed <= 60; ++seed) {
+            make_terrain(&r, formats[f]);
+            for (unsigned side = 0; side < 2; ++side) add_reserve(&r, side);
+            for (unsigned side = 0; side < 2; ++side) {
+                BattleEntry *e = side ? r.opponent : r.player;
+                const unsigned count = side ? r.opponent_count : r.player_count;
+                for (unsigned i = 0; i < count; ++i) {
+                    give(&e[i], pool[(seed * 7 + side * 5 + i + f) % n]);
+                    e[i].record.hp = e[i].record.max_hp = 90;
+                    e[i].record.hp = (uint16_t)(90 - (seed + i) % 30);
+                    e[i].mon.types[0] = (uint8_t)((seed + 3 * i + side) % R_COUNT);
+                    e[i].record.speed = (uint16_t)(40 + (seed * 13 + i * 7 + side * 3) % 60);
+                    const uint8_t kind = (uint8_t)(1 + (seed + i + side) % BTERRAIN_KINDS);
+                    set_move(&e[i], 1, 600 + kind, terrain_move(kind), 8);
+                    BattleMove extra = (seed + i) % 3 == 0 ? t_earthquake() : (seed + i) % 3 == 1 ?
+                                       t_priority(40, 1) : ref_move(80, (uint8_t)(R_GRASS + (seed + i) % 3), BCAT_SPECIAL);
+                    set_move(&e[i], 2, 300 + i, extra, 10);
+                    BattleMove status = status_move(BTARGET_SINGLE, 0);
+                    push(&status, fx((seed + i) % 2 ? BEFF_STATUS : BEFF_CONFUSE, BWHO_TARGET, 0,
+                                     (seed + i) % 2 ? (uint8_t)(BST_POISON + (seed + i) % 5) : 0, 0, 0));
+                    if (status.effects[0].kind == BEFF_STATUS && status.effects[0].arg0 == BST_FREEZE)
+                        status.effects[0].arg0 = BST_BURN;
+                    set_move(&e[i], 3, 400 + i, status, 10);
+                }
+            }
+            r.terrain.start_terrain = (uint8_t)(seed % 5 == 0 ? 1 + seed % BTERRAIN_KINDS : 0);
+            r.terrain.start_turns = r.terrain.start_terrain ? (uint8_t)(seed % 4) : 0;
+            assert(battle_init(&a, &r, seed) == BI_OK && battle_init(&b, &r, seed) == BI_OK);
+            battle_begin(&a, &la);
+            battle_begin(&b, &lb);
+            assert(la.count == lb.count && memcmp(la.events, lb.events, la.count * sizeof(BattleEvent)) == 0);
+            for (unsigned t = 0; t < 60 && a.outcome == OUTCOME_NONE; ++t) {
+                Position pending;
+                while (battle_pending_replacement(&a, &pending)) {
+                    const uint8_t mask = battle_replacement_mask(&a, pending);
+                    uint8_t pick = 0;
+                    while (!(mask & (1u << pick))) ++pick;
+                    assert(battle_replace(&a, pending, pick, &la) && battle_replace(&b, pending, pick, &lb));
+                }
+                if (a.outcome != OUTCOME_NONE) break;
+                Action actions[BC_MAX_ACTIONS];
+                unsigned count = 0;
+                for (uint8_t side = 0; side < 2; ++side) {
+                    Position actors[BC_MAX_ACTIVE];
+                    const unsigned k = battle_collect_actors(&a, side, actors);
+                    for (unsigned i = 0; i < k; ++i) battle_choose_at(&a, actors[i], &actions[count++]);
+                }
+                for (unsigned i = 0; i < count; ++i) {
+                    Action dummy;
+                    battle_choose_at(&b, actions[i].user, &dummy);
+                }
+                battle_run_turn(&a, actions, count, &la);
+                battle_run_turn(&b, actions, count, &lb);
+                assert(la.count == lb.count && la.count < BC_MAX_EVENTS &&
+                       memcmp(la.events, lb.events, la.count * sizeof(BattleEvent)) == 0);
+                for (unsigned i = 0; i < la.count; ++i)
+                    if (la.events[i].kind >= EV_TERRAIN_START) ++counts[la.events[i].kind - EV_TERRAIN_START];
+                for (unsigned side = 0; side < 2; ++side)
+                    for (unsigned i = 0; i < a.sides[side].count; ++i) {
+                        const Battler *x = &a.sides[side].battlers[i];
+                        assert(x->hp <= x->max_hp && (x->hp == 0) == x->fainted);
+                    }
+                assert(a.field.terrain.kind < BTERRAIN_COUNT && a.field.terrain.turns <= BTERRAIN_MAX_TURNS);
+            }
+            assert(memcmp(&a.sides, &b.sides, sizeof a.sides) == 0 && a.rng == b.rng &&
+                   memcmp(&a.field, &b.field, sizeof a.field) == 0);
+            ++battles;
+        }
+    for (unsigned i = 0; i < 4; ++i) assert(counts[i] > 10);
+    printf("v16 formats: %u battles, terrain start %u end %u heal %u block %u\n", battles, counts[0], counts[1],
+           counts[2], counts[3]);
+}
+
+
+// ------------------------------------------------------------- V16 against the Expansion engine
+//
+// Hits the Frontier build's test runner computes with the real Expansion
+// code on a terrain set by a surge ability (test/battle/gc_terrain_reference.c
+// in frontier-gc-m4t, same stats, rolls 100/93/85, no crit). The build keeps
+// the Gen 3 power of Thunderbolt (95) and Gen 4 Dragon Pulse (90).
+typedef struct {
+    const char *name;
+    RefMon atk, def;
+    BattleMove move;
+    uint8_t weather, terrain;
+    uint16_t expansion[3];
+} TerrainRefCase;
+
+static void test_v16_expansion_reference(void) {
+    BattleMove beam = w_solar_beam();
+    beam.type = R_GRASS;
+    const TerrainRefCase cases[] = {
+        {"Electric Terrain x1.3: Thunderbolt, STAB (Tapu Koko vs Snorlax)",
+         RMON(50, R_ELECTRIC, R_ELECTRIC, 100, 999, 999, 130, 0, T_ELECTRIC_SURGE),
+         RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 30, 0, R_NO_ABILITY),
+         ref_move(95, R_ELECTRIC, BCAT_SPECIAL), 0, BTERRAIN_ELECTRIC, {84, 78, 70}},
+        {"Electric Terrain: no boost for a Flying attacker (Zapdos vs Pincurchin)",
+         RMON(50, R_ELECTRIC, R_FLYING, 100, 999, 999, 100, 0, R_NO_ABILITY),
+         RMON(50, R_ELECTRIC, R_ELECTRIC, 100, 999, 999, 15, 0, T_ELECTRIC_SURGE),
+         ref_move(95, R_ELECTRIC, BCAT_SPECIAL), 0, BTERRAIN_ELECTRIC, {32, 29, 27}},
+        {"Grassy Terrain x1.3: Energy Ball, STAB (Rillaboom vs Snorlax)",
+         RMON(50, R_GRASS, R_GRASS, 100, 999, 999, 85, 0, T_GRASSY_SURGE),
+         RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 30, 0, R_NO_ABILITY),
+         ref_move(90, R_GRASS, BCAT_SPECIAL), 0, BTERRAIN_GRASSY, {79, 73, 67}},
+        {"Grassy Terrain: Earthquake x0.5 (Rillaboom vs Snorlax)",
+         RMON(50, R_GRASS, R_GRASS, 100, 999, 999, 85, 0, T_GRASSY_SURGE),
+         RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 30, 0, R_NO_ABILITY),
+         t_earthquake(), 0, BTERRAIN_GRASSY, {24, 22, 20}},
+        {"Misty Terrain: Dragon Pulse x0.5 on a grounded target (Tapu Fini vs Snorlax)",
+         RMON(50, R_WATER, R_WATER, 100, 999, 999, 85, 0, T_MISTY_SURGE),
+         RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 30, 0, R_NO_ABILITY),
+         ref_move(90, R_DRAGON, BCAT_SPECIAL), 0, BTERRAIN_MISTY, {21, 19, 17}},
+        {"Misty Terrain: no halving on a Flying target (Tapu Fini vs Pidgeot)",
+         RMON(50, R_WATER, R_WATER, 100, 999, 999, 85, 0, T_MISTY_SURGE),
+         RMON(50, R_NORMAL, R_FLYING, 100, 999, 999, 30, 0, R_NO_ABILITY),
+         ref_move(90, R_DRAGON, BCAT_SPECIAL), 0, BTERRAIN_MISTY, {41, 38, 34}},
+        {"Psychic Terrain x1.3: Psychic, STAB (Tapu Lele vs Snorlax)",
+         RMON(50, R_PSYCHIC, R_PSYCHIC, 100, 999, 999, 95, 0, T_PSYCHIC_SURGE),
+         RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 30, 0, R_NO_ABILITY),
+         ref_move(90, R_PSYCHIC, BCAT_SPECIAL), 0, BTERRAIN_PSYCHIC, {79, 73, 67}},
+        {"Rain and Grassy Terrain: Solar Beam 120 x0.5 x1.3, STAB (Rillaboom vs Pelipper)",
+         RMON(50, R_GRASS, R_GRASS, 100, 999, 999, 85, 0, T_GRASSY_SURGE),
+         RMON(50, R_WATER, R_FLYING, 100, 999, 999, 65, 0, W_DRIZZLE),
+         beam, BWEATHER_RAIN, BTERRAIN_GRASSY, {54, 49, 45}},
+        {"Grass Pelt: Defense x1.5 on Grassy Terrain (Rillaboom Body Slam vs Gogoat)",
+         RMON(50, R_GRASS, R_GRASS, 100, 999, 999, 85, 0, T_GRASSY_SURGE),
+         RMON(50, R_GRASS, R_GRASS, 100, 999, 999, 68, 0, T_GRASS_PELT),
+         ref_move(85, R_NORMAL, BCAT_PHYSICAL), 0, BTERRAIN_GRASSY, {26, 24, 22}},
+    };
+    for (unsigned i = 0; i < sizeof cases / sizeof *cases; ++i) {
+        const TerrainRefCase *k = &cases[i];
+        printf("  tref %2u %-80s", i + 1, k->name);
+        for (unsigned r = 0; r < 3; ++r) {
+            const uint16_t v16 = t_damage(&k->atk, &k->def, k->move, 0, k->weather, k->terrain, ref_rolls[r]);
+            const uint16_t none = t_damage(&k->atk, &k->def, k->move, 0, k->weather, 0, ref_rolls[r]);
+            printf(" %u%%: v16=%u none=%u exp=%u", ref_rolls[r], v16, none, k->expansion[r]);
+            assert(v16 == k->expansion[r]);
+        }
+        printf("\n");
+    }
+}
+
 int main(void) {
     test_request_roundtrip();
     test_messages();
@@ -5907,6 +6768,17 @@ int main(void) {
     test_v15_strict_moves();
     test_v15_formats();
     test_v15_expansion_reference();
+    test_v16_wire();
+    test_v16_set_and_end();
+    test_v16_entry();
+    test_v16_grounded();
+    test_v16_status();
+    test_v16_priority();
+    test_v16_damage();
+    test_v16_speed();
+    test_v16_order();
+    test_v16_formats();
+    test_v16_expansion_reference();
     puts("battle tests passed");
     return 0;
 }

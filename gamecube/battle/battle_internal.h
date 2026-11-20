@@ -103,6 +103,23 @@ bool bc_weather_prevents_freeze(const Battle *battle);
 bool bc_weather_skips_charge(const Battle *battle, const BattleEffect *charge);
 // BEFF_WEATHER_HEAL: the fraction of max HP the move's heal restores in the weather.
 void bc_weather_heal_fraction(const Battle *battle, const BattleMove *move, unsigned *num, unsigned *den);
+
+// V16 terrain (battle_field.c, docs/terrain.md). Every terrain change goes
+// through bc_terrain_set, whatever its source (move, ability, rules).
+bool bc_terrain_rules(const Battle *battle);  // V16: the request has terrain rules
+bool bc_terrain_in(const Battle *battle, uint8_t mask);  // the terrain on the field is one of mask
+// The Pokemon is affected by a terrain of mask: that terrain, grounded, not semi-invulnerable.
+bool bc_on_terrain(const Battle *battle, const Battler *mon, uint8_t mask);
+// The terrain that keeps `flag` (BTKF_*) from the Pokemon, or BTERRAIN_NONE.
+uint8_t bc_terrain_prevents(const Battle *battle, const Battler *mon, uint8_t flag);
+WeatherResult bc_terrain_set(Battle *battle, Position source, uint8_t source_kind, uint8_t kind, uint8_t turns,
+                             EventLog *log);
+void bc_terrain_begin(Battle *battle, EventLog *log);  // the battle-start terrain of the rules
+void bc_terrain_heal(Battle *battle, Position position, EventLog *log);  // end of turn, first block
+void bc_terrain_end_turn(Battle *battle, EventLog *log);  // the countdown, late in the end of turn
+// BTKF_BLOCK_PRIORITY: user's move (its priority) fails against target; emits EV_TERRAIN_BLOCK.
+bool bc_terrain_blocks_move(Battle *battle, Position user, Position target, const BattleMove *move,
+                            uint16_t move_id, EventLog *log);
 // 4.12 fixed point: a percent as the nearest 4.12 value, and value x factor
 // rounded to the nearest integer (an exact half down).
 uint32_t bc_fx_percent(unsigned percent);
@@ -156,6 +173,7 @@ void bc_ability_end_turn_cure(Battle *battle, Position position, EventLog *log);
 void bc_ability_begin_battle(Battle *battle, EventLog *log);
 // V15 weather hooks of a Pokemon (NULL if none applies).
 bool bc_ability_suppresses_weather(const Battle *battle, const Battler *mon);
+bool bc_ability_ungrounded(const Battle *battle, const Battler *mon);  // V16 (Levitate)
 const BattleAbilityHook *bc_ability_weather_immunity(const Battle *battle, const Battler *mon, uint8_t kind);
 const BattleAbilityHook *bc_ability_weather_residual(const Battle *battle, const Battler *mon, uint8_t kind);
 #endif

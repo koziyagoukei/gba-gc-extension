@@ -21,6 +21,7 @@ const char *battle_init_error_name(int error) {
     case BI_CONDITIONS: return "invalid V7 condition rules or status";
     case BI_UNSUPPORTED_ABILITY: return "strict rules: an ability is not simulated";
     case BI_UNSUPPORTED_MOVE: return "strict rules: a move is not simulated";
+    case BI_ITEMS: return "V16: held items are not simulated (grounding)";
     case BI_FAINTED_LEAD: return "a lead Pokemon has no HP";
     }
     return "unknown";
@@ -245,6 +246,11 @@ int battle_init(Battle *b, const BattleRequest *r, uint32_t seed) {
         return BI_CONDITIONS;
     if (r->version >= BATTLE_REQUEST_VERSION_WEATHER && !battle_field_rules_valid(&r->field, r->type_count))
         return BI_CONDITIONS;
+    if (r->version >= BATTLE_REQUEST_VERSION_TERRAIN && !battle_terrain_rules_valid(&r->terrain, r->type_count))
+        return BI_CONDITIONS;
+    // V16: the grounded rule has no item input (Air Balloon, Iron Ball), so
+    // items must be normalised away rather than silently not grounding anyone.
+    if (r->version >= BATTLE_REQUEST_VERSION_TERRAIN && !(r->rules & RULE_IGNORE_ITEMS)) return BI_ITEMS;
     if (!r->type_count || r->type_count > BATTLE_MAX_TYPES) return BI_BAD_TYPES;
     if (r->version >= BATTLE_REQUEST_VERSION_STRUGGLE &&
         (!r->struggle_power || r->struggle_accuracy > 100 ||
@@ -882,8 +888,12 @@ static void resolve_end_of_turn(Battle *b, EventLog *log) {
 
     // V15: the weather first (countdown, then each Pokemon's weather residual).
     bc_weather_end_turn(b, order, count, log);
-    // Abilities that cure a status (Shed Skin) come before the residual damage.
-    for (unsigned i = 0; i < count; ++i) bc_ability_end_turn_cure(b, order[i], log);
+    // Abilities that cure a status (Shed Skin) come before the residual damage;
+    // V16: per Pokemon, its terrain heal first (the reference's first block).
+    for (unsigned i = 0; i < count; ++i) {
+        bc_terrain_heal(b, order[i], log);
+        bc_ability_end_turn_cure(b, order[i], log);
+    }
     // Each effect group processes eligible battlers in speed order. Replacement
     // happens after the whole phase, including simultaneous losses on both sides.
     static const uint8_t groups[] = {BST_POISON, BST_BURN, BST_FROSTBITE};
@@ -895,6 +905,8 @@ static void resolve_end_of_turn(Battle *b, EventLog *log) {
             bc_apply_damage(b, (BattleEvent){.kind = EV_RESIDUAL, .user = order[i], .target = order[i],
                                          .condition = kind}, residual_damage(b, mon, kind), log);
         }
+    // V16: the terrain counts down after the status damage, before Speed Boost.
+    bc_terrain_end_turn(b, log);
     // Then end-of-turn abilities (Speed Boost), in the same speed order.
     for (unsigned i = 0; i < count; ++i) bc_ability_end_turn(b, order[i], log);
 }
@@ -978,11 +990,13 @@ void battle_begin(Battle *b, EventLog *log) {
     log->count = 0;
     if (!bc_abilities_enabled(b)) {
         bc_weather_begin(b, log);
+        bc_terrain_begin(b, log);
         return;
     }
     bc_ability_begin_battle(b, log);
-    // V15: the battle-start weather of the rules, before the entry abilities.
+    // V15/V16: the battle-start weather and terrain of the rules, before the entry abilities.
     bc_weather_begin(b, log);
+    bc_terrain_begin(b, log);
     // Leads' entry abilities in speed order; a tie is decided by a draw, as in turn order.
     const uint8_t all[2] = {0xff, 0xff};
     entries_by_speed(b, all, log);

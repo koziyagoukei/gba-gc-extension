@@ -25,12 +25,16 @@
 // end-of-turn abilities and the battle-start notices. V15 adds per entry a
 // weather change or its block and a suppression notice, the battle-start
 // weather, and at the end of the turn the weather's continuation or end and
-// per Pokemon its residual (ability, HP change, faint).
-#define BC_EVENTS_PER_TARGET (7 * BATTLE_MAX_HITS + 8 + 3 * BATTLE_MAX_EFFECTS)
-#define BC_ENTRY_EVENTS (5 + BC_MAX_ACTIVE)
+// per Pokemon its residual (ability, HP change, faint). V16 adds per entry a
+// terrain change, per target a terrain block, the battle-start terrain, and
+// at the end of the turn the terrain heals and the terrain's end.
+#define BC_EVENTS_PER_TARGET (7 * BATTLE_MAX_HITS + 9 + 3 * BATTLE_MAX_EFFECTS)
+#define BC_ENTRY_EVENTS (7 + BC_MAX_ACTIVE)
 #define BC_WEATHER_TURN_EVENTS (1 + 3 * BC_MAX_ACTIONS)
+#define BC_TERRAIN_TURN_EVENTS (1 + BC_MAX_ACTIONS)
 #define BC_MAX_EVENTS (BC_MAX_ACTIONS * (8 + 2 * BC_ENTRY_EVENTS + BC_MAX_ACTIVE * BC_EVENTS_PER_TARGET) + \
-                       5 * BC_MAX_ACTIONS + 9 + 2 * BATTLE_MAX_PER_SIDE + BC_WEATHER_TURN_EVENTS)
+                       5 * BC_MAX_ACTIONS + 10 + 2 * BATTLE_MAX_PER_SIDE + BC_WEATHER_TURN_EVENTS + \
+                       BC_TERRAIN_TURN_EVENTS)
 
 typedef struct { uint8_t side, slot; } Position;   // side 0 = player, 1 = opponent; slot = active position
 typedef struct { Position pos; } Target;
@@ -106,7 +110,12 @@ typedef enum { EV_MOVE_USED, EV_MISS, EV_DAMAGE, EV_NO_EFFECT, EV_FAINT, EV_FORF
               EV_WEATHER_START,       // user = setter (slot BATTLE_SLOT_NONE: the battle's rules); amount = turns
               EV_WEATHER_CONTINUE,    // end of turn, the weather goes on (amount = turns left, 0 = no end)
               EV_WEATHER_END,         // end of turn, the weather ends
-              EV_WEATHER_DAMAGE       // target loses HP to the weather (amount, hp_after)
+              EV_WEATHER_DAMAGE,      // target loses HP to the weather (amount, hp_after)
+              // V16 terrain (docs/terrain.md): condition = BTERRAIN_* kind.
+              EV_TERRAIN_START,       // user = setter (slot BATTLE_SLOT_NONE: the battle's rules); amount = turns
+              EV_TERRAIN_END,         // end of turn, the terrain ends
+              EV_TERRAIN_HEAL,        // end of turn, target regains HP from the terrain (amount, hp_after)
+              EV_TERRAIN_BLOCK        // the terrain kept user's move or its effect off target
 } EventKind;
 typedef struct {
     EventKind kind;
@@ -129,6 +138,7 @@ enum BattleInitError {
     BI_OK = 0, BI_FORMAT, BI_PARTY_SIZE, BI_NO_PLAYER_MOVES, BI_NO_OPPONENT_MOVES, BI_BAD_TYPES, BI_FAINTED_LEAD, BI_CONDITIONS,
     BI_UNSUPPORTED_ABILITY,  // RULE_STRICT_ABILITIES and an ability is UNSUPPORTED
     BI_UNSUPPORTED_MOVE,     // V15 RULE_STRICT_MOVES and a known move cannot be run
+    BI_ITEMS,                // V16 without RULE_IGNORE_ITEMS: items could change grounding, none is run
 };
 
 // Action resolution state within a turn. A battler's own multi-turn state
@@ -164,6 +174,7 @@ typedef struct {
 typedef struct {
     FieldEffect weather;
     bool locked;         // BFR_START_LOCKED: the start weather cannot be replaced
+    FieldEffect terrain; // V16: kind is BTERRAIN_*, independent of the weather
 } BattleField;
 
 typedef struct {
@@ -223,4 +234,9 @@ bool battle_resume_pivot(Battle *battle, uint8_t battler, EventLog *log);
 // field suppresses it), and the weather on the field whether or not suppressed.
 uint8_t battle_weather(const Battle *battle);
 const FieldEffect *battle_field_weather(const Battle *battle);
+// V16 terrain: the terrain on the field (BTERRAIN_*), and whether a Pokemon is
+// grounded (the shared rule of every terrain effect, docs/terrain.md).
+uint8_t battle_terrain(const Battle *battle);
+const FieldEffect *battle_field_terrain(const Battle *battle);
+bool battle_grounded(const Battle *battle, const Battler *mon);
 #endif

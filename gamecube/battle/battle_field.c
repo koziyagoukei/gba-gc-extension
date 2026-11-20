@@ -1,5 +1,5 @@
 // Field state of the GameCube battle core: weather (request V15,
-// docs/weather.md).
+// docs/weather.md) and terrain (request V16, docs/terrain.md).
 //
 // Three layers:
 //   1. the state, one FieldEffect in Battle.field, written only here;
@@ -10,7 +10,9 @@
 //      records), the move effects (BEFF_WEATHER*) and the ability hooks
 //      (BABIL_ENTRY_WEATHER, WEATHER_*).
 // A move (Rain Dance) and an ability (Drizzle) set a weather through the same
-// bc_weather_set; nothing here knows a game's move or ability ids.
+// bc_weather_set; nothing here knows a game's move or ability ids. Terrain
+// (V16) is a second FieldEffect with its own operations, its own turns and
+// its own place in the end of the turn: the two never touch each other.
 
 #include "battle_internal.h"
 
@@ -40,6 +42,19 @@ bool bc_weather_in(const Battle *b, uint8_t mask) {
     return kind != BWEATHER_NONE && (mask & BWEATHER_BIT(kind));
 }
 
+// The one writer of a field effect (weather or terrain): kind, turns (KEEP
+// leaves the counter), source, and the start event.
+static void field_change(Battle *b, FieldEffect *e, Position source, uint8_t source_kind, uint8_t kind,
+                         uint8_t turns, EventKind start, EventLog *log) {
+    (void)b;
+    e->kind = kind;
+    if (turns != BWEATHER_TURNS_KEEP) e->turns = turns;
+    e->source_kind = source_kind;
+    e->source = source;
+    bc_emit(log, (BattleEvent){.kind = start, .user = source, .target = source, .condition = kind,
+                               .amount = e->turns});
+}
+
 // The same weather again changes nothing (a move fails, an ability does not
 // restart the count); so does any change of a locked start weather. The
 // comparison is with the weather on the field, suppressed or not.
@@ -48,12 +63,7 @@ WeatherResult bc_weather_set(Battle *b, Position source, uint8_t source_kind, ui
     FieldEffect *w = &b->field.weather;
     if (w->kind == kind) return WEATHER_SAME;
     if (b->field.locked) return WEATHER_LOCKED;
-    w->kind = kind;
-    if (turns != BWEATHER_TURNS_KEEP) w->turns = turns;
-    w->source_kind = source_kind;
-    w->source = source;
-    bc_emit(log, (BattleEvent){.kind = EV_WEATHER_START, .user = source, .target = source, .condition = kind,
-                               .amount = w->turns});
+    field_change(b, w, source, source_kind, kind, turns, EV_WEATHER_START, log);
     return WEATHER_SET;
 }
 
@@ -169,4 +179,103 @@ void bc_weather_heal_fraction(const Battle *b, const BattleMove *m, unsigned *nu
             return;
         }
     }
+}
+
+// ------------------------------------------------------------- V16 terrain
+//
+// TryChangeBattleTerrain in the reference: the same terrain again changes
+// nothing (a move fails, an ability says nothing), another one replaces it
+// with a fresh count. A terrain counts down late in the end of the turn
+// (after the status damage), so its last turn still heals; there is no
+// suppression.
+
+bool bc_terrain_rules(const Battle *b) { return b->request->version >= BATTLE_REQUEST_VERSION_TERRAIN; }
+
+const FieldEffect *battle_field_terrain(const Battle *b) { return &b->field.terrain; }
+
+uint8_t battle_terrain(const Battle *b) { return bc_terrain_rules(b) ? b->field.terrain.kind : BTERRAIN_NONE; }
+
+bool bc_terrain_in(const Battle *b, uint8_t mask) {
+    const uint8_t kind = battle_terrain(b);
+    return kind != BTERRAIN_NONE && (mask & BTERRAIN_BIT(kind));
+}
+
+// The shared grounded rule (IsBattlerGrounded): a Pokemon of the airborne
+// type (Flying) or with an ungrounding ability (Levitate) is not grounded,
+// every other one is. The reference's other causes (Iron Ball, Air Balloon,
+// Gravity, Ingrain, Smack Down, Magnet Rise, Telekinesis, Roost) come from
+// items or moves the core does not run: those moves are unsupported and a
+// V16 request must normalise items away (RULE_IGNORE_ITEMS, else battle_init
+// refuses it with BI_ITEMS), so none can apply here; each will be one more
+// line in this function when it is modelled.
+bool battle_grounded(const Battle *b, const Battler *mon) {
+    const uint8_t airborne = b->request->terrain.airborne_type;
+    if (bc_terrain_rules(b) && airborne != BABIL_NO_TYPE && bc_has_type(mon, airborne)) return false;
+    return !bc_ability_ungrounded(b, mon);
+}
+
+// IsBattlerTerrainAffected: the terrain, not semi-invulnerable, grounded.
+bool bc_on_terrain(const Battle *b, const Battler *mon, uint8_t mask) {
+    return mon && bc_terrain_in(b, mask) && mon->vol.semi_invulnerable == BSEMI_NONE && battle_grounded(b, mon);
+}
+
+uint8_t bc_terrain_prevents(const Battle *b, const Battler *mon, uint8_t flag) {
+    const uint8_t kind = battle_terrain(b);
+    if (kind == BTERRAIN_NONE || !(b->request->terrain.terrain[kind - 1].flags & flag)) return BTERRAIN_NONE;
+    return bc_on_terrain(b, mon, BTERRAIN_BIT(kind)) ? kind : BTERRAIN_NONE;
+}
+
+WeatherResult bc_terrain_set(Battle *b, Position source, uint8_t source_kind, uint8_t kind, uint8_t turns,
+                             EventLog *log) {
+    FieldEffect *t = &b->field.terrain;
+    if (t->kind == kind) return WEATHER_SAME;
+    field_change(b, t, source, source_kind, kind, turns, EV_TERRAIN_START, log);
+    return WEATHER_SET;
+}
+
+void bc_terrain_begin(Battle *b, EventLog *log) {
+    const BattleTerrainRules *r = &b->request->terrain;
+    if (!bc_terrain_rules(b) || !r->start_terrain) return;
+    bc_terrain_set(b, (Position){0, BATTLE_SLOT_NONE}, FSRC_RULE, r->start_terrain, r->start_turns, log);
+}
+
+// The first end-of-turn block, before the Pokemon's own cures (Grassy Terrain):
+// a living, affected Pokemon below its max HP regains max HP / divisor.
+void bc_terrain_heal(Battle *b, Position p, EventLog *log) {
+    const uint8_t kind = battle_terrain(b);
+    Battler *mon = bc_mutable_at(b, p);
+    if (kind == BTERRAIN_NONE || !mon || mon->fainted || mon->hp >= mon->max_hp) return;
+    const unsigned divisor = b->request->terrain.terrain[kind - 1].heal_divisor;
+    if (!divisor || !bc_on_terrain(b, mon, BTERRAIN_BIT(kind))) return;
+    unsigned amount = mon->max_hp / divisor;
+    if (!amount) amount = 1;
+    if (amount > (unsigned)(mon->max_hp - mon->hp)) amount = mon->max_hp - mon->hp;
+    mon->hp = (uint16_t)(mon->hp + amount);
+    bc_emit(log, (BattleEvent){.kind = EV_TERRAIN_HEAL, .user = p, .target = p, .amount = (uint16_t)amount,
+                               .hp_after = mon->hp, .condition = kind});
+}
+
+void bc_terrain_end_turn(Battle *b, EventLog *log) {
+    FieldEffect *t = &b->field.terrain;
+    if (!bc_terrain_rules(b) || !t->kind || !t->turns || --t->turns) return;
+    const uint8_t kind = t->kind;
+    *t = (FieldEffect){.kind = BTERRAIN_NONE};
+    bc_emit(log, (BattleEvent){.kind = EV_TERRAIN_END, .user = {0, BATTLE_SLOT_NONE},
+                               .target = {0, BATTLE_SLOT_NONE}, .condition = kind});
+}
+
+// CanPsychicTerrainProtectTarget: a move with priority above 0 fails against
+// an affected Pokemon of the other side; the user's own side is never stopped.
+// A field move (BTARGET_SELF) targets the user, so it is never stopped either;
+// the reference's other exceptions (all battlers, the opponents' field) have
+// no target class here (BTARGET_OTHER, refused by the exporter). The priority
+// is the move's own: nothing the core runs changes it during a turn.
+bool bc_terrain_blocks_move(Battle *b, Position user, Position target, const BattleMove *m, uint16_t move_id,
+                            EventLog *log) {
+    if (m->priority <= 0 || target.side == user.side) return false;
+    const uint8_t kind = bc_terrain_prevents(b, battle_at(b, target), BTKF_BLOCK_PRIORITY);
+    if (kind == BTERRAIN_NONE) return false;
+    bc_emit(log, (BattleEvent){.kind = EV_TERRAIN_BLOCK, .user = user, .target = target, .move_id = move_id,
+                               .condition = kind});
+    return true;
 }

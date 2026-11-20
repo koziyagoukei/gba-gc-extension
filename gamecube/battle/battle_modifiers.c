@@ -89,6 +89,9 @@ static bool pred_holds(const ModContext *c, Pred p) {
     case BPRED_POWER_AT_MOST: return c->base_power <= p.arg;
     case BPRED_WEATHER: return bc_weather_in(c->b, p.arg);
     case BPRED_HAS_TYPE: return bc_has_type(subject, p.arg);
+    case BPRED_TERRAIN: return bc_terrain_in(c->b, p.arg);
+    case BPRED_ON_TERRAIN: return bc_on_terrain(c->b, subject, p.arg);
+    case BPRED_EXPOSED: return subject->vol.semi_invulnerable == BSEMI_NONE;
     default: return false;
     }
 }
@@ -203,8 +206,13 @@ static const Pass v15_defense_passes[] = {MOVE_PASS, {SRC_DEFENDER, BABIL_DEFENS
 static const Pass v15_weather_passes[] = {{SRC_FIELD, 0, true}};
 static const Pass v15_speed_passes[] = {ATTACKER_PASS};
 static const Pass v15_accuracy_passes[] = {ATTACKER_PASS, DEFENDER_PASS};
+// V16: the field's power records (terrain) come after the move's own records
+// and before the abilities (CalcMoveBasePowerAfterModifiers' "various effects");
+// V15 requests have no field power records, so the list serves both.
+static const Pass v15_power_passes[] = {MOVE_PASS, FIELD_PASS, {SRC_ATTACKER, BABIL_LOW_POWER, true}, ATTACKER_PASS,
+                                        DEFENDER_PASS};
 static const PassList v15_stages[BMOD_COUNT] = {
-    [BMOD_POWER] = LIST(fx_power_passes), [BMOD_ATTACK] = LIST(fx_attack_passes),
+    [BMOD_POWER] = LIST(v15_power_passes), [BMOD_ATTACK] = LIST(fx_attack_passes),
     [BMOD_DEFENSE] = LIST(v15_defense_passes), [BMOD_FINAL] = LIST(fx_final_passes),
     [BMOD_WEATHER] = LIST(v15_weather_passes), [BMOD_SPEED] = LIST(v15_speed_passes),
     [BMOD_ACCURACY] = LIST(v15_accuracy_passes),
@@ -221,7 +229,8 @@ static void run_move(const ModContext *c, Acc *a) {
     }
 }
 
-// The request's field records (V15), in their order.
+// The request's field records in their order: the V15 field rules, then the
+// V16 terrain rules (one list; first-only stops at the first that applies).
 static void run_field(const ModContext *c, const Pass *p, Acc *a) {
     if (!bc_weather_rules(c->b)) return;
     const BattleFieldRules *f = &c->b->request->field;
@@ -229,7 +238,15 @@ static void run_field(const ModContext *c, const Pass *p, Acc *a) {
         const Mod m = from_record(&f->modifiers[i]);
         if (m.stage != a->stage || !holds(c, &m)) continue;
         step(a, m.percent);
-        if (p->first_only) break;
+        if (p->first_only) return;
+    }
+    if (!bc_terrain_rules(c->b)) return;
+    const BattleTerrainRules *t = &c->b->request->terrain;
+    for (unsigned i = 0; i < t->modifier_count; ++i) {
+        const Mod m = from_record(&t->modifiers[i]);
+        if (m.stage != a->stage || !holds(c, &m)) continue;
+        step(a, m.percent);
+        if (p->first_only) return;
     }
 }
 

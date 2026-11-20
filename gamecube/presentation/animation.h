@@ -13,6 +13,8 @@ typedef enum {
     MSG_ABILITY, MSG_ABILITY_BLOCK, MSG_ABILITY_DAMAGE, MSG_ABILITY_UNSUPPORTED,
     // V15 weather: condition = BWEATHER_* kind.
     MSG_WEATHER_START, MSG_WEATHER_CONTINUE, MSG_WEATHER_END, MSG_WEATHER_DAMAGE,
+    // V16 terrain: condition = BTERRAIN_* kind.
+    MSG_TERRAIN_START, MSG_TERRAIN_END, MSG_TERRAIN_HEAL, MSG_TERRAIN_BLOCK,
 } MessageKind;
 
 typedef struct {
@@ -37,7 +39,7 @@ typedef struct {
 } ActorFrame;
 
 typedef enum { ANIM_MESSAGE, ANIM_WAIT, ANIM_FADE, ANIM_ENTER, ANIM_ATTACK, ANIM_HIT, ANIM_HP, ANIM_FAINT, ANIM_SHIFT, ANIM_ROTATE, ANIM_WITHDRAW, ANIM_CONDITION, ANIM_VOLATILE,
-               ANIM_WEATHER } AnimationKind;
+               ANIM_WEATHER, ANIM_TERRAIN } AnimationKind;
 
 typedef struct {
     AnimationKind kind;
@@ -58,6 +60,7 @@ typedef struct {
     unsigned count, index, frame;
     SceneMessage message;
     uint8_t weather;  // BWEATHER_* on the field as presented (V15)
+    uint8_t terrain;  // BTERRAIN_* on the field as presented (V16)
     float fade;
     bool effect_visible;
     ScreenPoint effect;

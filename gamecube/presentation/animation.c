@@ -240,6 +240,22 @@ void animation_play(BattleAnimation *a, const BattleLayout *layout, const EventL
                                               e->kind == EV_WEATHER_END ? MSG_WEATHER_END : MSG_WEATHER_CONTINUE,
                                       .subject = e->user, .condition = e->condition}, 34);
             break;
+        case EV_TERRAIN_START:
+        case EV_TERRAIN_END:
+            add(a, (AnimationStep){.kind = ANIM_TERRAIN,
+                                   .condition = e->kind == EV_TERRAIN_END ? BTERRAIN_NONE : e->condition});
+            message(a, (SceneMessage){.kind = e->kind == EV_TERRAIN_START ? MSG_TERRAIN_START : MSG_TERRAIN_END,
+                                      .subject = e->user, .condition = e->condition}, 34);
+            break;
+        case EV_TERRAIN_HEAL:
+            if (!battle_layout_anchor(layout, e->target)) break;
+            message(a, (SceneMessage){.kind = MSG_TERRAIN_HEAL, .subject = e->target, .condition = e->condition}, 0);
+            add(a, (AnimationStep){.kind = ANIM_HP, .target = e->target, .hp = e->hp_after});
+            wait(a, 18);
+            break;
+        case EV_TERRAIN_BLOCK:
+            message(a, (SceneMessage){.kind = MSG_TERRAIN_BLOCK, .subject = e->target, .condition = e->condition}, 32);
+            break;
         case EV_WEATHER_DAMAGE:
             if (!battle_layout_anchor(layout, e->target)) break;
             message(a, (SceneMessage){.kind = MSG_WEATHER_DAMAGE, .subject = e->target, .condition = e->condition}, 0);
@@ -260,6 +276,7 @@ static bool advance(BattleAnimation *a, const BattleLayout *layout, const Animat
     switch (s->kind) {
     case ANIM_MESSAGE: a->message = s->message; return true;
     case ANIM_WEATHER: a->weather = s->condition; return true;
+    case ANIM_TERRAIN: a->terrain = s->condition; return true;
     case ANIM_WAIT: break;
     case ANIM_CONDITION: actor->condition = s->condition; return true;
     case ANIM_VOLATILE: actor->volatiles = (uint8_t)((actor->volatiles & ~s->vol_clear) | s->vol_set); return true;
