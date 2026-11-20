@@ -251,6 +251,7 @@ static const char *message_text(const SceneMessage *msg) {
     case MSG_TERRAIN_END:
     case MSG_TERRAIN_HEAL:
     case MSG_TERRAIN_BLOCK: return terrain_text(msg);
+    case MSG_ITEMS_NORMALIZED: return "All held item effects are OFF.";
     case MSG_NONE: return "";
     }
     return "";
@@ -266,6 +267,11 @@ static void draw_message(const BattleLayout *layout) {
     if (scene.animation.terrain)
         render_text(layout->command.x + 232, layout->command.y + 5, 1, UI_MUTED, "%s",
                     terrain_name(scene.animation.terrain));
+    // V17: whether held items take part, shown for the whole battle (normalised: none does).
+    if (battle_items_normalized(scene.battle))
+        render_text(layout->command.x + layout->command.w - 259, layout->command.y + 5, 1, UI_INK, "ITEMS OFF");
+    else if (battle_items_simulated(scene.battle))
+        render_text(layout->command.x + layout->command.w - 259, layout->command.y + 5, 1, UI_MUTED, "ITEMS ON");
     render_text(layout->command.x + layout->command.w - 139, layout->command.y + 5, 1, UI_MUTED, "GBA CONTROLS");
     panel(layout->message, UI_SKY);
     const SceneMessage *msg = &scene.animation.message;
@@ -303,6 +309,9 @@ static void draw_message(const BattleLayout *layout) {
             else if (move) draw_label(move, x + 210, y + 27, 220, 23);
             else render_text(x + 210, y + 28, 1, UI_MUTED, "Move #%u", msg->move);
         }
+    } else if (msg->kind == MSG_ITEMS_NORMALIZED) {
+        render_text(x, y + 28, 1, UI_MUTED, "Rules: %d held, %u not simulated. No item is used.", msg->stage,
+                    msg->battler);
     }
 }
 

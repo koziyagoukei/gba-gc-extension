@@ -15,6 +15,9 @@ typedef enum {
     MSG_WEATHER_START, MSG_WEATHER_CONTINUE, MSG_WEATHER_END, MSG_WEATHER_DAMAGE,
     // V16 terrain: condition = BTERRAIN_* kind.
     MSG_TERRAIN_START, MSG_TERRAIN_END, MSG_TERRAIN_HEAL, MSG_TERRAIN_BLOCK,
+    // V17 items: every item is off by the rules (stage = Pokemon holding an item,
+    // battler = how many of those items are not simulated).
+    MSG_ITEMS_NORMALIZED,
 } MessageKind;
 
 typedef struct {

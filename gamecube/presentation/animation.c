@@ -256,6 +256,10 @@ void animation_play(BattleAnimation *a, const BattleLayout *layout, const EventL
         case EV_TERRAIN_BLOCK:
             message(a, (SceneMessage){.kind = MSG_TERRAIN_BLOCK, .subject = e->target, .condition = e->condition}, 32);
             break;
+        case EV_ITEMS_NORMALIZED:
+            message(a, (SceneMessage){.kind = MSG_ITEMS_NORMALIZED, .subject = e->user,
+                                      .stage = (int8_t)(e->amount > 12 ? 12 : e->amount), .battler = e->battler}, 90);
+            break;
         case EV_WEATHER_DAMAGE:
             if (!battle_layout_anchor(layout, e->target)) break;
             message(a, (SceneMessage){.kind = MSG_WEATHER_DAMAGE, .subject = e->target, .condition = e->condition}, 0);

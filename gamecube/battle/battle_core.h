@@ -79,6 +79,11 @@ typedef struct {
     uint8_t pp[4], max_pp[4];
     bool fainted;
     BattlerVolatiles vol;
+    // V17 held item (battle_items.c, docs/items.md): the entry whose item the
+    // Pokemon holds now, NULL for none. The item it started with is its own
+    // entry's (entry->record.held_item, entry->mon.item); the definition goes
+    // with the item, not the holder. B0 never changes it during a battle.
+    const BattleEntry *item_from;
 } Battler;
 
 typedef struct {
@@ -115,7 +120,10 @@ typedef enum { EV_MOVE_USED, EV_MISS, EV_DAMAGE, EV_NO_EFFECT, EV_FAINT, EV_FORF
               EV_TERRAIN_START,       // user = setter (slot BATTLE_SLOT_NONE: the battle's rules); amount = turns
               EV_TERRAIN_END,         // end of turn, the terrain ends
               EV_TERRAIN_HEAL,        // end of turn, target regains HP from the terrain (amount, hp_after)
-              EV_TERRAIN_BLOCK        // the terrain kept user's move or its effect off target
+              EV_TERRAIN_BLOCK,       // the terrain kept user's move or its effect off target
+              // V17 items (docs/items.md).
+              EV_ITEMS_NORMALIZED     // battle start: RULE_IGNORE_ITEMS, no held item has any effect
+                                      // (amount = Pokemon holding an item, battler = those not simulated)
 } EventKind;
 typedef struct {
     EventKind kind;
@@ -139,6 +147,8 @@ enum BattleInitError {
     BI_UNSUPPORTED_ABILITY,  // RULE_STRICT_ABILITIES and an ability is UNSUPPORTED
     BI_UNSUPPORTED_MOVE,     // V15 RULE_STRICT_MOVES and a known move cannot be run
     BI_ITEMS,                // V16 without RULE_IGNORE_ITEMS: items could change grounding, none is run
+    BI_UNSUPPORTED_ITEM,     // V17: an item the core cannot run, and the request does not normalise items
+    BI_ITEMS_NORMALIZED,     // V17 RULE_STRICT_ITEMS with RULE_IGNORE_ITEMS while an item has an effect
 };
 
 // Action resolution state within a turn. A battler's own multi-turn state
@@ -239,4 +249,8 @@ const FieldEffect *battle_field_weather(const Battle *battle);
 uint8_t battle_terrain(const Battle *battle);
 const FieldEffect *battle_field_terrain(const Battle *battle);
 bool battle_grounded(const Battle *battle, const Battler *mon);
+// V17 held items (battle_items.c, docs/items.md).
+uint16_t battle_held_item(const Battler *mon);         // the item it holds now (game id, 0 = none)
+bool battle_items_simulated(const Battle *battle);      // V17 without RULE_IGNORE_ITEMS: items run
+bool battle_items_normalized(const Battle *battle);     // V17 with RULE_IGNORE_ITEMS: every item is off
 #endif

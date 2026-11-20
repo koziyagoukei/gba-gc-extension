@@ -125,6 +125,21 @@ bool bc_terrain_blocks_move(Battle *battle, Position user, Position target, cons
 uint32_t bc_fx_percent(unsigned percent);
 uint64_t bc_fx_apply(uint64_t factor, uint64_t value);
 
+// V17 held items (battle_items.c, docs/items.md). The only way to an item's
+// records: bc_item is the single check of whether a Pokemon's item has an
+// effect now (items simulated, an item held, a definition with records);
+// later causes that turn an item off (Klutz, Embargo, Magic Room, being
+// consumed) belong in it.
+const BattleItem *bc_item(const Battle *battle, const Battler *mon);
+const BattleItemRecord *bc_item_next(const Battle *battle, const Battler *mon, uint8_t kind,
+                                     const BattleItemRecord *previous);
+int bc_items_check(const Battle *battle);  // battle_init: BI_OK, BI_UNSUPPORTED_ITEM or BI_ITEMS_NORMALIZED
+void bc_items_begin_battle(Battle *battle, EventLog *log);  // EV_ITEMS_NORMALIZED
+// The duration of a weather or terrain the Pokemon at `source` sets: its
+// item's WEATHER_TURNS / TERRAIN_TURNS record for `bit`, if the effect has a
+// limited duration (1..15); the rules (no holder) never get one.
+uint8_t bc_item_field_turns(const Battle *battle, Position source, uint8_t record_kind, uint8_t bit, uint8_t turns);
+
 // Ability hooks (battle_abilities.c, docs/abilities.md). All are inert unless
 // the request is V11+ without RULE_IGNORE_ABILITIES. An ability is a list of
 // hooks; a lookup returns a hook whose holder conditions (status, state) hold.

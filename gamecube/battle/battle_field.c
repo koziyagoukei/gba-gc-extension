@@ -63,6 +63,7 @@ WeatherResult bc_weather_set(Battle *b, Position source, uint8_t source_kind, ui
     FieldEffect *w = &b->field.weather;
     if (w->kind == kind) return WEATHER_SAME;
     if (b->field.locked) return WEATHER_LOCKED;
+    turns = bc_item_field_turns(b, source, BITEM_WEATHER_TURNS, BWEATHER_BIT(kind), turns);  // V17
     field_change(b, w, source, source_kind, kind, turns, EV_WEATHER_START, log);
     return WEATHER_SET;
 }
@@ -207,7 +208,9 @@ bool bc_terrain_in(const Battle *b, uint8_t mask) {
 // items or moves the core does not run: those moves are unsupported and a
 // V16 request must normalise items away (RULE_IGNORE_ITEMS, else battle_init
 // refuses it with BI_ITEMS), so none can apply here; each will be one more
-// line in this function when it is modelled.
+// line in this function when it is modelled. V17 items have no record kind
+// that grounds or lifts: such an item is UNSUPPORTED, and battle_init refuses
+// it unless every item is normalised away.
 bool battle_grounded(const Battle *b, const Battler *mon) {
     const uint8_t airborne = b->request->terrain.airborne_type;
     if (bc_terrain_rules(b) && airborne != BABIL_NO_TYPE && bc_has_type(mon, airborne)) return false;
@@ -229,6 +232,7 @@ WeatherResult bc_terrain_set(Battle *b, Position source, uint8_t source_kind, ui
                              EventLog *log) {
     FieldEffect *t = &b->field.terrain;
     if (t->kind == kind) return WEATHER_SAME;
+    turns = bc_item_field_turns(b, source, BITEM_TERRAIN_TURNS, BTERRAIN_BIT(kind), turns);  // V17
     field_change(b, t, source, source_kind, kind, turns, EV_TERRAIN_START, log);
     return WEATHER_SET;
 }

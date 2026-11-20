@@ -191,7 +191,8 @@ static bool poll_multi_action(BattleMultiAction *a) {
     if (!host_app_to(b.link, b.mode.app_id, opcode, NULL, 0, &d, &n, &status)) return false;
     if (status == APP_OK) {
         switch (b.mode.app_version) {
-        case BATTLE_APP_VERSION_TERRAIN:  // V16 to V9 keep the V6 action layout
+        case BATTLE_APP_VERSION_ITEMS:  // V17 to V9 keep the V6 action layout
+        case BATTLE_APP_VERSION_TERRAIN:
         case BATTLE_APP_VERSION_WEATHER:
         case BATTLE_APP_VERSION_FIXED_POINT:
         case BATTLE_APP_VERSION_MODIFIERS:
@@ -323,6 +324,24 @@ static void log_entry(const char *side, const BattleEntry *e) {
             SYS_Report("PH8   ability id=%u hook%u %s args=%u,%d,%u chance=%u/%u percent=%u flags=%02x%s\n", a->source, i,
                        battle_ability_kind_name(h->kind), h->arg0, h->arg1, h->arg2, h->chance, h->chance_den,
                        h->percent, h->flags, note);
+        }
+    }
+    if (b.request.version >= BATTLE_REQUEST_VERSION_ITEMS) {  // V17 held item (docs/items.md)
+        const BattleItem *it = &e->mon.item;
+        const char *note = (b.request.rules & RULE_IGNORE_ITEMS) && r->held_item ? " (OFF: items normalised)" :
+                           it->cls == BICLASS_UNSUPPORTED ? " NOT SIMULATED" : "";
+        static const char *const classes[] = {"none", "unsupported", "records"};
+        SYS_Report("PH12   item id=%u %s records=%u%s\n", it->source, it->cls < 3 ? classes[it->cls] : "?", it->count,
+                   note);
+        for (unsigned i = 0; i < it->count && i < BATTLE_MAX_ITEM_RECORDS; ++i) {
+            const BattleItemRecord *x = &it->records[i];
+            if (x->kind == BITEM_MODIFIER)
+                SYS_Report("PH12   item id=%u record%u modifier stage=%02x percent=%u pred=%02x:%02x,%02x:%02x\n",
+                           it->source, i, x->mod.stage, x->mod.percent, x->mod.pred[0].kind, x->mod.pred[0].arg,
+                           x->mod.pred[1].kind, x->mod.pred[1].arg);
+            else
+                SYS_Report("PH12   item id=%u record%u %s mask=%02x turns=%u\n", it->source, i,
+                           battle_item_kind_name(x->kind), x->arg0, x->arg2);
         }
     }
     if (b.request.version < BATTLE_REQUEST_VERSION_EFFECTS) return;
@@ -659,6 +678,10 @@ BattleViewStatus battle_view_update(bool start_pressed, const char **message) {
                        v->confusion_hit_percent, v->confusion_min, v->confusion_max, v->confusion_power,
                        v->substitute_divisor);
         }
+        if (b.request.version >= BATTLE_REQUEST_VERSION_ITEMS)  // V17 (docs/items.md)
+            SYS_Report("PH12 ITEMS %s%s\n", (b.request.rules & RULE_IGNORE_ITEMS) ? "NORMALISED: every held item is off"
+                                                                                : "simulated",
+                       (b.request.rules & RULE_STRICT_ITEMS) ? " (strict)" : "");
         if (b.request.version >= BATTLE_REQUEST_VERSION_TERRAIN) {  // V16 terrain rules (docs/terrain.md)
             const BattleTerrainRules *t = &b.request.terrain;
             SYS_Report("PH11 TERRAIN rules start=%u/%u airborne=%u records=%u kinds=%02x:%02x,%02x:%02x,%02x:%02x,%02x:%02x\n",

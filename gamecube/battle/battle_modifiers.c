@@ -30,13 +30,15 @@ typedef struct { uint8_t kind, arg, alt; } Pred;
 typedef struct {
     uint8_t stage, category, percent;
     bool defender;  // applies while the holder is the defending Pokemon
+    bool floored;   // V17 BMOD_FLOORED: the 4.12 factor of the percent is truncated
     Pred pred[BATTLE_MAX_PREDICATES];
 } Mod;
 
 static Mod from_record(const BattleModifier *r) {
     Mod m = {.stage = battle_modifier_stage(r->stage),  // bit 5 is 0 before V15
              .category = (uint8_t)((r->stage & BMOD_CATEGORY_MASK) >> BMOD_CATEGORY_SHIFT),
-             .percent = r->percent, .defender = (r->stage & BMODF_DEFENDER) != 0};
+             .percent = r->percent, .defender = (r->stage & BMODF_DEFENDER) != 0,
+             .floored = (r->stage & BMOD_FLOORED) != 0};
     for (unsigned i = 0; i < BATTLE_MAX_PREDICATES; ++i) m.pred[i] = (Pred){r->pred[i].kind, r->pred[i].arg, BABIL_NO_TYPE};
     return m;
 }
@@ -115,6 +117,9 @@ static bool holds(const ModContext *c, const Mod *m) {
 
 uint32_t bc_fx_percent(unsigned percent) { return (uint32_t)((percent * 4096u + 50u) / 100u); }
 
+// V17 BMOD_FLOORED: the truncated factor (PercentToUQ4_12_Floored, UQ_4_12_FLOORED: 110 -> 4505).
+static uint32_t fx_percent_floored(unsigned percent) { return (uint32_t)(percent * 4096u / 100u); }
+
 uint64_t bc_fx_apply(uint64_t factor, uint64_t value) {
     if (factor > UINT32_MAX) factor = UINT32_MAX;  // far beyond any valid request; keeps the product in range
     if (value > UINT32_MAX) value = UINT32_MAX;
@@ -144,10 +149,11 @@ typedef struct {
     uint64_t value;
 } Acc;
 
-static void step(Acc *a, unsigned percent) {
+static void step(Acc *a, const Mod *m) {
+    const unsigned percent = m->percent;
     if (a->fixed) {
-        a->value = fx_chain(a->stage, a->value, bc_fx_percent(percent));
-    } else {
+        a->value = fx_chain(a->stage, a->value, m->floored ? fx_percent_floored(percent) : bc_fx_percent(percent));
+    } else {  // V13 (no record can be floored before V17)
         a->value = a->value * percent / 100u;
         if (!a->value && !no_minimum(a->stage)) a->value = 1;
     }
@@ -163,13 +169,14 @@ static void step(Acc *a, unsigned percent) {
 // abilities go in speed order (the faster Pokemon's first, the attacker's
 // on a tie).
 // V15 adds the field records (SRC_FIELD) where the formula has them.
-enum { SRC_MOVE, SRC_ATTACKER, SRC_DEFENDER, SRC_FIELD };
+enum { SRC_MOVE, SRC_ATTACKER, SRC_DEFENDER, SRC_FIELD, SRC_ITEM };
 typedef struct { uint8_t source, kind; bool first_only; } Pass;
 typedef struct { const Pass *passes; unsigned count; } PassList;
 #define MOVE_PASS {SRC_MOVE, BEFF_MODIFIER, false}
 #define ATTACKER_PASS {SRC_ATTACKER, BABIL_MODIFIER, false}
 #define DEFENDER_PASS {SRC_DEFENDER, BABIL_MODIFIER, false}
 #define FIELD_PASS {SRC_FIELD, 0, false}
+#define ITEM_PASS {SRC_ITEM, BITEM_MODIFIER, false}  // V17: the attacker's item
 #define V13_PASSES MOVE_PASS, ATTACKER_PASS, DEFENDER_PASS
 #define LIST(list) {list, sizeof(list) / sizeof(*list)}
 
@@ -211,6 +218,11 @@ static const Pass v15_accuracy_passes[] = {ATTACKER_PASS, DEFENDER_PASS};
 // V15 requests have no field power records, so the list serves both.
 static const Pass v15_power_passes[] = {MOVE_PASS, FIELD_PASS, {SRC_ATTACKER, BABIL_LOW_POWER, true}, ATTACKER_PASS,
                                         DEFENDER_PASS};
+// V17: the attacker's item closes the power chain (CalcMoveBasePowerAfterModifiers:
+// the attacker's hold effect after both abilities); the other stages have no item records yet.
+static const Pass v17_power_passes[] = {MOVE_PASS, FIELD_PASS, {SRC_ATTACKER, BABIL_LOW_POWER, true}, ATTACKER_PASS,
+                                        DEFENDER_PASS, ITEM_PASS};
+static const PassList v17_power = LIST(v17_power_passes);
 static const PassList v15_stages[BMOD_COUNT] = {
     [BMOD_POWER] = LIST(v15_power_passes), [BMOD_ATTACK] = LIST(fx_attack_passes),
     [BMOD_DEFENSE] = LIST(v15_defense_passes), [BMOD_FINAL] = LIST(fx_final_passes),
@@ -225,7 +237,7 @@ static void run_move(const ModContext *c, Acc *a) {
         const BattleEffect *e = &c->move->effects[i];
         if (e->kind != BEFF_MODIFIER) continue;
         const Mod m = from_record(&e->mod);
-        if (m.stage == a->stage && holds(c, &m)) step(a, m.percent);
+        if (m.stage == a->stage && holds(c, &m)) step(a, &m);
     }
 }
 
@@ -237,7 +249,7 @@ static void run_field(const ModContext *c, const Pass *p, Acc *a) {
     for (unsigned i = 0; i < f->modifier_count; ++i) {
         const Mod m = from_record(&f->modifiers[i]);
         if (m.stage != a->stage || !holds(c, &m)) continue;
-        step(a, m.percent);
+        step(a, &m);
         if (p->first_only) return;
     }
     if (!bc_terrain_rules(c->b)) return;
@@ -245,8 +257,17 @@ static void run_field(const ModContext *c, const Pass *p, Acc *a) {
     for (unsigned i = 0; i < t->modifier_count; ++i) {
         const Mod m = from_record(&t->modifiers[i]);
         if (m.stage != a->stage || !holds(c, &m)) continue;
-        step(a, m.percent);
+        step(a, &m);
         if (p->first_only) return;
+    }
+}
+
+// V17: the records of the attacker's item, in their order (bc_item decides whether it has an effect).
+static void run_items(const ModContext *c, Acc *a) {
+    const BattleItemRecord *x = NULL;
+    while ((x = bc_item_next(c->b, c->attacker, BITEM_MODIFIER, x))) {
+        const Mod m = from_record(&x->mod);
+        if (m.stage == a->stage && holds(c, &m)) step(a, &m);
     }
 }
 
@@ -255,7 +276,7 @@ static void run_hooks(const ModContext *c, const Pass *p, Acc *a) {
     const BattleAbilityHook *h = NULL;
     while ((h = bc_ability_next(c->b, holder, p->kind, h))) {
         const Mod m = from_hook(h);
-        if (m.stage == a->stage && m.defender == (p->source == SRC_DEFENDER) && holds(c, &m)) step(a, m.percent);
+        if (m.stage == a->stage && m.defender == (p->source == SRC_DEFENDER) && holds(c, &m)) step(a, &m);
         if (p->first_only) break;
     }
 }
@@ -265,6 +286,7 @@ static const PassList *passes(const ModContext *c, uint8_t stage, bool fixed) {
     if (v15 && (stage == BMOD_SPEED || stage == BMOD_ACCURACY)) return &v15_stages[stage];
     if (!fixed) return &v13_stages[stage];
     if (stage == BMOD_FINAL && c->attacker->speed < c->defender->speed) return &fx_final_slower;
+    if (stage == BMOD_POWER && c->b->request->version >= BATTLE_REQUEST_VERSION_ITEMS) return &v17_power;
     return v15 ? &v15_stages[stage] : &fx_stages[stage];
 }
 
@@ -279,6 +301,7 @@ uint64_t bc_modify(const ModContext *c, uint8_t stage, uint64_t value) {
         const Pass *p = &list->passes[i];
         if (p->source == SRC_MOVE) run_move(c, &a);
         else if (p->source == SRC_FIELD) run_field(c, p, &a);
+        else if (p->source == SRC_ITEM) run_items(c, &a);
         else run_hooks(c, p, &a);
     }
     if (!fixed) return a.value;

@@ -22,6 +22,8 @@ const char *battle_init_error_name(int error) {
     case BI_UNSUPPORTED_ABILITY: return "strict rules: an ability is not simulated";
     case BI_UNSUPPORTED_MOVE: return "strict rules: a move is not simulated";
     case BI_ITEMS: return "V16: held items are not simulated (grounding)";
+    case BI_UNSUPPORTED_ITEM: return "V17: a held item is not simulated and items are not normalised";
+    case BI_ITEMS_NORMALIZED: return "strict rules: held items would be normalised";
     case BI_FAINTED_LEAD: return "a lead Pokemon has no HP";
     }
     return "unknown";
@@ -103,6 +105,7 @@ static void load_battler(Battler *out, const BattleEntry *e) {
     }
     out->fainted = r->hp == 0;
     out->vol.charge_slot = BATTLE_SLOT_NONE;
+    out->item_from = r->held_item ? e : NULL;  // V17: it starts with its own item
 }
 
 unsigned battle_formation_size(uint8_t format) {
@@ -250,7 +253,8 @@ int battle_init(Battle *b, const BattleRequest *r, uint32_t seed) {
         return BI_CONDITIONS;
     // V16: the grounded rule has no item input (Air Balloon, Iron Ball), so
     // items must be normalised away rather than silently not grounding anyone.
-    if (r->version >= BATTLE_REQUEST_VERSION_TERRAIN && !(r->rules & RULE_IGNORE_ITEMS)) return BI_ITEMS;
+    // V17 carries the items (item blocks; bc_items_check below).
+    if (r->version == BATTLE_REQUEST_VERSION_TERRAIN && !(r->rules & RULE_IGNORE_ITEMS)) return BI_ITEMS;
     if (!r->type_count || r->type_count > BATTLE_MAX_TYPES) return BI_BAD_TYPES;
     if (r->version >= BATTLE_REQUEST_VERSION_STRUGGLE &&
         (!r->struggle_power || r->struggle_accuracy > 100 ||
@@ -297,6 +301,10 @@ int battle_init(Battle *b, const BattleRequest *r, uint32_t seed) {
         }
         if (!sent) return BI_FAINTED_LEAD;
     }
+    // V17: an item the core cannot run stops the battle unless every item is
+    // normalised away; under the strict rule normalising stops it too.
+    const int items = bc_items_check(b);
+    if (items != BI_OK) return items;
     // Strict rules: an ability the core cannot run would change the result.
     if (r->rules & RULE_STRICT_ABILITIES)
         for (uint8_t side = 0; side < 2; ++side)
@@ -988,6 +996,7 @@ bool battle_resume_pivot(Battle *b, uint8_t index, EventLog *log) {
 
 void battle_begin(Battle *b, EventLog *log) {
     log->count = 0;
+    bc_items_begin_battle(b, log);  // V17: all items off by the rules, said before anything else
     if (!bc_abilities_enabled(b)) {
         bc_weather_begin(b, log);
         bc_terrain_begin(b, log);

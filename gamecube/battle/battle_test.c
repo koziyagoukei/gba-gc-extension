@@ -4059,6 +4059,14 @@ static void build_largest(BattleRequest *r, uint8_t format, unsigned per_side, u
                                  ? mod_hook(modr(BMOD_ATTACK, (uint8_t)(101 + k), BPRED_HP_AT_MOST, 2, 0, 0))
                                  : hk(BABIL_ATTACK_MULT, BCAT_PHYSICAL, 0, 0, 0, 0, (uint8_t)(101 + k), 0);
             give(&entries[i], a);
+            if (version >= BATTLE_REQUEST_VERSION_ITEMS) {  // V17: an item with the most records
+                BattleItem it = {.cls = BICLASS_RECORDS, .count = BATTLE_MAX_ITEM_RECORDS, .source = 500};
+                for (unsigned k = 0; k < BATTLE_MAX_ITEM_RECORDS; ++k)
+                    it.records[k] = (BattleItemRecord){.kind = BITEM_MODIFIER,
+                                                       .mod = modr(BMOD_POWER, (uint8_t)(101 + k), 0, 0, 0, 0)};
+                entries[i].record.held_item = 500;
+                entries[i].mon.item = it;
+            }
         }
     }
     r->player_count = r->opponent_count = (uint8_t)per_side;
@@ -4070,13 +4078,17 @@ static void test_v13_largest_request(void) {
     const struct { uint8_t format; unsigned per_side; } cases[] = {
         {BATTLE_FORMAT_TRIPLE, 3}, {BATTLE_FORMAT_SINGLE, 6}, {BATTLE_FORMAT_DOUBLE, 6}};
     for (unsigned c = 0; c < 3; ++c)
-        for (uint8_t v = BATTLE_REQUEST_VERSION_ABILITY_HOOKS; v <= BATTLE_REQUEST_VERSION_LATEST; ++v) {  // V12..V16
+        for (uint8_t v = BATTLE_REQUEST_VERSION_ABILITY_HOOKS; v <= BATTLE_REQUEST_VERSION_LATEST; ++v) {  // V12..V17
             build_largest(&r, cases[c].format, cases[c].per_side, v);
             // The bound covers every version; requests before V15 have no field rules,
-            // before V16 no terrain rules.
+            // before V16 no terrain rules, before V17 no item blocks.
             const uint32_t max = BATTLE_REQUEST_MAX_BYTES(2 * cases[c].per_side, NTYPES) -
                                  (v < BATTLE_REQUEST_VERSION_WEATHER ? BATTLE_FIELD_RULE_BYTES : 0) -
-                                 (v < BATTLE_REQUEST_VERSION_TERRAIN ? BATTLE_TERRAIN_RULE_BYTES : 0);
+                                 (v < BATTLE_REQUEST_VERSION_TERRAIN ? BATTLE_TERRAIN_RULE_BYTES : 0) -
+                                 (v < BATTLE_REQUEST_VERSION_ITEMS
+                                      ? 2 * cases[c].per_side *
+                                            (BATTLE_ITEM_HEADER_BYTES + BATTLE_MAX_ITEM_RECORDS * BATTLE_ITEM_RECORD_BYTES)
+                                      : 0);
             assert(battle_request_size(&r) == max);
             assert(battle_request_encode(&r, bytes, max) == max);
             assert(battle_request_decode(bytes, max, &d));
@@ -4086,9 +4098,10 @@ static void test_v13_largest_request(void) {
             assert(bytes[0] == 0xee);  // nothing written when it does not fit
         }
     // The Frontier case: six Pokemon in all and its 21 types (the M4-A2 buffer size
-    // was 2789; V15 adds the 88-byte field rules, V16 the 72-byte terrain rules).
+    // was 2789; V15 adds the 88-byte field rules, V16 the 72-byte terrain rules,
+    // V17 up to 36 bytes of item block per Pokemon).
     assert(BATTLE_FIELD_RULE_BYTES == 88 && BATTLE_TERRAIN_RULE_BYTES == 72);
-    assert(BATTLE_REQUEST_MAX_BYTES(6, 21) == 2789 + 88 + 72);
+    assert(BATTLE_REQUEST_MAX_BYTES(6, 21) == 2789 + 88 + 72 + 6 * 36);
 }
 
 static void test_v13_hex_and_custom(void) {
@@ -6671,6 +6684,648 @@ static void test_v16_expansion_reference(void) {
     }
 }
 
+// ------------------------------------------------------------- V17 held items (docs/items.md)
+//
+// The items as the Frontier exporter resolves them (ids are diagnostic only):
+// a power record of the holder's moves, or the duration of a weather or
+// terrain the holder sets.
+
+static BattleItem item_mods(uint16_t id, unsigned n, const BattleModifier *list) {
+    BattleItem it = {.cls = BICLASS_RECORDS, .count = (uint8_t)n, .source = id};
+    for (unsigned i = 0; i < n; ++i) it.records[i] = (BattleItemRecord){.kind = BITEM_MODIFIER, .mod = list[i]};
+    return it;
+}
+#define IMODS(id, ...) item_mods(id, sizeof((BattleModifier[]){__VA_ARGS__}) / sizeof(BattleModifier), \
+                                 (BattleModifier[]){__VA_ARGS__})
+static BattleItem item_turns(uint16_t id, uint8_t kind, uint8_t mask, uint8_t turns) {
+    BattleItem it = {.cls = BICLASS_RECORDS, .count = 1, .source = id};
+    it.records[0] = (BattleItemRecord){.kind = kind, .arg0 = mask, .arg2 = turns};
+    return it;
+}
+#define I_TYPE(id, type, percent) IMODS(id, modr(BMOD_POWER, percent, BPRED_MOVE_TYPE, type, 0, 0))
+#define I_CHARCOAL I_TYPE(215, R_FIRE, 120)
+#define I_MYSTIC_WATER I_TYPE(209, R_WATER, 120)
+#define I_MIRACLE_SEED I_TYPE(205, R_GRASS, 120)
+#define I_SEA_INCENSE I_TYPE(220, R_WATER, 120)
+#define I_MUSCLE_BAND IMODS(266, modr(ST(BMOD_POWER, BCAT_PHYSICAL) | BMOD_FLOORED, 110, 0, 0, 0, 0))
+#define I_WISE_GLASSES IMODS(267, modr(ST(BMOD_POWER, BCAT_SPECIAL) | BMOD_FLOORED, 110, 0, 0, 0, 0))
+#define I_DAMP_ROCK item_turns(285, BITEM_WEATHER_TURNS, W_RAIN, 8)
+#define I_HEAT_ROCK item_turns(284, BITEM_WEATHER_TURNS, W_SUN, 8)
+#define I_SMOOTH_ROCK item_turns(283, BITEM_WEATHER_TURNS, W_SAND, 8)
+#define I_ICY_ROCK item_turns(282, BITEM_WEATHER_TURNS, W_ICY, 8)
+#define I_TERRAIN_EXTENDER item_turns(896, BITEM_TERRAIN_TURNS, BTERRAIN_ALL, 8)
+#define I_UNSUPPORTED(id) ((BattleItem){.cls = BICLASS_UNSUPPORTED, .source = (id)})
+#define I_INERT(id) ((BattleItem){.cls = BICLASS_NONE, .source = (id)})
+#define I_LEFTOVERS I_UNSUPPORTED(234)
+#define I_AMULET_COIN I_INERT(223)
+
+static void hold(BattleEntry *e, BattleItem it) {
+    e->record.held_item = it.source;
+    e->mon.item = it;
+}
+
+static void make_items(BattleRequest *r, uint8_t format) {
+    make_terrain(r, format);
+    r->version = BATTLE_REQUEST_VERSION_ITEMS;
+    r->rules &= (uint16_t)~RULE_IGNORE_ITEMS;  // V17: the item blocks say what each item does
+}
+
+static void test_v17_wire(void) {
+    static BattleRequest r, d, old, plain;
+    static uint8_t bytes[4096], v16[4096], v16_plain[4096];
+    make_items(&r, BATTLE_FORMAT_DOUBLE);
+    hold(&r.player[0], I_CHARCOAL);
+    hold(&r.player[1], I_DAMP_ROCK);
+    hold(&r.opponent[0], I_MUSCLE_BAND);
+    hold(&r.opponent[1], I_AMULET_COIN);
+    uint32_t n = battle_request_encode(&r, bytes, sizeof bytes);
+    assert(n && n == battle_request_size(&r));
+    assert(battle_request_decode(bytes, n, &d));
+    for (unsigned i = 0; i < 2; ++i) {
+        assert(memcmp(&d.player[i].mon.item, &r.player[i].mon.item, sizeof(BattleItem)) == 0);
+        assert(memcmp(&d.opponent[i].mon.item, &r.opponent[i].mon.item, sizeof(BattleItem)) == 0);
+    }
+    // The item blocks follow the ability blocks: V16 size + 4 per Pokemon + 8 per record.
+    old = r;
+    old.version = BATTLE_REQUEST_VERSION_TERRAIN;
+    assert(battle_request_size(&r) == battle_request_size(&old) + 4 * BATTLE_ITEM_HEADER_BYTES + 3 * BATTLE_ITEM_RECORD_BYTES);
+    // V16 is unchanged: the same request written as V16 is byte for byte the one without items.
+    const uint32_t n16 = battle_request_encode(&old, v16, sizeof v16);
+    plain = old;
+    for (unsigned i = 0; i < BATTLE_MAX_PER_SIDE; ++i) {
+        plain.player[i].mon.item = plain.opponent[i].mon.item = (BattleItem){0};
+    }
+    assert(n16 && battle_request_encode(&plain, v16_plain, sizeof v16_plain) == n16 && !memcmp(v16, v16_plain, n16));
+    assert(battle_request_decode(v16, n16, &d) && d.player[0].mon.item.cls == BICLASS_NONE && !d.player[0].mon.item.count);
+    bytes[0] = BATTLE_REQUEST_VERSION_TERRAIN;  // V17 bytes are not a V16 request
+    assert(!battle_request_decode(bytes, n, &d));
+    bytes[0] = BATTLE_REQUEST_VERSION_ITEMS;
+    // RULE_STRICT_ITEMS is a V17 rule.
+    old.rules |= RULE_STRICT_ITEMS;
+    assert(battle_request_encode(&old, v16, sizeof v16) == 0);
+    r.rules |= RULE_STRICT_ITEMS;
+    assert(battle_request_encode(&r, bytes, sizeof bytes) == n && battle_request_decode(bytes, n, &d) &&
+           (d.rules & RULE_STRICT_ITEMS));
+    r.rules &= (uint16_t)~RULE_STRICT_ITEMS;
+    n = battle_request_encode(&r, bytes, sizeof bytes);
+    // Block checks: the record's item, a class that fits, valid records.
+    const BattleItem good[] = {I_CHARCOAL, I_MUSCLE_BAND, I_WISE_GLASSES, I_DAMP_ROCK, I_HEAT_ROCK, I_SMOOTH_ROCK,
+                               I_ICY_ROCK, I_TERRAIN_EXTENDER, I_LEFTOVERS, I_AMULET_COIN};
+    for (unsigned i = 0; i < sizeof good / sizeof *good; ++i) {
+        assert(battle_item_valid(&good[i], good[i].source, R_COUNT, BATTLE_REQUEST_VERSION_ITEMS));
+        assert(!battle_item_valid(&good[i], good[i].source, R_COUNT, BATTLE_REQUEST_VERSION_TERRAIN));
+        assert(!battle_item_valid(&good[i], (uint16_t)(good[i].source + 1), R_COUNT, BATTLE_REQUEST_VERSION_ITEMS));
+    }
+    const BattleItem none = {0};
+    assert(battle_item_valid(&none, 0, R_COUNT, BATTLE_REQUEST_VERSION_ITEMS));
+    BattleItem bad[] = {
+        I_UNSUPPORTED(0),                                                       // UNSUPPORTED names an item
+        {.cls = BICLASS_RECORDS, .count = 0, .source = 5},                      // RECORDS has records
+        {.cls = BICLASS_NONE, .count = 1, .source = 5},                         // NONE has none
+        {.cls = 3, .source = 5},                                                // unknown class
+        I_TYPE(5, R_COUNT, 120),                                                // type out of range
+        IMODS(5, modr(BMOD_ATTACK, 150, 0, 0, 0, 0)),                           // V17 items: the power only
+        IMODS(5, modr(ST(BMOD_POWER, 0) | BMODF_DEFENDER, 150, 0, 0, 0, 0)),    // the attacker's item
+        IMODS(5, modr(BMOD_POWER, 0, 0, 0, 0, 0)),                              // no percent
+        item_turns(5, BITEM_WEATHER_TURNS, 0, 8),                               // empty mask
+        item_turns(5, BITEM_WEATHER_TURNS, (uint8_t)(BWEATHER_ALL + 1), 8),
+        item_turns(5, BITEM_WEATHER_TURNS, W_RAIN, 0),                          // a limited duration
+        item_turns(5, BITEM_WEATHER_TURNS, W_RAIN, BWEATHER_MAX_TURNS + 1),
+        item_turns(5, BITEM_TERRAIN_TURNS, (uint8_t)(BTERRAIN_ALL + 1), 8),
+        item_turns(5, BITEM_TERRAIN_TURNS, T_GRASS, BTERRAIN_MAX_TURNS + 1),
+        item_turns(5, BITEM_COUNT, W_RAIN, 8),                                  // unknown kind
+        item_turns(5, BITEM_NONE, 0, 0),
+    };
+    for (unsigned i = 0; i < sizeof bad / sizeof *bad; ++i)
+        assert(!battle_item_valid(&bad[i], bad[i].source, R_COUNT, BATTLE_REQUEST_VERSION_ITEMS));
+    BattleItem two = I_DAMP_ROCK;  // two durations for the same weather
+    two.records[two.count++] = (BattleItemRecord){.kind = BITEM_WEATHER_TURNS, .arg0 = W_RAIN | W_SUN, .arg2 = 6};
+    assert(!battle_item_valid(&two, two.source, R_COUNT, BATTLE_REQUEST_VERSION_ITEMS));
+    two.records[1].arg0 = W_SUN;
+    assert(battle_item_valid(&two, two.source, R_COUNT, BATTLE_REQUEST_VERSION_ITEMS));
+    two.records[1] = (BattleItemRecord){.kind = BITEM_WEATHER_TURNS, .arg0 = W_SUN, .arg1 = 1, .arg2 = 6};
+    assert(!battle_item_valid(&two, two.source, R_COUNT, BATTLE_REQUEST_VERSION_ITEMS));
+    two.records[1] = (BattleItemRecord){.kind = BITEM_WEATHER_TURNS, .arg0 = W_SUN, .arg2 = 6, .flags = 1};
+    assert(!battle_item_valid(&two, two.source, R_COUNT, BATTLE_REQUEST_VERSION_ITEMS));
+    BattleItem many = I_CHARCOAL;
+    many.count = BATTLE_MAX_ITEM_RECORDS + 1;
+    assert(!battle_item_valid(&many, many.source, R_COUNT, BATTLE_REQUEST_VERSION_ITEMS));
+    // The encoder never writes a block that does not describe its record's item.
+    old = r;
+    old.player[0].record.held_item = 1;
+    assert(battle_request_encode(&old, v16, sizeof v16) == 0);
+    // Bit 6 of the stage (BMOD_FLOORED): V17, fixed-point stages, any record source.
+    const BattleModifier floored = modr(ST(BMOD_POWER, BCAT_PHYSICAL) | BMOD_FLOORED, 110, 0, 0, 0, 0);
+    for (uint8_t src = BMSRC_MOVE; src <= BMSRC_ITEM; ++src) {
+        if (src == BMSRC_FIELD) continue;
+        const BattleModifier x = src == BMSRC_MOVE ? modr(BMOD_POWER | BMOD_FLOORED, 110, 0, 0, 0, 0) : floored;
+        assert(battle_modifier_valid(&x, R_COUNT, src, BATTLE_REQUEST_VERSION_ITEMS));
+        assert(!battle_modifier_valid(&x, R_COUNT, src, BATTLE_REQUEST_VERSION_TERRAIN));
+    }
+    const BattleModifier int_floored[] = {modr(BMOD_BASE_POWER | BMOD_FLOORED, 200, 0, 0, 0, 0),
+                                          modr(ST(BMOD_SPEED, 0) | BMOD_FLOORED, 150, 0, 0, 0, 0),
+                                          modr(ST(BMOD_ACCURACY, 0) | BMOD_FLOORED, 110, 0, 0, 0, 0)};
+    for (unsigned i = 0; i < 3; ++i)
+        assert(!battle_modifier_valid(&int_floored[i], R_COUNT, BMSRC_ABILITY, BATTLE_REQUEST_VERSION_ITEMS));
+    const BattleModifier low = modr(BMOD_POWER, 150, BPRED_POWER_AT_MOST, 60, 0, 0);
+    assert(battle_modifier_valid(&low, R_COUNT, BMSRC_ITEM, BATTLE_REQUEST_VERSION_ITEMS));
+    assert(!battle_modifier_valid(&low, R_COUNT, BMSRC_ITEM, BATTLE_REQUEST_VERSION_TERRAIN));
+    // A V16 move record with bit 6 is malformed; the same record is a V17 request.
+    old = r;
+    set_move(&old.player[0], 2, 33, with_mod(ref_move(40, R_NORMAL, BCAT_PHYSICAL), modr(BMOD_POWER | BMOD_FLOORED, 110, 0, 0, 0, 0)), 10);
+    const uint32_t n17 = battle_request_encode(&old, bytes, sizeof bytes);
+    assert(n17 && battle_request_decode(bytes, n17, &d));
+    old.version = BATTLE_REQUEST_VERSION_TERRAIN;
+    old.rules |= RULE_IGNORE_ITEMS;
+    const uint32_t n16b = battle_request_encode(&old, v16, sizeof v16);
+    assert(n16b && !battle_request_decode(v16, n16b, &d));
+    // Malformed item bytes: the first block (player 0, Charcoal) starts where the
+    // item section begins, just before the fixed rules that close the request.
+    n = battle_request_encode(&r, bytes, sizeof bytes);
+    const uint32_t items = 4 * BATTLE_ITEM_HEADER_BYTES + 3 * BATTLE_ITEM_RECORD_BYTES;
+    const uint32_t base = n - BATTLE_VOLATILE_RULE_BYTES - BATTLE_FIELD_RULE_BYTES - BATTLE_TERRAIN_RULE_BYTES - items;
+    assert(bytes[base] == BICLASS_RECORDS && bytes[base + 1] == 1 && bytes[base + 2] == (215 & 0xff));
+    const struct { unsigned at; uint8_t value; } bad_bytes[] = {
+        {0, 3}, {0, BICLASS_NONE}, {1, 0}, {1, BATTLE_MAX_ITEM_RECORDS + 1}, {2, 0}, {4, BITEM_COUNT},
+        {4, BITEM_NONE}, {5, BMOD_SPEED}, {5, BMOD_POWER | BMODF_DEFENDER}, {6, 0}, {7, 1}, {8, BPRED_COUNT},
+        {9, R_COUNT},
+        // The Damp Rock block (player 1): turns record bytes 4..7 are zero.
+        {12 + 5, 0}, {12 + 6, 1}, {12 + 7, 0}, {12 + 7, 16}, {12 + 8, 1}, {12 + 9, 1}, {12 + 10, 1}, {12 + 11, 1},
+    };
+    assert(bytes[base + 12] == BICLASS_RECORDS && bytes[base + 16] == BITEM_WEATHER_TURNS && bytes[base + 19] == 8);
+    for (unsigned i = 0; i < sizeof bad_bytes / sizeof *bad_bytes; ++i) {
+        const uint8_t keep = bytes[base + bad_bytes[i].at];
+        bytes[base + bad_bytes[i].at] = bad_bytes[i].value;
+        assert(!battle_request_decode(bytes, n, &d));
+        bytes[base + bad_bytes[i].at] = keep;
+    }
+    assert(battle_request_decode(bytes, n, &d));
+    assert(!battle_request_decode(bytes, n - 1, &d) && !battle_request_decode(bytes, base + 3, &d));
+    // Records for no item (source and held item both 0).
+    BattleItem orphan = I_CHARCOAL;
+    orphan.source = 0;
+    assert(!battle_item_valid(&orphan, 0, R_COUNT, BATTLE_REQUEST_VERSION_ITEMS));
+    assert(!strcmp(battle_item_kind_name(BITEM_WEATHER_TURNS), "weather turns") &&
+           !strcmp(battle_item_kind_name(BITEM_COUNT), "unknown"));
+}
+
+// battle_init: what the rules allow, and the battle-start notice of normalised items.
+static void test_v17_init(void) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    make_items(&r, BATTLE_FORMAT_DOUBLE);
+    r.version = BATTLE_REQUEST_VERSION_TERRAIN;  // V16 is unchanged
+    assert(battle_init(&b, &r, 1) == BI_ITEMS);
+    r.version = BATTLE_REQUEST_VERSION_ITEMS;
+    assert(battle_init(&b, &r, 1) == BI_OK && battle_items_simulated(&b) && !battle_items_normalized(&b));
+    battle_begin(&b, &log);
+    assert(!event_count(&log, EV_ITEMS_NORMALIZED));
+    hold(&r.player[0], I_CHARCOAL);
+    hold(&r.player[1], I_AMULET_COIN);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    assert(battle_held_item(battle_active(&b, 0)) == 215 && bc_item(&b, battle_active(&b, 0)));
+    assert(battle_held_item(at_pos(&b, 0, 1)) == 223 && !bc_item(&b, at_pos(&b, 0, 1)));  // no battle effect
+    assert(!battle_held_item(battle_active(&b, 1)) && !battle_active(&b, 1)->item_from);
+    assert(battle_active(&b, 0)->item_from == &r.player[0]);
+    // The state model: the item held now is `item_from`'s, with that item's definition, whoever
+    // holds it (what a later item move changes); the item it started with stays its own entry's.
+    {
+        Battler *x = at_pos(&b, 0, 1), *y = battle_active(&b, 1);
+        x->item_from = &r.player[0];
+        y->item_from = &r.player[0];
+        assert(battle_held_item(x) == 215 && bc_item(&b, x) == &r.player[0].mon.item);
+        assert(battle_held_item(y) == 215 && bc_item(&b, y) && x->entry->record.held_item == 223);
+        x->item_from = NULL;
+        assert(!battle_held_item(x) && !bc_item(&b, x));
+    }
+    // An item the core cannot run, items not normalised: no battle.
+    hold(&r.opponent[1], I_LEFTOVERS);
+    assert(battle_init(&b, &r, 1) == BI_UNSUPPORTED_ITEM);
+    assert(!strcmp(battle_init_error_name(BI_UNSUPPORTED_ITEM),
+                   "V17: a held item is not simulated and items are not normalised"));
+    // Normalised: every item off, announced first.
+    r.rules |= RULE_IGNORE_ITEMS;
+    assert(battle_init(&b, &r, 1) == BI_OK && battle_items_normalized(&b) && !battle_items_simulated(&b));
+    assert(!bc_item(&b, battle_active(&b, 0)) && battle_held_item(battle_active(&b, 0)) == 215);
+    battle_begin(&b, &log);
+    assert(log.count && log.events[0].kind == EV_ITEMS_NORMALIZED && log.events[0].amount == 3 &&
+           log.events[0].battler == 1 && event_count(&log, EV_ITEMS_NORMALIZED) == 1);
+    // Strict: normalising an item that has an effect (or is not simulated) is refused.
+    r.rules |= RULE_STRICT_ITEMS;
+    assert(battle_init(&b, &r, 1) == BI_ITEMS_NORMALIZED);
+    assert(!strcmp(battle_init_error_name(BI_ITEMS_NORMALIZED), "strict rules: held items would be normalised"));
+    hold(&r.opponent[1], I_INERT(0));
+    r.opponent[1].record.held_item = 0;
+    assert(battle_init(&b, &r, 1) == BI_ITEMS_NORMALIZED);  // Charcoal would be dropped
+    hold(&r.player[0], I_INERT(0));
+    r.player[0].record.held_item = 0;
+    assert(battle_init(&b, &r, 1) == BI_OK);  // only an item without a battle effect is left
+    r.rules &= (uint16_t)~RULE_IGNORE_ITEMS;
+    hold(&r.player[0], I_CHARCOAL);
+    assert(battle_init(&b, &r, 1) == BI_OK);  // strict and simulated
+    hold(&r.opponent[0], I_LEFTOVERS);
+    assert(battle_init(&b, &r, 1) == BI_UNSUPPORTED_ITEM);
+    // Reserves count too.
+    make_items(&r, BATTLE_FORMAT_DOUBLE);
+    add_reserve(&r, 1);
+    hold(&r.opponent[r.opponent_count - 1], I_LEFTOVERS);
+    assert(battle_init(&b, &r, 1) == BI_UNSUPPORTED_ITEM);
+    r.rules |= RULE_IGNORE_ITEMS;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+}
+
+// Power of the attacker's moves: after both abilities, truncated or nearest
+// factors as the record says, the defender's item playing no part.
+static uint16_t i_damage(const RefMon *atk, const RefMon *def, BattleMove move, BattleItem atk_item,
+                         BattleItem def_item, uint8_t terrain, unsigned roll) {
+    static BattleRequest r;
+    static Battle b;
+    make_items(&r, BATTLE_FORMAT_SINGLE);
+    ref_mon(&r.player[0], 0, atk);
+    set_move(&r.player[0], 0, 100, move, 10);
+    hold(&r.player[0], atk_item);
+    ref_mon(&r.opponent[0], 0x80, def);
+    set_move(&r.opponent[0], 0, 101, damaging(10, R_NORMAL, 100), 10);
+    hold(&r.opponent[0], def_item);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    b.field.terrain = (FieldEffect){.kind = terrain, .turns = 5};
+    const Battler *a = battle_active(&b, 0);
+    uint8_t eff;
+    return bc_calculate_damage(&b, a, &a->moves[0], battle_active(&b, 1), roll, false, 0, &eff);
+}
+
+static unsigned i_power(Battle *b, unsigned base_power) {
+    const Battler *a = battle_active(b, 0);
+    const ModContext c = {.b = b, .attacker = a, .defender = battle_active(b, 1), .move = &a->moves[0],
+                          .base_power = base_power};
+    return (unsigned)bc_modify(&c, BMOD_POWER, base_power);
+}
+
+static void test_v17_power(void) {
+    const RefMon atk = RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 60, 0, R_NO_ABILITY);
+    const RefMon def = RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 30, 0, R_NO_ABILITY);
+    const BattleItem nothing = {0};
+    const BattleMove flame = ref_move(90, R_FIRE, BCAT_SPECIAL), surf = ref_move(90, R_WATER, BCAT_SPECIAL);
+    // Charcoal x1.2 (4915): 90 -> 108, Fire moves only; the defender's item does nothing to the power.
+    assert(i_damage(&atk, &def, flame, I_CHARCOAL, nothing, 0, 100) ==
+           i_damage(&atk, &def, ref_move(108, R_FIRE, BCAT_SPECIAL), nothing, nothing, 0, 100));
+    assert(i_damage(&atk, &def, surf, I_CHARCOAL, nothing, 0, 100) == i_damage(&atk, &def, surf, nothing, nothing, 0, 100));
+    assert(i_damage(&atk, &def, flame, nothing, I_CHARCOAL, 0, 100) == i_damage(&atk, &def, flame, nothing, nothing, 0, 100));
+    assert(i_damage(&atk, &def, surf, I_MYSTIC_WATER, nothing, 0, 100) > i_damage(&atk, &def, surf, nothing, nothing, 0, 100));
+    // Muscle Band, truncated x1.1 (4505): 45 -> 49 (the nearest factor 4506 would give 50); physical only.
+    {
+        static BattleRequest r;
+        static Battle b;
+        make_items(&r, BATTLE_FORMAT_SINGLE);
+        set_move(&r.player[0], 0, 100, ref_move(45, R_NORMAL, BCAT_PHYSICAL), 10);
+        hold(&r.player[0], I_MUSCLE_BAND);
+        assert(battle_init(&b, &r, 1) == BI_OK);
+        assert(i_power(&b, 45) == 49);
+        r.player[0].mon.item.records[0].mod.stage &= (uint8_t)~BMOD_FLOORED;  // the same record, nearest factor
+        assert(battle_init(&b, &r, 1) == BI_OK && i_power(&b, 45) == 50);
+        r.player[0].mon.moves[0].category = BCAT_SPECIAL;
+        assert(battle_init(&b, &r, 1) == BI_OK && i_power(&b, 45) == 45);
+        hold(&r.player[0], I_WISE_GLASSES);
+        assert(battle_init(&b, &r, 1) == BI_OK && i_power(&b, 45) == 49);
+        r.rules |= RULE_IGNORE_ITEMS;  // normalised: no item takes part
+        assert(battle_init(&b, &r, 1) == BI_OK && i_power(&b, 45) == 45);
+        // A record acts only at its own stage (an attack record, which the decoder refuses
+        // for V17 items, does nothing to the power).
+        r.rules &= (uint16_t)~RULE_IGNORE_ITEMS;
+        hold(&r.player[0], IMODS(9, modr(BMOD_ATTACK, 200, 0, 0, 0, 0)));
+        assert(battle_init(&b, &r, 1) == BI_OK && i_power(&b, 45) == 45);
+    }
+    // Order: the move's record x0.5, Grassy Terrain x1.3, the attacker's ability x1.2, then the item
+    // (CalcMoveBasePowerAfterModifiers): 74 -> 63; the item first would give 64, as would a nearest factor.
+    {
+        static BattleRequest r;
+        static Battle b;
+        make_items(&r, BATTLE_FORMAT_SINGLE);
+        r.player[0].mon.types[0] = R_NORMAL;
+        set_move(&r.player[0], 0, 100, with_mod(ref_move(74, R_GRASS, BCAT_PHYSICAL), modr(BMOD_POWER, 50, 0, 0, 0, 0)), 10);
+        give(&r.player[0], MODS(250, modr(BMOD_POWER, 120, 0, 0, 0, 0)));
+        hold(&r.player[0], I_MUSCLE_BAND);
+        assert(battle_init(&b, &r, 1) == BI_OK);
+        b.field.terrain = (FieldEffect){.kind = BTERRAIN_GRASSY, .turns = 5};
+        assert(i_power(&b, 74) == 63);
+        // The same three records with the band moved to the front of the chain (as a move record).
+        BattleMove front = ref_move(74, R_GRASS, BCAT_PHYSICAL);
+        push(&front, mod_effect(modr(ST(BMOD_POWER, 0) | BMOD_FLOORED, 110, 0, 0, 0, 0)));
+        push(&front, mod_effect(modr(BMOD_POWER, 50, 0, 0, 0, 0)));
+        set_move(&r.player[0], 0, 100, front, 10);
+        hold(&r.player[0], nothing);
+        r.player[0].record.held_item = 0;
+        assert(battle_init(&b, &r, 1) == BI_OK);
+        b.field.terrain = (FieldEffect){.kind = BTERRAIN_GRASSY, .turns = 5};
+        assert(i_power(&b, 74) == 64);
+    }
+    // The same GC, another GBA definition: a type item at x1.5 instead of x1.2 (nothing else changes).
+    assert(i_damage(&atk, &def, flame, I_TYPE(215, R_FIRE, 150), nothing, 0, 100) ==
+           i_damage(&atk, &def, ref_move(135, R_FIRE, BCAT_SPECIAL), nothing, nothing, 0, 100));
+    // With terrain: Miracle Seed after Grassy Terrain (90 x1.3 = 117, x1.2 = 140).
+    const BattleMove energy = ref_move(90, R_GRASS, BCAT_SPECIAL);
+    assert(i_damage(&atk, &def, energy, I_MIRACLE_SEED, nothing, BTERRAIN_GRASSY, 100) ==
+           i_damage(&atk, &def, ref_move(140, R_GRASS, BCAT_SPECIAL), nothing, nothing, 0, 100));
+    // Struggle is typeless: no type item applies.
+    {
+        static BattleRequest r;
+        static Battle b;
+        make_items(&r, BATTLE_FORMAT_SINGLE);
+        hold(&r.player[0], I_TYPE(215, R_NORMAL, 120));
+        assert(battle_init(&b, &r, 1) == BI_OK);
+        const Battler *a = battle_active(&b, 0);
+        const BattleMove m = ref_move(50, R_NORMAL, BCAT_PHYSICAL);
+        const ModContext typed = {.b = &b, .attacker = a, .defender = battle_active(&b, 1), .move = &m, .base_power = 50};
+        const ModContext typeless = {.b = &b, .attacker = a, .defender = battle_active(&b, 1), .move = &m,
+                                     .typeless = true, .base_power = 50};
+        assert(bc_modify(&typed, BMOD_POWER, 50) == 60 && bc_modify(&typeless, BMOD_POWER, 50) == 50);
+    }
+}
+
+// The duration of a weather or terrain the holder sets (TryChangeWeather,
+// TryChangeBattleTerrain): 8 instead of a limited count; nothing for a weather
+// without an end, one that keeps the count, the battle's own start weather,
+// the same weather again, or another holder.
+static void test_v17_field_turns(void) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    make_items(&r, BATTLE_FORMAT_SINGLE);
+    r.player[0].record.speed = 90;
+    r.opponent[0].record.speed = 50;
+    r.player[0].mon.moves[0].power = r.opponent[0].mon.moves[0].power = 1;
+    set_move(&r.player[0], 1, 240, weather_move(BWEATHER_RAIN, 5), 10);
+    set_move(&r.player[0], 2, 241, weather_move(BWEATHER_SUN, 5), 10);
+    set_move(&r.player[0], 3, 580, terrain_move(BTERRAIN_GRASSY), 10);
+    set_move(&r.opponent[0], 1, 240, weather_move(BWEATHER_RAIN, 5), 10);
+    set_move(&r.opponent[0], 2, 604, terrain_move(BTERRAIN_ELECTRIC), 10);
+    hold(&r.player[0], I_DAMP_ROCK);
+    Action rain = move(0, 0, 0), sun = move(0, 0, 0), grass = move(0, 0, 0), foe_rain = move(1, 0, 0),
+           foe_elec = move(1, 0, 0);
+    rain.move_slot = foe_rain.move_slot = 1;
+    sun.move_slot = foe_elec.move_slot = 2;
+    grass.move_slot = 3;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    run1(&b, rain, move(1, 0, 0), &log);
+    const BattleEvent *e = find_event(&log, EV_WEATHER_START, 0);
+    assert(e && e->amount == 8 && battle_field_weather(&b)->turns == 7);
+    // It lasts eight turns in all: seven more ends.
+    unsigned turns = 1;
+    while (battle_weather(&b) == BWEATHER_RAIN) {
+        run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+        ++turns;
+    }
+    assert(turns == 8 && event_count(&log, EV_WEATHER_END) == 1);
+    // The rock is for rain only; the foe's rain is its own (5).
+    run1(&b, sun, move(1, 0, 0), &log);
+    assert(find_event(&log, EV_WEATHER_START, 0)->amount == 5);
+    run1(&b, move(0, 0, 0), foe_rain, &log);
+    assert(find_event(&log, EV_WEATHER_START, 0)->amount == 5);
+    run1(&b, rain, move(1, 0, 0), &log);  // the same weather: fails, the count goes on
+    assert(!event_count(&log, EV_WEATHER_START) && event_count(&log, EV_FAIL) == 1 && battle_field_weather(&b)->turns == 3);
+    // Normalised: the rock does nothing.
+    r.rules |= RULE_IGNORE_ITEMS;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    run1(&b, rain, move(1, 0, 0), &log);
+    assert(find_event(&log, EV_WEATHER_START, 0)->amount == 5);
+    r.rules &= (uint16_t)~RULE_IGNORE_ITEMS;
+    // Terrain Extender: the move (8) and a surge (8); the foe's terrain stays 5.
+    hold(&r.player[0], I_TERRAIN_EXTENDER);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    run1(&b, grass, move(1, 0, 0), &log);
+    assert(find_event(&log, EV_TERRAIN_START, 0)->amount == 8 && battle_field_terrain(&b)->turns == 7);
+    run1(&b, move(0, 0, 0), foe_elec, &log);
+    assert(find_event(&log, EV_TERRAIN_START, 0)->amount == 5);
+    run1(&b, rain, move(1, 0, 0), &log);  // the extender is not a rock
+    assert(find_event(&log, EV_WEATHER_START, 0)->amount == 5);
+    // Abilities: a surge with the extender, Drizzle with the rock (both 5 -> 8); an ability
+    // weather that keeps the count (Gen 5) or has no end is not changed, nor the start rules.
+    give(&r.player[0], T_GRASSY_SURGE);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(find_event(&log, EV_TERRAIN_START, 0)->amount == 8);
+    give(&r.player[0], W_DRIZZLE);
+    hold(&r.player[0], I_DAMP_ROCK);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(find_event(&log, EV_WEATHER_START, 0)->amount == 8);
+    give(&r.player[0], HOOKS(2, W_HOOK(BABIL_ENTRY_WEATHER, BWEATHER_RAIN, 0, BWEATHER_TURNS_NO_END, 0)));
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(find_event(&log, EV_WEATHER_START, 0)->amount == 0 && battle_field_weather(&b)->turns == 0);
+    give(&r.player[0], HOOKS(2, W_HOOK(BABIL_ENTRY_WEATHER, BWEATHER_RAIN, 0, BWEATHER_TURNS_KEEP, 0)));
+    r.field.start_weather = BWEATHER_SUN;
+    r.field.start_turns = 3;  // the rules' weather (no setter): 3, then Drizzle keeps that count
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(find_event(&log, EV_WEATHER_START, 0)->amount == 3 && find_event(&log, EV_WEATHER_START, 1)->amount == 3);
+    r.field.start_weather = BWEATHER_RAIN;  // the start rain itself is never extended
+    r.field.start_turns = 2;
+    give(&r.player[0], R_NO_ABILITY);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(find_event(&log, EV_WEATHER_START, 0)->amount == 2);
+    r.field.start_weather = BWEATHER_NONE;
+    r.field.start_turns = 0;
+    r.terrain.start_terrain = BTERRAIN_MISTY;
+    r.terrain.start_turns = 3;
+    hold(&r.player[0], I_TERRAIN_EXTENDER);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(find_event(&log, EV_TERRAIN_START, 0)->amount == 3);
+    // Each rock for its own weather (the item is the setter's: a rock for another weather does nothing).
+    const struct { BattleItem it; uint8_t kind; } rocks[] = {
+        {I_HEAT_ROCK, BWEATHER_SUN}, {I_SMOOTH_ROCK, BWEATHER_SANDSTORM}, {I_ICY_ROCK, BWEATHER_HAIL},
+        {I_ICY_ROCK, BWEATHER_SNOW}, {I_DAMP_ROCK, BWEATHER_RAIN}};
+    for (unsigned i = 0; i < 5; ++i)
+        for (unsigned other = 0; other < 2; ++other) {
+            make_items(&r, BATTLE_FORMAT_SINGLE);
+            const uint8_t kind = other ? (rocks[i].kind == BWEATHER_SUN ? BWEATHER_RAIN : BWEATHER_SUN) : rocks[i].kind;
+            set_move(&r.player[0], 1, 240, weather_move(kind, 5), 10);
+            hold(&r.player[0], rocks[i].it);
+            assert(battle_init(&b, &r, 1) == BI_OK);
+            battle_begin(&b, &log);
+            run1(&b, rain, move(1, 0, 0), &log);
+            assert(find_event(&log, EV_WEATHER_START, 0)->amount == (other ? 5 : 8));
+        }
+}
+
+// Random battles in the four formats with items: deterministic, and a
+// normalised battle (RULE_IGNORE_ITEMS) is event for event the battle without
+// any item except its first notice.
+static void test_v17_formats(void) {
+    static BattleRequest r, bare;
+    static Battle a, b, c;
+    static EventLog la, lb, lc;
+    const BattleItem items[] = {I_CHARCOAL, I_MYSTIC_WATER, I_MIRACLE_SEED, I_MUSCLE_BAND, I_WISE_GLASSES,
+                                I_DAMP_ROCK, I_HEAT_ROCK, I_TERRAIN_EXTENDER, I_AMULET_COIN, {0}};
+    const unsigned n = sizeof items / sizeof *items;
+    const uint8_t formats[] = {BATTLE_FORMAT_SINGLE, BATTLE_FORMAT_DOUBLE, BATTLE_FORMAT_TRIPLE, BATTLE_FORMAT_ROTATION};
+    unsigned battles = 0, normalised = 0, extended = 0;
+    for (unsigned f = 0; f < 4; ++f)
+        for (uint32_t seed = 1; seed <= 60; ++seed) {
+            make_items(&r, formats[f]);
+            for (unsigned side = 0; side < 2; ++side) add_reserve(&r, side);
+            for (unsigned side = 0; side < 2; ++side) {
+                BattleEntry *e = side ? r.opponent : r.player;
+                const unsigned count = side ? r.opponent_count : r.player_count;
+                for (unsigned i = 0; i < count; ++i) {
+                    e[i].record.hp = e[i].record.max_hp = 90;
+                    e[i].record.hp = (uint16_t)(90 - (seed + i) % 30);
+                    e[i].mon.types[0] = (uint8_t)((seed + 3 * i + side) % R_COUNT);
+                    e[i].record.speed = (uint16_t)(40 + (seed * 13 + i * 7 + side * 3) % 60);
+                    set_move(&e[i], 1, 240, weather_move((uint8_t)(1 + (seed + i) % 2), 5), 6);
+                    set_move(&e[i], 2, 580, terrain_move((uint8_t)(1 + (seed + side) % BTERRAIN_KINDS)), 6);
+                    set_move(&e[i], 3, 300 + i, ref_move(60, (uint8_t)((seed + i * 5) % R_COUNT),
+                                                         (seed + i) % 2 ? BCAT_PHYSICAL : BCAT_SPECIAL), 10);
+                    hold(&e[i], items[(seed * 5 + side * 3 + i + f) % n]);
+                    if ((seed + i) % 4 == 0) give(&e[i], (seed + side) % 2 ? W_DRIZZLE : T_ELECTRIC_SURGE);
+                }
+            }
+            bare = r;
+            for (unsigned side = 0; side < 2; ++side)
+                for (unsigned i = 0; i < BATTLE_MAX_PER_SIDE; ++i) {
+                    BattleEntry *e = side ? &bare.opponent[i] : &bare.player[i];
+                    e->mon.item = (BattleItem){0};
+                    e->record.held_item = 0;
+                }
+            const bool ignore = seed % 3 == 0;
+            if (ignore) {
+                r.rules |= RULE_IGNORE_ITEMS;
+                ++normalised;
+            }
+            assert(battle_init(&a, &r, seed) == BI_OK && battle_init(&b, &r, seed) == BI_OK &&
+                   battle_init(&c, &bare, seed) == BI_OK);
+            battle_begin(&a, &la);
+            battle_begin(&b, &lb);
+            battle_begin(&c, &lc);
+            assert(la.count == lb.count && memcmp(la.events, lb.events, la.count * sizeof(BattleEvent)) == 0);
+            if (ignore)
+                assert(la.events[0].kind == EV_ITEMS_NORMALIZED && la.count == lc.count + 1 &&
+                       !memcmp(la.events + 1, lc.events, lc.count * sizeof(BattleEvent)));
+            for (unsigned t = 0; t < 60 && a.outcome == OUTCOME_NONE; ++t) {
+                Position pending;
+                while (battle_pending_replacement(&a, &pending)) {
+                    const uint8_t mask = battle_replacement_mask(&a, pending);
+                    uint8_t pick = 0;
+                    while (!(mask & (1u << pick))) ++pick;
+                    assert(battle_replace(&a, pending, pick, &la) && battle_replace(&b, pending, pick, &lb));
+                    if (ignore) assert(battle_replace(&c, pending, pick, &lc));
+                }
+                if (a.outcome != OUTCOME_NONE) break;
+                Action actions[BC_MAX_ACTIONS];
+                unsigned count = 0;
+                for (uint8_t side = 0; side < 2; ++side) {
+                    Position actors[BC_MAX_ACTIVE];
+                    const unsigned k = battle_collect_actors(&a, side, actors);
+                    for (unsigned i = 0; i < k; ++i) battle_choose_at(&a, actors[i], &actions[count++]);
+                }
+                for (unsigned i = 0; i < count; ++i) {
+                    Action dummy;
+                    battle_choose_at(&b, actions[i].user, &dummy);
+                    if (ignore) battle_choose_at(&c, actions[i].user, &dummy);
+                }
+                battle_run_turn(&a, actions, count, &la);
+                battle_run_turn(&b, actions, count, &lb);
+                assert(la.count == lb.count && la.count < BC_MAX_EVENTS &&
+                       memcmp(la.events, lb.events, la.count * sizeof(BattleEvent)) == 0);
+                if (ignore) {
+                    battle_run_turn(&c, actions, count, &lc);
+                    assert(la.count == lc.count && !memcmp(la.events, lc.events, la.count * sizeof(BattleEvent)));
+                }
+                for (unsigned i = 0; i < la.count; ++i)
+                    if ((la.events[i].kind == EV_WEATHER_START || la.events[i].kind == EV_TERRAIN_START) &&
+                        la.events[i].amount == 8)
+                        ++extended;
+            }
+            // B0 never moves an item: every Pokemon still holds its own.
+            for (unsigned side = 0; side < 2; ++side)
+                for (unsigned i = 0; i < a.sides[side].count; ++i) {
+                    const Battler *x = &a.sides[side].battlers[i];
+                    assert(x->item_from == (x->entry->record.held_item ? x->entry : NULL));
+                }
+            assert(memcmp(&a.sides, &b.sides, sizeof a.sides) == 0 && a.rng == b.rng &&
+                   memcmp(&a.field, &b.field, sizeof a.field) == 0);
+            if (ignore) assert(a.rng == c.rng && a.outcome == c.outcome);
+            r.rules &= (uint16_t)~RULE_IGNORE_ITEMS;
+            ++battles;
+        }
+    assert(normalised == 80 && extended > 10);
+    printf("v17 formats: %u battles (%u normalised), extended field effects %u\n", battles, normalised, extended);
+}
+
+// ------------------------------------------------------------- V17 against the Expansion engine
+//
+// Hits the Frontier build's test runner computes with the real Expansion
+// code (test/battle/gc_item_reference.c in frontier-gc-m4b0, same stats,
+// rolls 100/93/85, no crit). `nearest` is the same hit with the item's
+// factor rounded to the nearest 4.12 value instead of truncated, printed to
+// show where truncation matters.
+typedef struct {
+    const char *name;
+    RefMon atk, def;
+    BattleMove move;
+    BattleItem atk_item, def_item;
+    uint8_t terrain;
+    uint16_t expansion[3];
+} ItemRefCase;
+
+static void test_v17_expansion_reference(void) {
+    const BattleItem nothing = {0};
+    const ItemRefCase cases[] = {
+        {"Charcoal x1.2: Flamethrower, STAB (Charizard vs Snorlax)",
+         RMON(50, R_FIRE, R_FLYING, 100, 999, 999, 100, 0, R_BLAZE),
+         RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 30, 0, R_NO_ABILITY),
+         ref_move(95, R_FIRE, BCAT_SPECIAL), I_CHARCOAL, nothing, 0, {78, 72, 66}},
+        {"Sea Incense x1.2: Surf, STAB (Pelipper vs Snorlax)",
+         RMON(50, R_WATER, R_FLYING, 100, 999, 999, 65, 0, R_NO_ABILITY),
+         RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 30, 0, R_NO_ABILITY),
+         ref_move(95, R_WATER, BCAT_SPECIAL), I_SEA_INCENSE, nothing, 0, {78, 72, 66}},
+        {"Muscle Band x1.1 truncated: Body Slam 85, STAB (Snorlax vs Snorlax)",
+         RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 30, 0, R_NO_ABILITY),
+         RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 30, 0, R_NO_ABILITY),
+         ref_move(85, R_NORMAL, BCAT_PHYSICAL), I_MUSCLE_BAND, nothing, 0, {63, 58, 52}},
+        {"Wise Glasses x1.1 truncated: Thunderbolt 95, STAB (Raichu vs Snorlax)",
+         RMON(50, R_ELECTRIC, R_ELECTRIC, 100, 999, 999, 110, 0, R_NO_ABILITY),
+         RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 30, 0, R_NO_ABILITY),
+         ref_move(95, R_ELECTRIC, BCAT_SPECIAL), I_WISE_GLASSES, nothing, 0, {70, 64, 58}},
+        {"Miracle Seed after Grassy Terrain: Energy Ball, STAB (Rillaboom vs Snorlax)",
+         RMON(50, R_GRASS, R_GRASS, 100, 999, 999, 85, 0, T_GRASSY_SURGE),
+         RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 30, 0, R_NO_ABILITY),
+         ref_move(90, R_GRASS, BCAT_SPECIAL), I_MIRACLE_SEED, nothing, BTERRAIN_GRASSY, {94, 87, 79}},
+        {"Technician then Charcoal: Ember 40 (Scizor vs Snorlax)",
+         RMON(50, R_BUG, R_STEEL, 100, 999, 999, 65, 0, R_TECHNICIAN),
+         RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 30, 0, R_NO_ABILITY),
+         ref_move(40, R_FIRE, BCAT_SPECIAL), I_CHARCOAL, nothing, 0, {33, 30, 28}},
+        {"Charcoal held by the target: no boost (Charizard vs Snorlax)",
+         RMON(50, R_FIRE, R_FLYING, 100, 999, 999, 100, 0, R_BLAZE),
+         RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 30, 0, R_NO_ABILITY),
+         ref_move(95, R_FIRE, BCAT_SPECIAL), nothing, I_CHARCOAL, 0, {64, 58, 54}},
+        {"Muscle Band on a special move: no boost (Snorlax Hyper Voice 90 vs Snorlax)",
+         RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 30, 0, R_NO_ABILITY),
+         RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 30, 0, R_NO_ABILITY),
+         ref_move(90, R_NORMAL, BCAT_SPECIAL), I_MUSCLE_BAND, nothing, 0, {61, 57, 51}},
+    };
+    for (unsigned i = 0; i < sizeof cases / sizeof *cases; ++i) {
+        const ItemRefCase *k = &cases[i];
+        BattleItem nearest = k->atk_item;
+        if (nearest.cls == BICLASS_RECORDS) nearest.records[0].mod.stage &= (uint8_t)~BMOD_FLOORED;
+        printf("  iref %u %-74s", i + 1, k->name);
+        for (unsigned r = 0; r < 3; ++r) {
+            const uint16_t v17 = i_damage(&k->atk, &k->def, k->move, k->atk_item, k->def_item, k->terrain, ref_rolls[r]);
+            const uint16_t none = i_damage(&k->atk, &k->def, k->move, nothing, nothing, k->terrain, ref_rolls[r]);
+            const uint16_t near = i_damage(&k->atk, &k->def, k->move, nearest, k->def_item, k->terrain, ref_rolls[r]);
+            printf(" %u%%: v17=%u none=%u nearest=%u exp=%u", ref_rolls[r], v17, none, near, k->expansion[r]);
+            assert(v17 == k->expansion[r]);
+        }
+        printf("\n");
+    }
+}
+
 int main(void) {
     test_request_roundtrip();
     test_messages();
@@ -6779,6 +7434,12 @@ int main(void) {
     test_v16_order();
     test_v16_formats();
     test_v16_expansion_reference();
+    test_v17_expansion_reference();
+    test_v17_wire();
+    test_v17_init();
+    test_v17_power();
+    test_v17_field_turns();
+    test_v17_formats();
     puts("battle tests passed");
     return 0;
 }

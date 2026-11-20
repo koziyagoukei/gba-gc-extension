@@ -9,9 +9,11 @@
 // opponents) and compares its own event and state lines with the logged
 // ones.
 //
-//   cc -std=c11 -O2 -Iprotocol -Igamecube/battle protocol/*.c gamecube/battle/battle_core.c
+//   cc -std=c11 -O2 -Iprotocol -Igamecube/battle protocol/wire.c protocol/message.c protocol/pkmn_protocol.c
+//      protocol/battle_protocol.c gamecube/battle/battle_core.c
 //      gamecube/battle/battle_effects.c gamecube/battle/battle_abilities.c
-//      gamecube/battle/battle_modifiers.c gamecube/battle/battle_field.c gamecube/battle/battle_replay.c
+//      gamecube/battle/battle_modifiers.c gamecube/battle/battle_field.c gamecube/battle/battle_items.c
+//      gamecube/battle/battle_replay.c
 //      -o build/battle-replay
 //   build/battle-replay dolphin.log [-print | -without | -version N]
 // -without removes every V13 modifier record first (same bytes otherwise,

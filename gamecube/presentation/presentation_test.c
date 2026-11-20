@@ -133,5 +133,13 @@ int main(void) {
                      anim.message.subject.side == 1 && anim.message.subject.slot == BPOS_CENTER;
     assert(announced && anim.actor[0][BPOS_LEFT].hp == 49);
     assert(anim.message.kind == MSG_ABILITY_UNSUPPORTED && anim.message.ability == 104 && anim.message.battler == 4);
+    // V17: the battle-start notice that every held item is off (3 held, 1 not simulated).
+    const EventLog items = {{
+        {.kind = EV_ITEMS_NORMALIZED, .user = {0, BATTLE_SLOT_NONE}, .target = {0, BATTLE_SLOT_NONE}, .amount = 3,
+         .battler = 1},
+    }, 1};
+    animation_play(&anim, triple, &items);
+    finish(&anim, triple);
+    assert(anim.message.kind == MSG_ITEMS_NORMALIZED && anim.message.stage == 3 && anim.message.battler == 1);
     puts("presentation-test OK");
 }
