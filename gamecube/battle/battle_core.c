@@ -877,30 +877,49 @@ static unsigned residual_damage(Battle *b, Battler *mon, uint8_t kind) {
     return (base ? base : 1) * multiplier;
 }
 
+// The end-of-turn order: by speed, fastest first (SortBattlersBySpeed, a
+// stable insertion sort). Up to V17 equal speeds keep the player's Pokemon
+// first; from V18 they keep the reference's battler order, which alternates
+// the sides slot by slot (player left, opponent left, player right ...).
+static unsigned end_of_turn_order(const Battle *b, Position *order) {
+    Position positions[2][BC_MAX_ACTIVE];
+    unsigned active[2], candidates = 0, count = 0;
+    Position candidate[BC_MAX_ACTIONS];
+    for (uint8_t side = 0; side < 2; ++side) active[side] = battle_collect_actors(b, side, positions[side]);
+    if (b->request->version >= BATTLE_REQUEST_VERSION_END_TURN_ITEMS) {
+        for (uint8_t slot = 0; slot < BC_MAX_ACTIVE; ++slot)
+            for (uint8_t side = 0; side < 2; ++side)
+                for (unsigned i = 0; i < active[side]; ++i)
+                    if (positions[side][i].slot == slot) candidate[candidates++] = positions[side][i];
+    } else {
+        for (uint8_t side = 0; side < 2; ++side)
+            for (unsigned i = 0; i < active[side]; ++i) candidate[candidates++] = positions[side][i];
+    }
+    for (unsigned c = 0; c < candidates; ++c) {
+        const Battler *mon = battle_at(b, candidate[c]);
+        if (!mon || mon->fainted) continue;
+        unsigned j = count++;
+        for (; j > 0 && speed(b, mon) > speed(b, battle_at(b, order[j - 1])); --j)
+            order[j] = order[j - 1];
+        order[j] = candidate[c];
+    }
+    return count;
+}
+
 static void resolve_end_of_turn(Battle *b, EventLog *log) {
     if (!bc_conditions_enabled(b)) return;
     Position order[BC_MAX_ACTIONS];
-    unsigned count = 0;
-    for (uint8_t side = 0; side < 2; ++side) {
-        Position positions[BC_MAX_ACTIVE];
-        const unsigned active = battle_collect_actors(b, side, positions);
-        for (unsigned i = 0; i < active; ++i) {
-            const Battler *mon = battle_at(b, positions[i]);
-            if (!mon || mon->fainted) continue;
-            unsigned j = count++;
-            for (; j > 0 && speed(b, mon) > speed(b, battle_at(b, order[j - 1])); --j)
-                order[j] = order[j - 1];
-            order[j] = positions[i];
-        }
-    }
+    const unsigned count = end_of_turn_order(b, order);
 
     // V15: the weather first (countdown, then each Pokemon's weather residual).
     bc_weather_end_turn(b, order, count, log);
-    // Abilities that cure a status (Shed Skin) come before the residual damage;
-    // V16: per Pokemon, its terrain heal first (the reference's first block).
+    // The reference's first block, Pokemon by Pokemon: its terrain heal (V16),
+    // its status cure (Shed Skin), then its item (V18: Leftovers, Black
+    // Sludge), all before the next Pokemon and before any status damage.
     for (unsigned i = 0; i < count; ++i) {
         bc_terrain_heal(b, order[i], log);
         bc_ability_end_turn_cure(b, order[i], log);
+        bc_item_hp(b, order[i], BITIME_END_TURN, log);
     }
     // Each effect group processes eligible battlers in speed order. Replacement
     // happens after the whole phase, including simultaneous losses on both sides.

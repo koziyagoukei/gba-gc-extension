@@ -7326,6 +7326,634 @@ static void test_v17_expansion_reference(void) {
     }
 }
 
+// ------------------------------------------------------------- V18 end-of-turn items (docs/items.md)
+//
+// Leftovers and Black Sludge as the Frontier exporter resolves them (ids are
+// the build's, diagnostic only): BITEM_HP records at BITIME_END_TURN. The V18
+// cases add a Poison type to the reference chart (which has none) and make
+// every match-up neutral; poison_type is that type, so poison-type immunity
+// and Black Sludge agree.
+
+#define R_POISON R_COUNT
+static BattleItemRecord hp_record(uint8_t op, uint8_t divisor, uint8_t pred, uint8_t arg) {
+    BattleItemRecord x = {.kind = BITEM_HP};
+    x.hp.timing = BITIME_END_TURN;
+    x.hp.op = op;
+    x.hp.divisor = divisor;
+    x.hp.pred = (BattlePredicate){pred, arg};
+    return x;
+}
+static BattleItem item_hp(uint16_t id, unsigned n, const BattleItemRecord *list) {
+    BattleItem it = {.cls = BICLASS_RECORDS, .count = (uint8_t)n, .source = id};
+    for (unsigned i = 0; i < n; ++i) it.records[i] = list[i];
+    return it;
+}
+#define IHP(id, ...) item_hp(id, sizeof((BattleItemRecord[]){__VA_ARGS__}) / sizeof(BattleItemRecord), \
+                             (BattleItemRecord[]){__VA_ARGS__})
+#define I_LEFTOVERS18 IHP(472, hp_record(BIHP_HEAL, 16, BPRED_NONE, 0))
+#define I_BLACK_SLUDGE IHP(487, hp_record(BIHP_HEAL, 16, BPRED_HAS_TYPE, R_POISON), \
+                           hp_record(BIHP_DAMAGE, 8, BPRED_NONE, 0))
+#define I_LIFE_ORB I_UNSUPPORTED(479)
+#define SHED_SKIN_ALWAYS HOOKS(61, hk(BABIL_END_TURN_CURE, 0xfe, 0, 0, 1, 1, 0, 0))  // WITH_RNG(RNG_SHED_SKIN, TRUE)
+
+static void make_end_turn_items(BattleRequest *r, uint8_t format) {
+    make_items(r, format);
+    r->version = BATTLE_REQUEST_VERSION_END_TURN_ITEMS;
+    r->type_count = R_COUNT + 1;
+    memset(r->type_chart, 4, sizeof r->type_chart);
+    r->conditions.poison_type = R_POISON;
+    r->conditions.steel_type = R_STEEL;
+}
+
+// The reference's Celebrate: a move with no HP effect (+1 accuracy).
+static BattleMove wait_move(void) {
+    BattleMove m = status_move(BTARGET_SELF, 0);
+    push(&m, fx(BEFF_STAT, BWHO_TARGET, 0, BSTAT_ACC, 1, 0));
+    return m;
+}
+
+// The case tables below give only the fields a case needs (the rest are zero).
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+typedef struct {
+    uint16_t max_hp, hp, speed;
+    uint8_t type;
+    uint32_t status;
+    BattleItem item;
+    BattleAbility ability;
+    BattleMove move;  // zero: wait_move
+} EtMon;
+
+static void et_mon(BattleEntry *e, const EtMon *m) {
+    if (!m->max_hp) return;
+    e->record.max_hp = m->max_hp;
+    e->record.hp = m->hp;
+    e->record.speed = m->speed;
+    e->mon.type_count = 1;
+    e->mon.types[0] = e->mon.types[1] = m->type;
+    e->record.status = m->status;
+    hold(e, m->item);
+    give(e, m->ability);
+    set_move(e, 0, 150, m->move.effect_count ? m->move : wait_move(), 40);
+    for (unsigned i = 1; i < 4; ++i) e->mon.moves[i].unsupported = UNSUP_EMPTY, e->record.moves[i] = 0;
+}
+
+// An HP or order event at the end of the turn, as the reference shows it (HP_BAR, cure, faint, stat).
+typedef struct {
+    EventKind kind;
+    uint8_t side, slot;
+    uint16_t amount, hp_after;
+} EtEvent;
+
+static bool end_turn_kind(const BattleEvent *e) {
+    switch (e->kind) {
+    case EV_ITEM_HEAL: case EV_ITEM_DAMAGE: case EV_TERRAIN_HEAL: case EV_RESIDUAL: case EV_WEATHER_DAMAGE:
+    case EV_HEAL: case EV_CURE: case EV_FAINT: return true;
+    case EV_STAGE: return e->stat == BSTAT_SPE;  // Speed Boost (the wait move raises accuracy)
+    default: return false;
+    }
+}
+
+static unsigned end_turn_events(const EventLog *log, EtEvent *out, unsigned capacity) {
+    unsigned n = 0;
+    for (unsigned i = 0; i < log->count && n < capacity; ++i) {
+        const BattleEvent *e = &log->events[i];
+        if (!end_turn_kind(e)) continue;
+        const bool amounts = e->kind != EV_CURE && e->kind != EV_FAINT && e->kind != EV_STAGE;
+        out[n++] = (EtEvent){e->kind, e->target.side, e->target.slot, amounts ? e->amount : 0,
+                             amounts ? e->hp_after : 0};
+    }
+    return n;
+}
+
+#define ET_MAX 12
+typedef struct {
+    const char *name;
+    uint8_t format;
+    EtMon player[3], opponent[3];
+    EtEvent expected[ET_MAX];
+} EtCase;
+#define ET(kind, side, slot, amount, after) {kind, side, slot, amount, after}
+#define NOTHING {.max_hp = 0}
+
+static void run_et_case(const EtCase *k, uint8_t version, EtEvent *got, unsigned *n) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    make_end_turn_items(&r, k->format);
+    r.version = version;
+    for (unsigned i = 0; i < r.active_per_side; ++i) {
+        et_mon(&r.player[i], &k->player[i]);
+        et_mon(&r.opponent[i], &k->opponent[i]);
+    }
+    assert(battle_init(&b, &r, 7) == BI_OK);
+    battle_begin(&b, &log);
+    Action actions[BC_MAX_ACTIONS];
+    unsigned count = 0;
+    for (uint8_t side = 0; side < 2; ++side)
+        for (uint8_t slot = 0; slot < r.active_per_side; ++slot)
+            actions[count++] = (Action){.kind = ACT_MOVE, .user = {side, slot}, .target = {{side, slot}}};
+    battle_run_turn(&b, actions, count, &log);
+    *n = end_turn_events(&log, got, ET_MAX);
+}
+
+static void check_et(const EtCase *k, const EtEvent *got, unsigned n) {
+    unsigned expected = 0;
+    while (expected < ET_MAX && k->expected[expected].kind) ++expected;
+    bool same = n == expected;
+    for (unsigned i = 0; same && i < n; ++i)
+        same = got[i].kind == k->expected[i].kind && got[i].side == k->expected[i].side &&
+               got[i].slot == k->expected[i].slot && got[i].amount == k->expected[i].amount &&
+               got[i].hp_after == k->expected[i].hp_after;
+    if (!same) {
+        printf("v18 case \"%s\": got", k->name);
+        for (unsigned i = 0; i < n; ++i)
+            printf(" [%u %u:%u %u->%u]", got[i].kind, got[i].side, got[i].slot, got[i].amount, got[i].hp_after);
+        printf("\n");
+        fflush(stdout);
+    }
+    assert(same);
+}
+
+// The cases of test/battle/gc_end_turn_item_reference.c (frontier-gc-m4b1a):
+// the same Pokemon, one turn of Celebrate, the end-of-turn HP changes in the
+// reference's order with its exact amounts. EV_ITEM_HEAL/DAMAGE is the
+// reference's item HP_BAR, EV_TERRAIN_HEAL the Grassy Terrain one, EV_RESIDUAL
+// the status one, EV_WEATHER_DAMAGE the sandstorm/hail one, EV_HEAL Rain Dish.
+static void test_v18_end_turn_reference(void) {
+    const EtCase et_cases[] = {
+    {"Leftovers: max HP / 16, rounded down", BATTLE_FORMAT_SINGLE,
+     {{175, 100, 100, R_NORMAL, 0, I_LEFTOVERS18}}, {{200, 200, 50, R_NORMAL}},
+     {ET(EV_ITEM_HEAL, 0, 0, 10, 110)}},
+    {"Leftovers stops at max HP", BATTLE_FORMAT_SINGLE,
+     {{160, 155, 100, R_NORMAL, 0, I_LEFTOVERS18}}, {{200, 200, 50, R_NORMAL}},
+     {ET(EV_ITEM_HEAL, 0, 0, 5, 160)}},
+    {"Leftovers does nothing at full HP", BATTLE_FORMAT_SINGLE,
+     {{160, 160, 100, R_NORMAL, 0, I_LEFTOVERS18}}, {{200, 200, 50, R_NORMAL}}, {{0}}},
+    {"Leftovers heals at least 1", BATTLE_FORMAT_SINGLE,
+     {{15, 10, 100, R_NORMAL, 0, I_LEFTOVERS18}}, {{200, 200, 50, R_NORMAL}},
+     {ET(EV_ITEM_HEAL, 0, 0, 1, 11)}},
+    {"Leftovers heals from 1 HP", BATTLE_FORMAT_SINGLE,
+     {{160, 1, 100, R_NORMAL, 0, I_LEFTOVERS18}}, {{200, 200, 50, R_NORMAL}},
+     {ET(EV_ITEM_HEAL, 0, 0, 10, 11)}},
+    {"Black Sludge heals a Poison type by max HP / 16", BATTLE_FORMAT_SINGLE,
+     {{161, 100, 100, R_POISON, 0, I_BLACK_SLUDGE}}, {{200, 200, 50, R_NORMAL}},
+     {ET(EV_ITEM_HEAL, 0, 0, 10, 110)}},
+    {"Black Sludge does nothing to a Poison type at full HP", BATTLE_FORMAT_SINGLE,
+     {{161, 161, 100, R_POISON, 0, I_BLACK_SLUDGE}}, {{200, 200, 50, R_NORMAL}}, {{0}}},
+    {"Black Sludge hurts any other type by max HP / 8", BATTLE_FORMAT_SINGLE,
+     {{161, 161, 100, R_NORMAL, 0, I_BLACK_SLUDGE}}, {{200, 200, 50, R_NORMAL}},
+     {ET(EV_ITEM_DAMAGE, 0, 0, 20, 141)}},
+    {"Black Sludge hurts by at least 1", BATTLE_FORMAT_SINGLE,
+     {{7, 7, 100, R_NORMAL, 0, I_BLACK_SLUDGE}}, {{200, 200, 50, R_NORMAL}},
+     {ET(EV_ITEM_DAMAGE, 0, 0, 1, 6)}},
+    {"Black Sludge can make its holder faint", BATTLE_FORMAT_SINGLE,
+     {{160, 20, 100, R_NORMAL, 0, I_BLACK_SLUDGE}}, {{200, 200, 50, R_NORMAL}},
+     {ET(EV_ITEM_DAMAGE, 0, 0, 20, 0), ET(EV_FAINT, 0, 0, 0, 0)}},
+    {"Grassy Terrain heal, then Leftovers", BATTLE_FORMAT_SINGLE,
+     {{160, 100, 100, R_NORMAL, 0, I_LEFTOVERS18}}, {{200, 200, 50, R_NORMAL, 0, {0}, T_GRASSY_SURGE}},
+     {ET(EV_TERRAIN_HEAL, 0, 0, 10, 110), ET(EV_ITEM_HEAL, 0, 0, 10, 120)}},
+    {"Grassy Terrain fills the HP, Leftovers then does nothing", BATTLE_FORMAT_SINGLE,
+     {{160, 150, 100, R_NORMAL, 0, I_LEFTOVERS18}}, {{200, 200, 50, R_NORMAL, 0, {0}, T_GRASSY_SURGE}},
+     {ET(EV_TERRAIN_HEAL, 0, 0, 10, 160)}},
+    {"Grassy Terrain heal, then Black Sludge damage", BATTLE_FORMAT_SINGLE,
+     {{160, 100, 100, R_NORMAL, 0, I_BLACK_SLUDGE}}, {{200, 200, 50, R_NORMAL, 0, {0}, T_GRASSY_SURGE}},
+     {ET(EV_TERRAIN_HEAL, 0, 0, 10, 110), ET(EV_ITEM_DAMAGE, 0, 0, 20, 90)}},
+    {"Grassy Terrain heal, then Black Sludge heal (Poison)", BATTLE_FORMAT_SINGLE,
+     {{160, 100, 100, R_POISON, 0, I_BLACK_SLUDGE}}, {{200, 200, 50, R_NORMAL, 0, {0}, T_GRASSY_SURGE}},
+     {ET(EV_TERRAIN_HEAL, 0, 0, 10, 110), ET(EV_ITEM_HEAL, 0, 0, 10, 120)}},
+    {"Leftovers before poison damage", BATTLE_FORMAT_SINGLE,
+     {{160, 100, 100, R_NORMAL, BST_POISON, I_LEFTOVERS18}}, {{200, 200, 50, R_NORMAL}},
+     {ET(EV_ITEM_HEAL, 0, 0, 10, 110), ET(EV_RESIDUAL, 0, 0, 20, 90)}},
+    {"Leftovers before bad poison damage", BATTLE_FORMAT_SINGLE,
+     {{160, 100, 100, R_NORMAL, BST_TOXIC, I_LEFTOVERS18}}, {{200, 200, 50, R_NORMAL}},
+     {ET(EV_ITEM_HEAL, 0, 0, 10, 110), ET(EV_RESIDUAL, 0, 0, 10, 100)}},
+    {"Leftovers before burn damage", BATTLE_FORMAT_SINGLE,
+     {{160, 100, 100, R_NORMAL, BST_BURN, I_LEFTOVERS18}}, {{200, 200, 50, R_NORMAL}},
+     {ET(EV_ITEM_HEAL, 0, 0, 10, 110), ET(EV_RESIDUAL, 0, 0, 10, 100)}},
+    {"Sandstorm damage, then Leftovers", BATTLE_FORMAT_SINGLE,
+     {{160, 100, 100, R_NORMAL, 0, I_LEFTOVERS18}}, {{200, 200, 50, R_ROCK, 0, {0}, W_SAND_STREAM}},
+     {ET(EV_WEATHER_DAMAGE, 0, 0, 10, 90), ET(EV_ITEM_HEAL, 0, 0, 10, 100)}},
+    {"Hail damage, then Leftovers", BATTLE_FORMAT_SINGLE,
+     {{160, 100, 100, R_NORMAL, 0, I_LEFTOVERS18}},
+     {{200, 200, 50, R_ICE, 0, {0}, {0}, {.category = BCAT_STATUS, .target = BTARGET_SELF, .effect_count = 1,
+                                          .effects = {{BEFF_WEATHER, {{BWHO_USER, 0, BWEATHER_HAIL, 0, 5}}, 0}}}}},
+     {ET(EV_WEATHER_DAMAGE, 0, 0, 10, 90), ET(EV_ITEM_HEAL, 0, 0, 10, 100)}},
+    {"Rain Dish, then Leftovers", BATTLE_FORMAT_SINGLE,
+     {{160, 100, 100, R_NORMAL, 0, I_LEFTOVERS18, W_RAIN_DISH}}, {{200, 200, 50, R_NORMAL, 0, {0}, W_DRIZZLE}},
+     {ET(EV_HEAL, 0, 0, 10, 110), ET(EV_ITEM_HEAL, 0, 0, 10, 120)}},
+    {"Shed Skin cures the poison, then Leftovers, no poison damage", BATTLE_FORMAT_SINGLE,
+     {{160, 100, 100, R_NORMAL, BST_POISON, I_LEFTOVERS18, SHED_SKIN_ALWAYS}}, {{200, 200, 50, R_NORMAL}},
+     {ET(EV_CURE, 0, 0, 0, 0), ET(EV_ITEM_HEAL, 0, 0, 10, 110)}},
+    {"Leftovers, then Speed Boost", BATTLE_FORMAT_SINGLE,
+     {{160, 100, 100, R_NORMAL, 0, I_LEFTOVERS18, SPEED_BOOST}}, {{200, 200, 50, R_NORMAL}},
+     {ET(EV_ITEM_HEAL, 0, 0, 10, 110), ET(EV_STAGE, 0, 0, 0, 0)}},
+    {"Each Pokemon in speed order, fastest first", BATTLE_FORMAT_DOUBLE,
+     {{200, 100, 3, R_NORMAL, 0, I_LEFTOVERS18}, {200, 100, 1, R_NORMAL, 0, I_LEFTOVERS18}},
+     {{200, 100, 2, R_NORMAL, 0, I_LEFTOVERS18}, {200, 100, 4, R_NORMAL, 0, I_LEFTOVERS18}},
+     {ET(EV_ITEM_HEAL, 1, 1, 12, 112), ET(EV_ITEM_HEAL, 0, 0, 12, 112), ET(EV_ITEM_HEAL, 1, 0, 12, 112),
+      ET(EV_ITEM_HEAL, 0, 1, 12, 112)}},
+    {"Equal speeds keep the battler order (player left, foe left, player right, foe right)", BATTLE_FORMAT_DOUBLE,
+     {{200, 100, 50, R_NORMAL, 0, I_LEFTOVERS18}, {200, 100, 50, R_NORMAL, 0, I_LEFTOVERS18}},
+     {{200, 100, 50, R_NORMAL, 0, I_LEFTOVERS18}, {200, 100, 50, R_NORMAL, 0, I_LEFTOVERS18}},
+     {ET(EV_ITEM_HEAL, 0, 0, 12, 112), ET(EV_ITEM_HEAL, 1, 0, 12, 112), ET(EV_ITEM_HEAL, 0, 1, 12, 112),
+      ET(EV_ITEM_HEAL, 1, 1, 12, 112)}},
+    {"Pokemon by Pokemon: the terrain heal and the item of one, then the next", BATTLE_FORMAT_DOUBLE,
+     {{200, 100, 4, R_NORMAL, 0, I_LEFTOVERS18}, {200, 100, 2, R_NORMAL, 0, I_BLACK_SLUDGE}},
+     {{200, 100, 3, R_NORMAL, 0, I_BLACK_SLUDGE, T_GRASSY_SURGE}, {200, 100, 1, R_POISON, 0, I_BLACK_SLUDGE}},
+     {ET(EV_TERRAIN_HEAL, 0, 0, 12, 112), ET(EV_ITEM_HEAL, 0, 0, 12, 124), ET(EV_TERRAIN_HEAL, 1, 0, 12, 112),
+      ET(EV_ITEM_DAMAGE, 1, 0, 25, 87), ET(EV_TERRAIN_HEAL, 0, 1, 12, 112), ET(EV_ITEM_DAMAGE, 0, 1, 25, 87),
+      ET(EV_TERRAIN_HEAL, 1, 1, 12, 112), ET(EV_ITEM_HEAL, 1, 1, 12, 124)}},
+    {"A faint to Black Sludge: the others go on, then the status damage", BATTLE_FORMAT_DOUBLE,
+     {{160, 10, 4, R_NORMAL, 0, I_BLACK_SLUDGE}, {200, 100, 2, R_NORMAL, BST_POISON, I_LEFTOVERS18}},
+     {{200, 100, 3, R_NORMAL, 0, I_LEFTOVERS18}, {200, 100, 1, R_NORMAL, BST_BURN, I_LEFTOVERS18}},
+     {ET(EV_ITEM_DAMAGE, 0, 0, 20, 0), ET(EV_FAINT, 0, 0, 0, 0), ET(EV_ITEM_HEAL, 1, 0, 12, 112),
+      ET(EV_ITEM_HEAL, 0, 1, 12, 112), ET(EV_ITEM_HEAL, 1, 1, 12, 112), ET(EV_RESIDUAL, 0, 1, 25, 87),
+      ET(EV_RESIDUAL, 1, 1, 12, 100)}},
+    };
+    EtEvent got[ET_MAX];
+    unsigned n;
+    for (unsigned i = 0; i < sizeof et_cases / sizeof *et_cases; ++i) {
+        run_et_case(&et_cases[i], BATTLE_REQUEST_VERSION_END_TURN_ITEMS, got, &n);
+        check_et(&et_cases[i], got, n);
+    }
+    printf("v18 end-turn reference: %u cases\n", (unsigned)(sizeof et_cases / sizeof *et_cases));
+}
+
+static void test_v18_wire(void) {
+    static BattleRequest r, d;
+    static uint8_t bytes[4096], v17[4096];
+    make_end_turn_items(&r, BATTLE_FORMAT_DOUBLE);
+    hold(&r.player[0], I_LEFTOVERS18);
+    hold(&r.player[1], I_BLACK_SLUDGE);
+    hold(&r.opponent[0], I_CHARCOAL);
+    hold(&r.opponent[1], I_DAMP_ROCK);
+    const uint32_t n = battle_request_encode(&r, bytes, sizeof bytes);
+    assert(n && bytes[0] == BATTLE_REQUEST_VERSION_END_TURN_ITEMS);
+    assert(battle_request_decode(bytes, n, &d) && d.version == BATTLE_REQUEST_VERSION_END_TURN_ITEMS);
+    for (unsigned side = 0; side < 2; ++side)
+        for (unsigned i = 0; i < 2; ++i) {
+            const BattleItem *a = side ? &r.opponent[i].mon.item : &r.player[i].mon.item;
+            const BattleItem *x = side ? &d.opponent[i].mon.item : &d.player[i].mon.item;
+            assert(a->cls == x->cls && a->count == x->count && a->source == x->source);
+            for (unsigned k = 0; k < a->count; ++k)
+                assert(memcmp(&a->records[k], &x->records[k], sizeof a->records[k]) == 0);
+        }
+    // The V18 layout is the V17 layout: the same request with the HP items
+    // removed encodes to the same length under both versions.
+    static BattleRequest same;
+    same = r;
+    hold(&same.player[0], I_AMULET_COIN);
+    hold(&same.player[1], I_AMULET_COIN);
+    static uint8_t plain[4096];
+    const uint32_t n18 = battle_request_encode(&same, plain, sizeof plain);
+    same.version = BATTLE_REQUEST_VERSION_ITEMS;
+    const uint32_t n17 = battle_request_encode(&same, v17, sizeof v17);
+    assert(n18 && n18 == n17 && memcmp(plain + 1, v17 + 1, n17 - 1) == 0);
+    // V17 has no HP record: refused by the encoder and the decoder.
+    static BattleRequest old;
+    old = r;
+    old.version = BATTLE_REQUEST_VERSION_ITEMS;
+    assert(!battle_request_encode(&old, v17, sizeof v17));
+    memcpy(v17, bytes, n);
+    v17[0] = BATTLE_REQUEST_VERSION_ITEMS;
+    assert(!battle_request_decode(v17, n, &d));
+    // Every byte of a record is checked: timing, operation, divisor, predicate, reserved, flags.
+    const BattleItem good = I_BLACK_SLUDGE;
+    assert(battle_item_valid(&good, 487, R_COUNT + 1, BATTLE_REQUEST_VERSION_END_TURN_ITEMS));
+    assert(!battle_item_valid(&good, 487, R_COUNT, BATTLE_REQUEST_VERSION_END_TURN_ITEMS));  // type out of range
+    assert(!battle_item_valid(&good, 487, R_COUNT + 1, BATTLE_REQUEST_VERSION_ITEMS));
+    BattleItem bad[11];
+    for (unsigned i = 0; i < 11; ++i) bad[i] = I_LEFTOVERS18;
+    bad[0].records[0].hp.timing = BITIME_NONE;
+    bad[1].records[0].hp.timing = BITIME_COUNT;
+    bad[2].records[0].hp.op = BIHP_NONE;
+    bad[3].records[0].hp.op = BIHP_COUNT;
+    bad[4].records[0].hp.divisor = 0;
+    bad[5].records[0].hp.pred = (BattlePredicate){BPRED_STATUS, 1u << BST_POISON};
+    bad[6].records[0].hp.pred = (BattlePredicate){BPRED_NONE, 1};
+    bad[7].records[0].hp.pred = (BattlePredicate){BPRED_HAS_TYPE | BPRED_DEFENDER, R_FIRE};
+    bad[8].records[0].hp.reserved = 1;
+    bad[9].records[0].flags = 1;
+    bad[10].records[0].hp.pred = (BattlePredicate){BPRED_HP_AT_MOST, 2};
+    for (unsigned i = 0; i < 11; ++i) {
+        assert(!battle_item_valid(&bad[i], 472, R_COUNT + 1, BATTLE_REQUEST_VERSION_END_TURN_ITEMS));
+        BattleRequest *x = &old;
+        *x = r;
+        hold(&x->player[0], bad[i]);
+        assert(!battle_request_encode(x, v17, sizeof v17));
+    }
+    const BattleItem fine = I_LEFTOVERS18;
+    assert(battle_item_valid(&fine, 472, R_COUNT + 1, BATTLE_REQUEST_VERSION_END_TURN_ITEMS));
+    // Wire bytes: a reserved byte or an unknown operation on the wire is refused by the decoder.
+    static const uint8_t pattern[] = {BITEM_HP, BITIME_END_TURN, BIHP_HEAL, 16, BPRED_NONE, 0, 0, 0};
+    unsigned at = 0;
+    for (unsigned i = 0; i + sizeof pattern <= n; ++i)
+        if (!memcmp(bytes + i, pattern, sizeof pattern)) { at = i; break; }
+    assert(at);
+    static const uint8_t offsets[] = {1, 2, 3, 4, 5, 6, 7};
+    static const uint8_t values[] = {2, 3, 0, 2, 1, 1, 1};
+    for (unsigned i = 0; i < sizeof offsets; ++i) {
+        memcpy(v17, bytes, n);
+        v17[at + offsets[i]] = values[i];
+        assert(!battle_request_decode(v17, n, &d));
+    }
+    memcpy(v17, bytes, n);
+    assert(battle_request_decode(v17, n, &d));
+    // The largest request does not grow: still four records per item.
+    assert(BATTLE_REQUEST_MAX_BYTES(6, 21) == 3165);
+}
+
+static void test_v18_init(void) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    make_end_turn_items(&r, BATTLE_FORMAT_SINGLE);
+    hold(&r.player[0], I_LEFTOVERS18);
+    hold(&r.opponent[0], I_BLACK_SLUDGE);
+    assert(battle_init(&b, &r, 1) == BI_OK && battle_items_simulated(&b));
+    // A request built in memory gets the decoder's check (no zero divisor reaches the core).
+    BattleItem zero = I_LEFTOVERS18;
+    zero.records[0].hp.divisor = 0;
+    hold(&r.player[0], zero);
+    assert(battle_init(&b, &r, 1) == BI_CONDITIONS);
+    hold(&r.player[0], I_LEFTOVERS18);
+    r.player[0].record.held_item = 999;  // the block must name the record's item
+    assert(battle_init(&b, &r, 1) == BI_CONDITIONS);
+    hold(&r.player[0], I_LEFTOVERS18);
+    // All or nothing: one unsupported item refuses the battle unless every item is off.
+    hold(&r.opponent[0], I_LIFE_ORB);
+    assert(battle_init(&b, &r, 1) == BI_UNSUPPORTED_ITEM);
+    r.rules |= RULE_IGNORE_ITEMS;
+    r.player[0].record.hp = 100;
+    assert(battle_init(&b, &r, 1) == BI_OK && battle_items_normalized(&b));
+    battle_begin(&b, &log);
+    assert(log.events[0].kind == EV_ITEMS_NORMALIZED && log.events[0].amount == 2 && log.events[0].battler == 1);
+    run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+    assert(!event_count(&log, EV_ITEM_HEAL) && !event_count(&log, EV_ITEM_DAMAGE));
+    // RULE_IGNORE_ITEMS turns off even a battle of supported items only: no Leftovers.
+    hold(&r.opponent[0], I_BLACK_SLUDGE);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    assert(log.events[0].kind == EV_ITEMS_NORMALIZED && log.events[0].battler == 0);
+    for (unsigned t = 0; t < 3; ++t) {
+        run1(&b, move(0, 0, 0), move(1, 0, 0), &log);
+        assert(!event_count(&log, EV_ITEM_HEAL) && !event_count(&log, EV_ITEM_DAMAGE));
+    }
+    // Strict: no normalisation that drops an item effect.
+    r.rules |= RULE_STRICT_ITEMS;
+    assert(battle_init(&b, &r, 1) == BI_ITEMS_NORMALIZED);
+    r.rules &= (uint16_t)~RULE_IGNORE_ITEMS;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    hold(&r.opponent[0], I_LIFE_ORB);
+    assert(battle_init(&b, &r, 1) == BI_UNSUPPORTED_ITEM);
+}
+
+// The state and the timing: the HP records are the ones of the item the
+// Pokemon holds now (Battler.item_from, here another entry's Black Sludge),
+// the event names that item, and a record acts only at its own timing.
+static void test_v18_state(void) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    make_end_turn_items(&r, BATTLE_FORMAT_SINGLE);
+    add_reserve(&r, 0);
+    hold(&r.player[0], I_LEFTOVERS18);
+    hold(&r.player[1], I_BLACK_SLUDGE);
+    r.player[0].record.max_hp = 160;
+    r.player[0].record.hp = 160;
+    set_move(&r.player[0], 0, 150, wait_move(), 40);
+    set_move(&r.opponent[0], 0, 150, wait_move(), 40);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    Battler *lead = bc_mutable_at(&b, (Position){0, 0});
+    lead->item_from = &r.player[1];  // it now holds the reserve's Black Sludge (an item change of a later stage)
+    log.count = 0;
+    bc_item_hp(&b, (Position){0, 0}, BITIME_NONE, &log);  // not this record's timing
+    bc_item_hp(&b, (Position){0, 0}, BITIME_COUNT, &log);
+    assert(log.count == 0 && lead->hp == 160);
+    battle_begin(&b, &log);
+    run1(&b, (Action){.kind = ACT_MOVE, .user = {0, 0}, .target = {{0, 0}}},
+         (Action){.kind = ACT_MOVE, .user = {1, 0}, .target = {{1, 0}}}, &log);
+    const BattleEvent *hurt = find_event(&log, EV_ITEM_DAMAGE, 0);
+    assert(hurt && hurt->item == 487 && hurt->amount == 20 && lead->hp == 140 && !find_event(&log, EV_ITEM_HEAL, 0));
+    assert(battle_held_item(lead) == 487 && lead->entry->record.held_item == 472);
+}
+
+// The item is the Pokemon's wherever it stands: after a switch the newcomer's
+// item acts, after a Shift the moved Pokemon's (at its new position), after a
+// rotation the one in front; a Pokemon in the back never does.
+static void test_v18_positions(void) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    // Switch: the reserve with Leftovers comes in and heals at the end of the turn.
+    make_end_turn_items(&r, BATTLE_FORMAT_SINGLE);
+    add_reserve(&r, 0);
+    r.player[0].record.hp = r.player[0].record.max_hp;
+    hold(&r.player[1], I_LEFTOVERS18);
+    r.player[1].record.max_hp = 160;
+    r.player[1].record.hp = 100;
+    set_move(&r.opponent[0], 0, 150, wait_move(), 40);
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    const Action sw[] = {{.kind = ACT_SWITCH, .user = {0, 0}, .reserve = 1},
+                         {.kind = ACT_MOVE, .user = {1, 0}, .target = {{1, 0}}}};
+    battle_run_turn(&b, sw, 2, &log);
+    const BattleEvent *heal = find_event(&log, EV_ITEM_HEAL, 0);
+    assert(heal && heal->target.side == 0 && heal->target.slot == 0 && heal->amount == 10 && heal->item == 472);
+    assert(battle_held_item(battle_active(&b, 0)) == 472);
+    // Shift (Triple): the edge Pokemon moves to the center and heals there.
+    make_end_turn_items(&r, BATTLE_FORMAT_TRIPLE);
+    for (unsigned i = 0; i < 3; ++i) {
+        set_move(&r.player[i], 0, 150, wait_move(), 40);
+        set_move(&r.opponent[i], 0, 150, wait_move(), 40);
+    }
+    hold(&r.player[2], I_LEFTOVERS18);
+    r.player[2].record.hp = 100;
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    Action shift[6] = {{.kind = ACT_SHIFT, .user = {0, BPOS_RIGHT}}};
+    unsigned count = 1;
+    for (uint8_t slot = 0; slot < 2; ++slot)
+        shift[count++] = (Action){.kind = ACT_MOVE, .user = {0, slot}, .target = {{0, slot}}};
+    for (uint8_t slot = 0; slot < 3; ++slot)
+        shift[count++] = (Action){.kind = ACT_MOVE, .user = {1, slot}, .target = {{1, slot}}};
+    battle_run_turn(&b, shift, count, &log);
+    heal = find_event(&log, EV_ITEM_HEAL, 0);
+    assert(find_event(&log, EV_SHIFT, 0) && heal && heal->target.side == 0 && heal->target.slot == BPOS_CENTER &&
+           heal->amount == 12 && event_count(&log, EV_ITEM_HEAL) == 1);
+    // Rotation: only the Pokemon in front; rotating the holder to the front makes it heal.
+    make_end_turn_items(&r, BATTLE_FORMAT_ROTATION);
+    for (unsigned i = 0; i < 3; ++i) {
+        set_move(&r.player[i], 0, 150, wait_move(), 40);
+        set_move(&r.opponent[i], 0, 150, wait_move(), 40);
+        hold(&r.player[i], I_LEFTOVERS18);
+        r.player[i].record.hp = 100;
+    }
+    hold(&r.player[0], I_AMULET_COIN);  // the first Pokemon is in front (center) and holds nothing that acts
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    battle_begin(&b, &log);
+    Action rot[] = {move(0, BPOS_CENTER, BPOS_CENTER), move(1, BPOS_CENTER, BPOS_CENTER)};
+    rot[0].target = (Target){{0, BPOS_CENTER}};
+    rot[1].target = (Target){{1, BPOS_CENTER}};
+    battle_run_turn(&b, rot, 2, &log);
+    assert(!event_count(&log, EV_ITEM_HEAL));  // the holders are in the back
+    rot[0].rotation = BROT_LEFT;
+    battle_run_turn(&b, rot, 2, &log);
+    heal = find_event(&log, EV_ITEM_HEAL, 0);
+    assert(find_event(&log, EV_ROTATE, 0) && heal && heal->target.slot == BPOS_CENTER &&
+           event_count(&log, EV_ITEM_HEAL) == 1 && battle_held_item(battle_at(&b, heal->target)) == 472);
+}
+
+// V18 keeps every earlier version as it was: the same Pokemon in a V17
+// request (Leftovers UNSUPPORTED there, so the battle is normalised) has no
+// item event, and equal speeds keep the player's Pokemon first up to V17.
+static void test_v18_versions(void) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    const EtCase tie = {"poison, equal speeds", BATTLE_FORMAT_DOUBLE,
+                        {{200, 100, 50, R_NORMAL, BST_POISON}, {200, 100, 50, R_NORMAL, BST_POISON}},
+                        {{200, 100, 50, R_NORMAL, BST_POISON}, {200, 100, 50, R_NORMAL, BST_POISON}}, {{0}}};
+    EtEvent got[ET_MAX];
+    unsigned n;
+    run_et_case(&tie, BATTLE_REQUEST_VERSION_END_TURN_ITEMS, got, &n);
+    assert(n == 4 && got[0].side == 0 && got[0].slot == 0 && got[1].side == 1 && got[1].slot == 0 &&
+           got[2].side == 0 && got[2].slot == 1 && got[3].side == 1 && got[3].slot == 1);
+    run_et_case(&tie, BATTLE_REQUEST_VERSION_ITEMS, got, &n);
+    assert(n == 4 && got[0].side == 0 && got[0].slot == 0 && got[1].side == 0 && got[1].slot == 1 &&
+           got[2].side == 1 && got[2].slot == 0 && got[3].side == 1 && got[3].slot == 1);
+    // A gap left by a fainted Pokemon: the order is by slot, not by place in the list.
+    make_end_turn_items(&r, BATTLE_FORMAT_DOUBLE);
+    for (unsigned side = 0; side < 2; ++side)
+        for (unsigned i = 0; i < 2; ++i) {
+            BattleEntry *e = side ? &r.opponent[i] : &r.player[i];
+            et_mon(e, &(EtMon){200, 100, 50, R_NORMAL, BST_POISON});
+        }
+    assert(battle_init(&b, &r, 1) == BI_OK);
+    set_fainted(&b, 0, 0);
+    Action actions[] = {move(0, 1, 1), move(1, 0, 0), move(1, 1, 1)};
+    for (unsigned i = 0; i < 3; ++i) actions[i].target = (Target){{actions[i].user.side, actions[i].user.slot}};
+    battle_run_turn(&b, actions, 3, &log);
+    n = end_turn_events(&log, got, ET_MAX);
+    assert(n >= 3 && got[0].side == 1 && got[0].slot == 0 && got[1].side == 0 && got[1].slot == 1 &&
+           got[2].side == 1 && got[2].slot == 1);
+}
+
+// Random battles in the four formats with Leftovers and Black Sludge:
+// deterministic, every event log fits, and a normalised battle
+// (RULE_IGNORE_ITEMS) is event for event the battle without any item.
+static void test_v18_formats(void) {
+    static BattleRequest r, bare;
+    static Battle a, b, c;
+    static EventLog la, lb, lc;
+    const BattleItem items[] = {I_LEFTOVERS18, I_BLACK_SLUDGE, I_CHARCOAL, I_DAMP_ROCK, I_TERRAIN_EXTENDER,
+                                I_AMULET_COIN, I_LEFTOVERS18, I_BLACK_SLUDGE, {0}};
+    const unsigned n = sizeof items / sizeof *items;
+    const uint8_t formats[] = {BATTLE_FORMAT_SINGLE, BATTLE_FORMAT_DOUBLE, BATTLE_FORMAT_TRIPLE, BATTLE_FORMAT_ROTATION};
+    unsigned battles = 0, normalised = 0, heals = 0, hurts = 0, faints = 0, most = 0;
+    for (unsigned f = 0; f < 4; ++f)
+        for (uint32_t seed = 1; seed <= 60; ++seed) {
+            make_end_turn_items(&r, formats[f]);
+            for (unsigned side = 0; side < 2; ++side) add_reserve(&r, side);
+            for (unsigned side = 0; side < 2; ++side) {
+                BattleEntry *e = side ? r.opponent : r.player;
+                const unsigned count = side ? r.opponent_count : r.player_count;
+                for (unsigned i = 0; i < count; ++i) {
+                    e[i].record.max_hp = (uint16_t)(60 + (seed * 7 + i * 11 + side) % 120);
+                    e[i].record.hp = (uint16_t)(e[i].record.max_hp - (seed + i) % 40);
+                    e[i].mon.types[0] = (uint8_t)((seed + 3 * i + side) % (R_COUNT + 1));
+                    e[i].record.speed = (uint16_t)(40 + (seed * 13 + i * 7 + side * 3) % 60);
+                    e[i].record.status = (seed + i + side) % 5 == 0 ? BST_POISON : 0;
+                    set_move(&e[i], 1, 240, weather_move((uint8_t)(1 + (seed + i) % 4), 5), 6);
+                    set_move(&e[i], 2, 580, terrain_move((uint8_t)(1 + (seed + side) % BTERRAIN_KINDS)), 6);
+                    set_move(&e[i], 3, 300 + i, ref_move(40, (uint8_t)((seed + i * 5) % R_COUNT),
+                                                         (seed + i) % 2 ? BCAT_PHYSICAL : BCAT_SPECIAL), 10);
+                    hold(&e[i], items[(seed * 5 + side * 3 + i + f) % n]);
+                    if ((seed + i) % 4 == 0) give(&e[i], (seed + side) % 2 ? W_SAND_STREAM : T_GRASSY_SURGE);
+                    if ((seed + i) % 7 == 0) give(&e[i], SHED_SKIN);
+                }
+            }
+            bare = r;
+            for (unsigned side = 0; side < 2; ++side)
+                for (unsigned i = 0; i < BATTLE_MAX_PER_SIDE; ++i) {
+                    BattleEntry *e = side ? &bare.opponent[i] : &bare.player[i];
+                    e->mon.item = (BattleItem){0};
+                    e->record.held_item = 0;
+                }
+            const bool ignore = seed % 3 == 0;
+            if (ignore) {
+                r.rules |= RULE_IGNORE_ITEMS;
+                ++normalised;
+            }
+            assert(battle_init(&a, &r, seed) == BI_OK && battle_init(&b, &r, seed) == BI_OK &&
+                   battle_init(&c, &bare, seed) == BI_OK);
+            battle_begin(&a, &la);
+            battle_begin(&b, &lb);
+            battle_begin(&c, &lc);
+            if (ignore)
+                assert(la.events[0].kind == EV_ITEMS_NORMALIZED && la.count == lc.count + 1 &&
+                       !memcmp(la.events + 1, lc.events, lc.count * sizeof(BattleEvent)));
+            for (unsigned t = 0; t < 60 && a.outcome == OUTCOME_NONE; ++t) {
+                Position pending;
+                while (battle_pending_replacement(&a, &pending)) {
+                    const uint8_t mask = battle_replacement_mask(&a, pending);
+                    uint8_t pick = 0;
+                    while (!(mask & (1u << pick))) ++pick;
+                    assert(battle_replace(&a, pending, pick, &la) && battle_replace(&b, pending, pick, &lb));
+                    if (ignore) assert(battle_replace(&c, pending, pick, &lc));
+                }
+                if (a.outcome != OUTCOME_NONE) break;
+                Action actions[BC_MAX_ACTIONS];
+                unsigned count = 0;
+                for (uint8_t side = 0; side < 2; ++side) {
+                    Position actors[BC_MAX_ACTIVE];
+                    const unsigned k = battle_collect_actors(&a, side, actors);
+                    for (unsigned i = 0; i < k; ++i) battle_choose_at(&a, actors[i], &actions[count++]);
+                }
+                for (unsigned i = 0; i < count; ++i) {
+                    Action dummy;
+                    battle_choose_at(&b, actions[i].user, &dummy);
+                    if (ignore) battle_choose_at(&c, actions[i].user, &dummy);
+                }
+                battle_run_turn(&a, actions, count, &la);
+                battle_run_turn(&b, actions, count, &lb);
+                assert(la.count == lb.count && la.count < BC_MAX_EVENTS &&
+                       memcmp(la.events, lb.events, la.count * sizeof(BattleEvent)) == 0);
+                if (la.count > most) most = la.count;
+                if (ignore) {
+                    battle_run_turn(&c, actions, count, &lc);
+                    assert(la.count == lc.count && !memcmp(la.events, lc.events, la.count * sizeof(BattleEvent)));
+                }
+                for (unsigned i = 0; i < la.count; ++i) {
+                    const BattleEvent *e = &la.events[i];
+                    if (e->kind == EV_ITEM_HEAL || e->kind == EV_ITEM_DAMAGE) {
+                        // A Pokemon that fainted later in the end of the turn has left its position.
+                        const Battler *x = battle_at(&a, e->target);
+                        assert(!ignore && e->item && (!x || e->item == battle_held_item(x)));
+                        heals += e->kind == EV_ITEM_HEAL;
+                        hurts += e->kind == EV_ITEM_DAMAGE;
+                        if (e->kind == EV_ITEM_DAMAGE && !e->hp_after) ++faints;
+                    }
+                }
+            }
+            // B1a never moves an item: every Pokemon still holds its own.
+            for (unsigned side = 0; side < 2; ++side)
+                for (unsigned i = 0; i < a.sides[side].count; ++i) {
+                    const Battler *x = &a.sides[side].battlers[i];
+                    assert(x->item_from == (x->entry->record.held_item ? x->entry : NULL));
+                }
+            assert(memcmp(&a.sides, &b.sides, sizeof a.sides) == 0 && a.rng == b.rng);
+            if (ignore) assert(a.rng == c.rng && a.outcome == c.outcome);
+            r.rules &= (uint16_t)~RULE_IGNORE_ITEMS;
+            ++battles;
+        }
+    assert(normalised == 80 && heals > 50 && hurts > 20 && faints > 0);
+    printf("v18 formats: %u battles (%u normalised), item heals %u, item damage %u (%u faints), most events %u\n",
+           battles, normalised, heals, hurts, faints, most);
+}
+#pragma GCC diagnostic pop
+
 int main(void) {
     test_request_roundtrip();
     test_messages();
@@ -7440,6 +8068,13 @@ int main(void) {
     test_v17_power();
     test_v17_field_turns();
     test_v17_formats();
+    test_v18_wire();
+    test_v18_init();
+    test_v18_end_turn_reference();
+    test_v18_state();
+    test_v18_positions();
+    test_v18_versions();
+    test_v18_formats();
     puts("battle tests passed");
     return 0;
 }

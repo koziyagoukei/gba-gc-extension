@@ -1,4 +1,4 @@
-// Held items of the GameCube battle core (request V17, docs/items.md).
+// Held items of the GameCube battle core (requests V17 and V18, docs/items.md).
 //
 // Three layers, as for the weather and the terrain:
 //   1. the state: the item a Pokemon holds now (Battler.item_from, the entry
@@ -6,8 +6,9 @@
 //      entry's) so that later milestones can move or remove items;
 //   2. the shared operations here: one check of whether an item has an effect
 //      (bc_item), the record iterator, the battle-start checks and notice, and
-//      the duration of a weather or terrain its holder sets; the power records
-//      run through the shared modifiers (battle_modifiers.c);
+//      the duration of a weather or terrain its holder sets, and (V18) the HP
+//      records of one timing; the power records run through the shared
+//      modifiers (battle_modifiers.c);
 //   3. the game's rules, resolved by the GBA into the item blocks: percent,
 //      category, move type, rounding and durations. The core knows no item id.
 // An item with an effect the core cannot run is UNSUPPORTED: such a battle
@@ -50,7 +51,13 @@ int bc_items_check(const Battle *b) {
     const bool ignore = (r->rules & RULE_IGNORE_ITEMS) != 0, strict = (r->rules & RULE_STRICT_ITEMS) != 0;
     for (uint8_t side = 0; side < 2; ++side)
         for (uint8_t i = 0; i < b->sides[side].count; ++i) {
-            const uint8_t cls = b->sides[side].battlers[i].entry->mon.item.cls;
+            const BattleEntry *e = b->sides[side].battlers[i].entry;
+            const uint8_t cls = e->mon.item.cls;
+            // V18: a request built in memory (not decoded) gets the decoder's
+            // check too, so no HP record with a zero divisor reaches the core.
+            if (r->version >= BATTLE_REQUEST_VERSION_END_TURN_ITEMS &&
+                !battle_item_valid(&e->mon.item, e->record.held_item, r->type_count, r->version))
+                return BI_CONDITIONS;
             if (cls == BICLASS_UNSUPPORTED && !ignore) return BI_UNSUPPORTED_ITEM;
             // Strict: normalising would drop an item effect, so the result would not be exact.
             if (strict && ignore && cls != BICLASS_NONE) return BI_ITEMS_NORMALIZED;
@@ -84,4 +91,42 @@ uint8_t bc_item_field_turns(const Battle *b, Position source, uint8_t record_kin
     while ((x = bc_item_next(b, battle_at(b, source), record_kind, x)))
         if (x->arg0 & bit) return x->arg2;
     return turns;
+}
+
+// V18: the holder's BITEM_HP records at one timing of the turn sequence
+// (docs/items.md, "Order"). The first record whose predicate holds is the
+// item's effect there (ItemBattleEffects: Black Sludge heals a Poison-type
+// holder, else hurts it); a heal at full HP is that effect doing nothing.
+// The amount is max HP / divisor, at least 1 (SetHealAmount,
+// SetPassiveDamageAmount); a heal stops at max HP, damage goes through the
+// core's own HP loss and faint (bc_apply_damage).
+static bool holder_predicate(const Battler *mon, BattlePredicate p) {
+    switch (p.kind) {
+    case BPRED_NONE: return true;
+    case BPRED_HAS_TYPE: return bc_has_type(mon, p.arg);
+    default: return false;  // refused by battle_item_valid
+    }
+}
+
+void bc_item_hp(Battle *b, Position p, uint8_t timing, EventLog *log) {
+    Battler *mon = bc_mutable_at(b, p);
+    if (!mon || mon->fainted) return;
+    const BattleItemRecord *x = NULL;
+    while ((x = bc_item_next(b, mon, BITEM_HP, x))) {
+        if (x->hp.timing != timing || !holder_predicate(mon, x->hp.pred)) continue;
+        unsigned amount = mon->max_hp / x->hp.divisor;
+        if (!amount) amount = 1;
+        const uint16_t item = battle_held_item(mon);
+        if (x->hp.op == BIHP_DAMAGE) {
+            bc_apply_damage(b, (BattleEvent){.kind = EV_ITEM_DAMAGE, .user = p, .target = p, .item = item},
+                            (uint16_t)amount, log);
+            return;
+        }
+        if (mon->hp >= mon->max_hp) return;
+        if (amount > (unsigned)(mon->max_hp - mon->hp)) amount = mon->max_hp - mon->hp;
+        mon->hp = (uint16_t)(mon->hp + amount);
+        bc_emit(log, (BattleEvent){.kind = EV_ITEM_HEAL, .user = p, .target = p, .amount = (uint16_t)amount,
+                                   .hp_after = mon->hp, .item = item});
+        return;
+    }
 }

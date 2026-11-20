@@ -140,6 +140,15 @@ CacheEntry *battle_ability_label(uint32_t build, uint16_t ability) {
     return cache_find(build, &key);
 }
 
+AssetKey battle_item_label_key(uint16_t item) {
+    return (AssetKey){ASSET_TEXT_LABEL, LABEL_ID(LABEL_ITEM, item), 0, 0};
+}
+
+CacheEntry *battle_item_label(uint32_t build, uint16_t item) {
+    const AssetKey key = battle_item_label_key(item);
+    return cache_find(build, &key);
+}
+
 CacheEntry *battle_sprite(uint32_t build, const PokemonRecord *mon, Position pos) {
     const AssetKey key = battle_sprite_key(mon, pos);
     return cache_find(build, &key);

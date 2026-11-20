@@ -141,5 +141,18 @@ int main(void) {
     animation_play(&anim, triple, &items);
     finish(&anim, triple);
     assert(anim.message.kind == MSG_ITEMS_NORMALIZED && anim.message.stage == 3 && anim.message.battler == 1);
+    // V18: an item heal (Leftovers) and item damage (Black Sludge) with the item id and the HP bar.
+    const EventLog item_hp = {{
+        {.kind = EV_ITEM_HEAL, .user = {0, BPOS_LEFT}, .target = {0, BPOS_LEFT}, .amount = 3, .hp_after = 52,
+         .item = 472},
+        {.kind = EV_ITEM_DAMAGE, .user = {1, BPOS_RIGHT}, .target = {1, BPOS_RIGHT}, .amount = 20, .hp_after = 7,
+         .item = 487},
+    }, 2};
+    animation_play(&anim, triple, &item_hp);
+    bool healed = false;
+    for (unsigned i = 0; i < 400 && !animation_tick(&anim, triple); ++i)
+        healed |= anim.message.kind == MSG_ITEM_HEAL && anim.message.item == 472 && anim.message.subject.side == 0;
+    assert(healed && anim.actor[0][BPOS_LEFT].hp == 52 && anim.actor[1][BPOS_RIGHT].hp == 7);
+    assert(anim.message.kind == MSG_ITEM_DAMAGE && anim.message.item == 487 && anim.message.subject.slot == BPOS_RIGHT);
     puts("presentation-test OK");
 }

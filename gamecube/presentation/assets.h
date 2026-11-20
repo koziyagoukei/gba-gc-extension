@@ -30,4 +30,6 @@ AssetKey battle_sprite_key(const PokemonRecord *mon, Position pos);
 AssetKey battle_move_label_key(uint16_t move);
 AssetKey battle_ability_label_key(uint16_t ability);
 CacheEntry *battle_ability_label(uint32_t build, uint16_t ability);
+AssetKey battle_item_label_key(uint16_t item);          // V18: names of items with HP records
+CacheEntry *battle_item_label(uint32_t build, uint16_t item);
 #endif

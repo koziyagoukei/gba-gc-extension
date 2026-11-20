@@ -139,6 +139,8 @@ void bc_items_begin_battle(Battle *battle, EventLog *log);  // EV_ITEMS_NORMALIZ
 // item's WEATHER_TURNS / TERRAIN_TURNS record for `bit`, if the effect has a
 // limited duration (1..15); the rules (no holder) never get one.
 uint8_t bc_item_field_turns(const Battle *battle, Position source, uint8_t record_kind, uint8_t bit, uint8_t turns);
+// V18: the BITEM_HP records of the item at `position` for one BITIME_* timing.
+void bc_item_hp(Battle *battle, Position position, uint8_t timing, EventLog *log);
 
 // Ability hooks (battle_abilities.c, docs/abilities.md). All are inert unless
 // the request is V11+ without RULE_IGNORE_ABILITIES. An ability is a list of

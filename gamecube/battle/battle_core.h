@@ -122,8 +122,11 @@ typedef enum { EV_MOVE_USED, EV_MISS, EV_DAMAGE, EV_NO_EFFECT, EV_FAINT, EV_FORF
               EV_TERRAIN_HEAL,        // end of turn, target regains HP from the terrain (amount, hp_after)
               EV_TERRAIN_BLOCK,       // the terrain kept user's move or its effect off target
               // V17 items (docs/items.md).
-              EV_ITEMS_NORMALIZED     // battle start: RULE_IGNORE_ITEMS, no held item has any effect
+              EV_ITEMS_NORMALIZED,    // battle start: RULE_IGNORE_ITEMS, no held item has any effect
                                       // (amount = Pokemon holding an item, battler = those not simulated)
+              // V18 item HP records: target = holder, item = its item id, amount and hp_after.
+              EV_ITEM_HEAL,           // the holder regains HP from its item (Leftovers)
+              EV_ITEM_DAMAGE          // the holder loses HP to its item (Black Sludge); EV_FAINT may follow
 } EventKind;
 typedef struct {
     EventKind kind;
@@ -137,7 +140,10 @@ typedef struct {
     uint8_t condition;       // status events and send-out
     uint8_t stat;            // EV_STAGE
     int8_t stage;            // EV_STAGE: new stage
-    uint16_t ability;        // EV_ABILITY*: the source ability id
+    union {
+        uint16_t ability;    // EV_ABILITY*: the source ability id
+        uint16_t item;       // V18 EV_ITEM_*: the holder's item id (names only)
+    };
 } BattleEvent;
 
 typedef struct { BattleEvent events[BC_MAX_EVENTS]; unsigned count; } EventLog;

@@ -18,6 +18,8 @@ typedef enum {
     // V17 items: every item is off by the rules (stage = Pokemon holding an item,
     // battler = how many of those items are not simulated).
     MSG_ITEMS_NORMALIZED,
+    // V18 item HP records: subject = holder, item = its item id.
+    MSG_ITEM_HEAL, MSG_ITEM_DAMAGE,
 } MessageKind;
 
 typedef struct {
@@ -27,7 +29,10 @@ typedef struct {
     uint8_t outcome;
     uint8_t condition, stat;
     int8_t stage;
-    uint16_t ability;   // MSG_ABILITY*: source ability id (game-rendered label)
+    union {
+        uint16_t ability;   // MSG_ABILITY*: source ability id (game-rendered label)
+        uint16_t item;      // MSG_ITEM_*: the holder's item id (game-rendered label)
+    };
     uint8_t battler;    // MSG_ABILITY_UNSUPPORTED: roster index on subject.side
 } SceneMessage;
 

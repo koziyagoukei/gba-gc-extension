@@ -252,6 +252,8 @@ static const char *message_text(const SceneMessage *msg) {
     case MSG_TERRAIN_HEAL:
     case MSG_TERRAIN_BLOCK: return terrain_text(msg);
     case MSG_ITEMS_NORMALIZED: return "All held item effects are OFF.";
+    case MSG_ITEM_HEAL: return "Restored HP with its held item.";
+    case MSG_ITEM_DAMAGE: return "Hurt by its held item!";
     case MSG_NONE: return "";
     }
     return "";
@@ -309,6 +311,14 @@ static void draw_message(const BattleLayout *layout) {
             else if (move) draw_label(move, x + 210, y + 27, 220, 23);
             else render_text(x + 210, y + 28, 1, UI_MUTED, "Move #%u", msg->move);
         }
+    } else if (msg->kind == MSG_ITEM_HEAL || msg->kind == MSG_ITEM_DAMAGE) {
+        const Battler *b = battler_at(msg->subject);
+        CacheEntry *name = b ? battle_label(scene.build, &b->entry->record) : NULL;
+        if (name) draw_label(name, x, y + 27, 190, 23);
+        else render_text(x, y + 28, 1, UI_MUTED, "%s", msg->subject.side ? "Opponent" : "Player");
+        CacheEntry *item = battle_item_label(scene.build, msg->item);
+        if (item) draw_label(item, x + 210, y + 27, 220, 23);
+        else render_text(x + 210, y + 28, 1, UI_MUTED, "Item #%u", msg->item);
     } else if (msg->kind == MSG_ITEMS_NORMALIZED) {
         render_text(x, y + 28, 1, UI_MUTED, "Rules: %d held, %u not simulated. No item is used.", msg->stage,
                     msg->battler);

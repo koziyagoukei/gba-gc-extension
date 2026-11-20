@@ -260,6 +260,15 @@ void animation_play(BattleAnimation *a, const BattleLayout *layout, const EventL
             message(a, (SceneMessage){.kind = MSG_ITEMS_NORMALIZED, .subject = e->user,
                                       .stage = (int8_t)(e->amount > 12 ? 12 : e->amount), .battler = e->battler}, 90);
             break;
+        case EV_ITEM_HEAL:
+        case EV_ITEM_DAMAGE:
+            if (!battle_layout_anchor(layout, e->target)) break;
+            message(a, (SceneMessage){.kind = e->kind == EV_ITEM_HEAL ? MSG_ITEM_HEAL : MSG_ITEM_DAMAGE,
+                                      .subject = e->target, .item = e->item}, 0);
+            if (e->kind == EV_ITEM_DAMAGE) add(a, (AnimationStep){.kind = ANIM_HIT, .target = e->target, .frames = 16});
+            add(a, (AnimationStep){.kind = ANIM_HP, .target = e->target, .hp = e->hp_after});
+            wait(a, 18);
+            break;
         case EV_WEATHER_DAMAGE:
             if (!battle_layout_anchor(layout, e->target)) break;
             message(a, (SceneMessage){.kind = MSG_WEATHER_DAMAGE, .subject = e->target, .condition = e->condition}, 0);
