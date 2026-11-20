@@ -150,7 +150,7 @@
 
 ## M4-W (release 9, development only)
 
-- Weather only; terrain (M4-T) and items (M4-B: rocks, Utility Umbrella,
+- Weather only (terrain: M4-T below); items (M4-B: rocks, Utility Umbrella,
   Safety Goggles) are not simulated. Primal weather, Forecast, Flower Gift,
   Hydration, Leaf Guard, Protosynthesis and the other weather abilities in
   [weather](weather.md) stay UNSUPPORTED; so do the moves listed there and,
@@ -164,3 +164,22 @@
   lookups are not cached); V12–V14 are unchanged.
 - During the M4-W Dolphin runs, 4 of 56 sessions had one frame time out and
   recover on its first retry; the JoyBus first-word loss is still unexplained.
+
+## M4-T (release 10, development only)
+
+- Terrain only as listed in [terrain](terrain.md). Terrain Extender, the
+  seeds, Air Balloon and Iron Ball are items (not simulated, M4-B); a V16
+  request must normalise items away or the GC refuses it, so no item can
+  silently ground or lift a Pokemon. Gravity, Magnet Rise, Telekinesis,
+  Ingrain, Smack Down, Thousand Arrows and Roost are not run (unsupported
+  moves), so the grounded rule only knows the Flying type and Levitate.
+- Terrain-dependent moves (Rising Voltage, Expanding Force, Misty
+  Explosion, Psyblade, Terrain Pulse, Grassy Glide, Steel Roller, Ice
+  Spinner, Nature Power, Camouflage, Secret Power, Floral Healing) and
+  terrain abilities other than the four surges, Surge Surfer and Grass Pelt
+  (Mimicry, Quark Drive, Hadron Engine, Seed Sower ...) stay UNSUPPORTED.
+- Psychic Terrain's exemption of moves on all battlers or the opponents'
+  field cannot happen: those target classes are refused by the exporter.
+- During the M4-T Dolphin runs, 10 of 65 sessions had one request time out
+  and recover on a retry (no link loss other than the deliberate cut); the
+  JoyBus first-word loss is still unexplained.

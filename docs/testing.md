@@ -200,3 +200,27 @@ Dolphin: Utilities -> GC Ability Lab... L30-L36 are V15 (L30 Single, L31
 Double, L32 Triple, L33 Rotation, L34 strict refusal of primal weather, L35
 = L32 with the Gen 5 weather rules and the same seed, L36 a battle-start
 weather). The companion logs the field rules as `PH10` lines.
+
+## M4-T (release 10, [terrain](terrain.md))
+
+Native: `battle_test.c` adds `test_v16_*` (wire and validation, set /
+same / replace / end / start, surges, the grounded rule, status / sleep /
+confusion order, Psychic Terrain per target, damage records, Surge Surfer,
+the orders the reference fixes, the item rule, 240 random terrain battles
+in four formats run twice, and `test_v16_expansion_reference`).
+
+Expansion reference (Frontier branch `frontier-gc-m4t`):
+
+```sh
+make check TESTS="GC V16 reference"
+```
+
+Trace: 12 to 15 are unchanged and compare with M4-W (`battle_trace 15`
+total `efa20edd`).
+
+Dolphin: Utilities -> GC Ability Lab... L37-L42 are V16 (L37 Single
+Electric then Psychic, L38 Double Grassy, L39 Triple Misty, L40 Rotation
+Psychic, L41 = L38 with the Gen 7 x1.5 terrain records and the same seed,
+L42 strict refusal of Rising Voltage on the GBA). The companion logs the
+terrain rules as `PH11` lines. Keys for the scripted runs: a move in the
+second slot is `A,DOWN,A,A`; a spread move in a Double is `A,A` (no target).

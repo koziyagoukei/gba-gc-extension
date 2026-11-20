@@ -2,7 +2,14 @@
 
 Status: **weather implemented in M4-W** (request V15, release 9; the
 implementation, its order and rounding and what changed from this design
-are in [weather](weather.md)). **Terrain is still design only** (M4-T).
+are in [weather](weather.md)). **Terrain implemented in M4-T** (request
+V16, release 10; see [terrain](terrain.md)). Corrections to the terrain
+part below from the Frontier build: the Grassy heal is the first
+end-of-turn block (before Shed Skin and the status damage), the terrain
+counts down after the status damage (it heals on its last turn), the
+Earthquake halving checks that the target is not semi-invulnerable (not
+that it is grounded), and Psychic Terrain is checked per target after
+semi-invulnerability and before Protect.
 The field state below is implemented as `Battle.field` with one
 `FieldEffect` for the weather; the request block became the V15 field
 rules, the proposed hook kinds became V15 move effects, hooks, predicates
@@ -93,7 +100,7 @@ a field change. `bc_field_end_turn` counts down and emits `EV_FIELD_END`.
 | Duration | 5 turns (Terrain Extender 8: M4-B); a new terrain replaces the old one; the same terrain fails |
 | Grounded | not Flying type, not Levitate (and later Air Balloon, Magnet Rise); one shared `bc_grounded(b, pos)` used by every terrain effect and by Ground moves |
 | Electric | grounded Pokemon cannot fall asleep (also blocks Yawn later); Electric moves of grounded users x1.3 (Gen 8+) or x1.5 |
-| Grassy | grounded Pokemon heal 1/16 at the end of turn; Grass moves x1.3/x1.5; Earthquake, Bulldoze, Magnitude halved against grounded targets |
+| Grassy | grounded Pokemon heal 1/16 at the end of turn; Grass moves x1.3/x1.5; Earthquake, Bulldoze, Magnitude halved against targets that are not semi-invulnerable (M4-T: grounded is not checked by the build) |
 | Misty | grounded Pokemon cannot get a major status or confusion; Dragon moves against grounded targets x0.5 |
 | Psychic | priority moves fail against grounded targets (in the Protect/target-failure step); Psychic moves x1.3/x1.5 |
 | Status prevention | inside the status handlers, at the effect's own unit, like the M4-A status immunity hooks |
@@ -105,9 +112,9 @@ a field change. `bc_field_end_turn` counts down and emits `EV_FIELD_END`.
 - Entry setters run in the entry-ability step, in speed order (the same
   order the leads use now).
 - End of turn: the weather countdown first (as implemented in M4-W), then
-  the weather residual, then the existing status residuals, then terrain
-  healing, then end-of-turn abilities, then the terrain countdown, following
-  the reference's end-of-turn blocks.
+  the weather residual, then per Pokemon the terrain heal and Shed Skin,
+  then the status residuals, then the terrain countdown, then end-of-turn
+  abilities (M4-T, as the reference's end-of-turn blocks).
 - Damage and accuracy modifiers are per hit / per target, like the
   existing ability modifiers.
 

@@ -3,8 +3,8 @@
 Release 9 (`m4w-dev`), branches `milestone4w` and Frontier `frontier-gc-m4w`.
 Built on the V14 shared modifiers ([modifiers](modifiers.md)); V1–V14
 requests keep their meaning byte for byte. The design of record before this
-milestone was [weather-terrain](weather-terrain.md); terrain (M4-T) is still
-design only.
+milestone was [weather-terrain](weather-terrain.md); terrain came in M4-T
+([terrain](terrain.md), request V16).
 
 ## 1. Check of the design against V14 and Expansion
 
