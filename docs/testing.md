@@ -253,3 +253,28 @@ same seed, L48 = L47 under strict item rules: refused on the GBA, L49 = L43
 with the Gen 3 type item records, same seed, L50 Klutz: every item off). The
 companion logs the items as `PH12` lines. The debug menu list holds up to 56
 entries (`DEBUG_MAX_MENU_ITEMS`).
+
+## M4-B1a (release 12, [items](items.md) section 10)
+
+Native: `battle_test.c` adds `test_v18_wire` (the `BITEM_HP` record, every
+byte checked, V17 refuses it, the V18 layout is V17's), `test_v18_init`
+(in-memory validation, all-or-nothing normalisation with no end-of-turn item,
+strict), `test_v18_end_turn_reference` (26 cases, the table of the Expansion
+reference), `test_v18_state` (`item_from`, timings), `test_v18_positions`
+(switch, Shift, Rotation), `test_v18_versions` (the V17 tie order kept) and
+`test_v18_formats` (240 random battles with Leftovers and Black Sludge).
+
+Expansion reference (Frontier branch `frontier-gc-m4b1a`):
+
+```sh
+make check TESTS="GC V18 reference"
+```
+
+Trace: 12 to 17 are unchanged and compare with M4-B0 (`battle_trace 17`
+total `203feab5`).
+
+Dolphin: Utilities -> GC Ability Lab... L51-L57 are V18 (L51 Single, L52
+Double with Grassy Surge and a Black Sludge faint, L53 Triple, L54 Rotation,
+L55 = L51 with Life Orb: every item off, same seed, L56 = L55 under strict
+item rules: refused on the GBA, L57 Magic Guard with Black Sludge: every item
+off). The debug menu list holds up to 64 entries (`DEBUG_MAX_MENU_ITEMS`).

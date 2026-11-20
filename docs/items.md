@@ -1,6 +1,8 @@
-# Held items (M4-B0, request V17)
+# Held items (M4-B0 request V17, M4-B1a request V18)
 
-Release 11 (`m4b0-dev`), branches `milestone4b0` and Frontier `frontier-gc-m4b0`.
+Release 11 (`m4b0-dev`), branches `milestone4b0` and Frontier `frontier-gc-m4b0`;
+M4-B1a (end-of-turn Leftovers and Black Sludge, request V18) is release 12
+(`m4b1a-dev`), branches `milestone4b1a` and `frontier-gc-m4b1a`: section 10.
 Built on the V14 shared modifiers ([modifiers](modifiers.md)), the V15
 weather ([weather](weather.md)) and the V16 terrain ([terrain](terrain.md));
 V1–V16 requests keep their meaning byte for byte. M4-B0 brings the item
@@ -91,8 +93,8 @@ Pokémon).
 
 Everything else is UNSUPPORTED (the default), among them berries, Choice
 items, Life Orb, Expert Belt, Metronome, Eviolite, Assault Vest, species
-items, plates, memories, drives, gems, Focus Sash / Band, Leftovers, Black
-Sludge, Rocky Helmet, Weakness Policy, Air Balloon, Iron Ball, Utility
+items, plates, memories, drives, gems, Focus Sash / Band, Leftovers and Black
+Sludge (in V17; V18 runs them, section 10), Rocky Helmet, Weakness Policy, Air Balloon, Iron Ball, Utility
 Umbrella, Safety Goggles, terrain seeds, herbs, Red Card, Eject Button / Pack,
 Quick Claw, Lagging Tail, lenses, King's Rock, Mega Stones, Z-Crystals, orbs,
 the e-Reader Enigma Berry, and the speed items (Macho Brace, power items:
@@ -182,9 +184,194 @@ stays the item's.
 
 | Stage | Content | What it needs |
 |---|---|---|
-| B1a | non-consuming end-of-turn items (Leftovers, Black Sludge) | an end-of-turn item step after Shed Skin; Magic Guard and Heal Block stay item abilities / unsupported moves |
+| B1a | non-consuming end-of-turn items (Leftovers, Black Sludge) | **done in M4-B1a** (request V18, section 10) |
 | B1b | consumption, HP and status berries, Focus Sash | the consumed state on the Battler, Pickup reclassified, Unnerve, re-evaluation within multi-hit moves |
 | B1c | after-move items (Life Orb, Rocky Helmet, Weakness Policy, Expert Belt) | a move-end order table outside `strike()`, an effectiveness predicate |
 | B1d | action limits (Choice items, Assault Vest) | legal-action re-evaluation for the GBA prompts and the AI |
 | B2 | item changes (Knock Off, Trick, Thief, Magician, Pickpocket) | `item_from` changes; holder-independent definitions already hold |
 | Result | persisting consumed items | only once a roster battle may apply its result (the GC refuses that today) and berries are consumed; the nonce rule stays |
+
+## 10. M4-B1a: end-of-turn items (request V18)
+
+Release 12 (`m4b1a-dev`), branches `milestone4b1a` and Frontier
+`frontier-gc-m4b1a`, built on M4-B0. V1–V17 keep their bytes, operations,
+events and behaviour (10.6).
+
+### 10.1 Check against Expansion
+
+Read in this Frontier build: `battle_end_turn.c` (`sEndTurnEffectHandlers`,
+`HandleEndTurnFirstEventBlock`, `DoEndTurnEffects`, `HandleEndTurnOrder` with
+`SortBattlersBySpeed`), `battle_hold_effects.c` (`ItemBattleEffects`,
+`TryLeftovers`, `TryBlackSludgeDamage`), `battle.h` (`SetHealAmount`,
+`SetPassiveDamageAmount`), `GetBattlerHoldEffectInternal`, the battle scripts
+`BattleScript_ItemHealHP_Ret` / `BattleScript_ItemHurtWithAnim`, and the
+build's own tests `test/battle/hold_effect/leftovers.c`, `black_sludge.c` and
+`test/battle/end_turn_effects.c`.
+
+| Point | This build |
+|---|---|
+| When | `ENDTURN_FIRST_EVENT_BLOCK`, Pokémon by Pokémon in end-of-turn speed order: Grassy Terrain heal → Healer / Hydration / Shed Skin → `FIRST_EVENT_BLOCK_HEAL_ITEMS` (Leftovers, Black Sludge), then the next Pokémon. Before it: the weather countdown and weather damage (Rain Dish, Dry Skin ...). After it: Aqua Ring, Ingrain, Leech Seed, poison, burn ... the terrain countdown, Speed Boost |
+| Order | `SortBattlersBySpeed` at the start of the end of turn: fastest first, a stable insertion sort, so equal speeds keep the battler id order (player left, foe left, player right, foe right) |
+| Leftovers | `TryLeftovers`: only below max HP and not under Heal Block (Gen 5+); `GetNonDynamaxMaxHP / 16`, at least 1 (`SetHealAmount`); the heal stops at max HP |
+| Black Sludge | `IS_BATTLER_OF_TYPE(POISON)` on the holder's types now: `TryLeftovers`; else `TryBlackSludgeDamage`: `/ 8`, at least 1, not with Magic Guard; damage at full HP too; `tryfaintmon` right after (the holder can faint) |
+| A faint | the fainted Pokémon is skipped by every later step; the others go on; replacements come at the end of the turn |
+| Turned off | `GetBattlerHoldEffectInternal`: Klutz, Embargo, Magic Room |
+
+None of this contradicts the B1a plan. Heal Block, Embargo, Magic Room,
+Soak, Forest's Curse, Trick-or-Treat, Reflect Type, Conversion, Roost,
+Burn Up, Psychic Noise, Trick, Knock Off ... are unsupported moves (the
+exporter's effect whitelist): they are never run, so their states never
+exist in a GC battle. Magic Guard, Color Change, Protean, Libero, Imposter,
+Trace, Power Construct ... are UNSUPPORTED abilities that the core would
+ignore, so such a battle is normalised instead (10.4).
+
+### 10.2 Request V18: `BITEM_HP`
+
+V18 is V17's layout plus one item record kind (no new rule, no new block,
+no size change: the largest request stays 3,165 B).
+
+| Byte | `BITEM_HP` |
+|---|---|
+| 0 | kind 4 |
+| 1 | timing (`BITIME_END_TURN` = 1; the only one in V18) |
+| 2 | operation `BIHP_HEAL` (1) / `BIHP_DAMAGE` (2) |
+| 3 | max HP divisor (≥ 1): the amount is max HP / divisor, at least 1 |
+| 4–5 | a holder predicate: `BPRED_NONE` (argument 0) or `BPRED_HAS_TYPE` (a type below the type count) |
+| 6 | 0 (reserved) |
+| 7 | flags 0 |
+
+At one timing the first HP record whose predicate holds is the item's
+effect there; the later ones are its alternatives. A heal at full HP is
+that effect doing nothing (no event). Leftovers is one record (heal 16);
+Black Sludge two (heal 16 if Poison, else damage 8). The predicate reads the
+holder's current types, so the definition stays right if the item changes
+hands. The decoder and `battle_item_valid` refuse an HP record in V17, any
+other timing, operation or predicate, a zero divisor, an out-of-range type,
+an argument without a predicate, the reserved byte and flags;
+`bc_items_check` applies the same check to a V18 request built in memory
+(`BI_CONDITIONS`).
+
+### 10.3 GC core
+
+- `bc_item_hp(battle, position, timing, log)` (`battle_items.c`) runs the
+  records of the item the Pokémon holds now (`Battler.item_from` through
+  `bc_item`, so nothing runs under `RULE_IGNORE_ITEMS`). The heal stops at
+  max HP and emits `EV_ITEM_HEAL`; the damage goes through the core's own
+  `bc_apply_damage` (`EV_ITEM_DAMAGE`, then `EV_FAINT`). The event's `item`
+  (sharing the storage of `ability`, so `BattleEvent` keeps its 24 bytes) is
+  the item id, for the name only.
+- A timing is one fixed point of the turn sequence: `resolve_end_of_turn`
+  calls `bc_item_hp(..., BITIME_END_TURN)` for each Pokémon right after its
+  terrain heal and its Shed Skin. Later stages add timings (after a hit, an
+  HP threshold ...) as calls at their own points, never as one pass at the
+  end of the turn.
+- V18 end-of-turn order: equal speeds keep the reference's battler order
+  (the sides alternate by slot number, also when a slot is empty). V17 and
+  earlier keep the player's Pokémon first (unchanged).
+- The heal and the damage are not modifiers: the modifier chain computes
+  factors; the HP record changes HP.
+
+Presentation: "Restored HP with its held item." / "Hurt by its held item!"
+with the holder's name and the item's game-rendered label (`LABEL_ITEM`,
+fetched for items with an HP record unless every item is off), then the HP
+bar. The companion logs the records (`PH12 item id=… record0 hp timing=1
+heal 1/16 pred=06:04`).
+
+### 10.4 Exporter, normalisation, strict mode
+
+`ResolveItem` (V18 rosters only): Leftovers → heal 16; Black Sludge → heal 16
+if `TYPE_POISON`, else damage 8. The divisors are this build's code
+(`TryLeftovers`, `TryBlackSludgeDamage`), checked by the Expansion reference.
+
+The M4-B0 rules stay: all or nothing (`RULE_IGNORE_ITEMS`, shown on the GBA
+command screen "ALL ITEMS OFF: …" and on the GC "ITEMS OFF" plus the
+battle-start notice), strict refusal ("Strict items: not simulated: …",
+`FrontierGcBattle_SetStrictItems`), the item ability list. New in V18
+(`HpItemAbility`, read from the records): a holder of an HP record whose own
+ability changes what the record does turns every item off (strict: refused).
+
+| Ability | Why | For |
+|---|---|---|
+| Magic Guard | stops `TryBlackSludgeDamage` | a damage record |
+| Color Change, Protean, Libero, Imposter | change the holder's types | a type predicate |
+| Power Construct, Tera Shift | change the max HP | any HP record |
+| Trace, Receiver, Power of Alchemy, Wandering Spirit | can give the holder one of the above | a damage record or a type predicate |
+
+Klutz anywhere already turned every item off (M4-B0). A V17 roster still
+sends Leftovers and Black Sludge as UNSUPPORTED (L47, L48 unchanged).
+
+### 10.5 Order (V18)
+
+| Step | Content |
+|---|---|
+| 1 | weather countdown, then each Pokémon's weather residual (damage, Rain Dish / Dry Skin / Ice Body) |
+| 2 | Pokémon by Pokémon: Grassy Terrain heal → Shed Skin → **its item (Leftovers / Black Sludge)** |
+| 3 | poison / bad poison, then burn, then frostbite (each group in speed order) |
+| 4 | terrain countdown |
+| 5 | Speed Boost |
+
+### 10.6 Verification
+
+| Check | Result |
+|---|---|
+| Native (-O2, ASan + UBSan, presentation test) | all suites pass. New: `test_v18_wire`, `test_v18_init`, `test_v18_end_turn_reference` (26 cases), `test_v18_state` (`item_from` pointing at another entry's Black Sludge; a record only at its own timing), `test_v18_positions` (switch, Shift, Rotation), `test_v18_versions` (V17 tie order kept; slot gaps), `test_v18_formats` (240 random battles in four formats run twice: identical events, state and RNG; the 80 normalised ones event for event the battle without items; 2,810 item heals, 848 item damages, 109 Black Sludge faints; at most 29 events in a turn) |
+| Expansion reference (`make check TESTS="GC V18 reference"`, `test/battle/gc_end_turn_item_reference.c`) | 22 tests, all PASS on the first run with the same numbers and order as the native cases: /16 and /8 rounded down, at least 1, HP 1, full HP, cap at max HP, Poison / other types, faint, Grassy then item (heal and damage), Shed Skin then item, Leftovers before poison / bad poison / burn, sandstorm and hail before Leftovers, Rain Dish before Leftovers, Speed Boost after, speed order, equal speeds in battler order, Pokémon by Pokémon in a Double, a faint mid-sequence, a switch-in, Magic Guard stopping the damage (why it is normalised). V14–V17 references: 48 PASS, unchanged |
+| Negative controls (temporary, not committed) | seven tests stating a wrong order or amount (Leftovers before Grassy, /8, rounded up, poison before Leftovers, Black Sludge hurting a Poison type, the V17 tie order, every item after every terrain heal): all 7 FAIL against the build |
+| Mutations | 50 changes to the V18 code (HP step, timing, predicate, amounts, cap, event, order position, tie order, validation, wire, presentation): 46 caught in the first run; 4 survived: 2 were test gaps (the timing check, the event item through `item_from`), closed by `test_v18_state` and then caught; 2 are equivalent (`op != HEAL` = `op == DAMAGE` with two valid operations; the order's fainted check, kept from V17, is repeated by every later step). The M4-B0, M4-T and M4-W sets on the new tree: 122 caught, 0 survived; the 3 duration mutations whose text changed in M4-B0 were re-targeted and caught; 3 no longer apply (code removed in M4-B0) |
+| Traces V12–V17 (1,200 battles each) | identical to M4-B0 (V15 / V16 `efa20edd`, V17 `203feab5`) |
+| Frontier `make check` | 6,876 tests; the 6,854 (name, status) pairs of the M4-B0 run unchanged, the 22 new V18 tests PASS; FAILED 2,455 in both (pre-existing) |
+| Dolphin L51–L57 (V18) | L51 Single: sandstorm damage, then Tyranitar's Black Sludge damage and Snorlax's Leftovers in speed order. L52 Double (Grassy Surge): an airborne Aerodactyl faints to Black Sludge; then Pokémon by Pokémon terrain heal + item; a capped Black Sludge heal (+3 to 120); Leftovers silent once the terrain fills the HP; burn last. L53 Triple: sandstorm, Black Sludge damage, two Leftovers, Leftovers before poison. L54 Rotation: only the front Pokémon; Rain Dish then Leftovers; Black Sludge damage and heal across rotations. L55 = L51 with Life Orb: the notice first, no item event (same seed). L56 refused on the GBA ("Strict items: not simulated: いのちのたま"). L57 Magic Guard with Black Sludge: every item off ("ALL ITEMS OFF: マジックガード" on the GBA, "ITEMS OFF" on the GC). All six battles replay natively with 0 mismatches |
+| Display | GC, in event order: "Hurt by its held item! プテラ くろいヘドロ", "Fainted!", "Healed by the grassy terrain.", "Restored HP with its held item. ニドキング くろいヘドロ", …, "Restored HP with its held item. ドクロッグ たべのこし", "Status damage! BRN" |
+| Dolphin L01–L50 | 48 of 48 battles line for line equal to M4-B0 (request bytes, events, actions, results); L42 and L48 refused on the GBA as before; 52 of 52 replayable Lab logs replay natively with 0 mismatches |
+| Debug menu V1–V12, Cube Tester | every version reached a result; Cube Tester four formats 925 / 1,717 / 1,701 / 1,701 B as in M4-B0 |
+| Result contract (V18) | GC Z right after the result: "result already final (nonce=cf5206a5); not restarting the battle"; Z before the result: the same battle restarts with the same nonce, nothing applied |
+| Save | Frontier save SHA-256 `AFF1EB7B…` before and after; the profile restored |
+| JoyBus (79 sessions) | GC 192,948 sent, CRC 0, 147 retries, 15 timeouts, all recovered; GBA 194,561 requests, CRC 0, overflows 0; the 2 link losses are the deliberate Z cuts |
+
+### 10.7 Memory, link and time
+
+| Item | M4-B0 | M4-B1a |
+|---|---:|---:|
+| `BattleRequest` / `Battle` / `EventLog` (x86-64 host) | 6,344 / 4,280 / 47,812 B | unchanged |
+| Request buffer `BATTLE_REQUEST_MAX_BYTES(6, 21)` | 3,165 B | 3,165 B |
+| ELF text / data / bss | 280,662 / 69,668 / 3,002,528 | 283,310 / 70,276 / 3,002,528 |
+| DOL | 350,624 B | 353,888 B |
+| Frontier ROM used | 26,363,796 B | 26,365,896 B |
+| EWRAM (`.ewram.sbss`); GBA request heap | 232,048 B; `BattleRequest` | unchanged |
+| A V18 request | — | V17 + 8 B per HP record (L51 1,485 B, L52 1,845, L53 1,821, L54 1,837) |
+| Link | — | two item labels (Leftovers, Black Sludge) once per session: 455 wire bytes, about 0.2 s |
+| GC core per turn (Dolphin peak) | 309 µs | 310 µs overall (L45, as in M4-B0); V18 peak 250 µs (L53 Triple, 24 events) |
+| Events per turn | — | at most 2 more per active Pokémon (item, faint); 29 in the worst random turn; the log holds 1,992 |
+
+### 10.8 Frontier coverage (auxiliary)
+
+Every set of `gBattleFrontierMons` (2,040 sets, this build's
+`src/data/battle_frontier/battle_frontier_mons.h`) classified with the
+exporter's rules (`ResolveItem`, the item abilities, `HpItemAbility`, a
+script that mirrors them); a set counts as usable if its own item takes part
+and its ability does not turn items off. A battle needs all its Pokémon to
+be usable; the player's party is not in this data, so no battle-level rate
+is given. Facility battles are not exported to the GC yet.
+
+| Class | Sets | Share |
+|---|---:|---:|
+| B0 records (type items, Muscle Band / Wise Glasses, rocks, Terrain Extender) | 23 | 1.1% |
+| no item, or no item effect | 0 | 0% |
+| B1a (Leftovers 258, Black Sludge 16) | 274 | 13.4% |
+| unsupported item | 1,732 | 84.9% |
+| item ability (Frisk 3, Power Construct 3, Sticky Hold 2, Magician, Unnerve, As One) | 11 | 0.5% |
+
+Unsupported items, most common: Z-Crystals 568, Life Orb 142, Choice Scarf
+119, form items (Mega Stones and the like) 114, Focus Sash 113, Assault
+Vest 95, berries 81, Heavy-Duty Boots 79, Rocky Helmet 73, Choice Band 62,
+Choice Specs 52, Eviolite 30.
+
+### 10.9 Known limits
+
+- Equal end-of-turn speeds follow the reference in V18 only; V17 and earlier
+  keep their order (no earlier version changes).
+- Shed Skin's chance is compared with the reference with the chance forced
+  (`WITH_RNG`); the GC rolls its own RNG.
+- The GBA screen shows no item activation (the GC does).
+- The abilities of 10.4 are not simulated; such battles run with every item
+  off.

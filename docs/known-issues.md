@@ -202,3 +202,19 @@
   `RULE_IGNORE_ITEMS` (unchanged; the GBA always sends the rule there).
 - No 1,200-battle V17 trace corpus (the 240 random V17 battles of the native
   suite and the Lab replays stand in for it).
+
+## M4-B1a (release 12, development only)
+
+- End-of-turn items are Leftovers and Black Sludge only. Every other item of
+  M4-B0's unsupported list still turns every item off (or, strict, refuses
+  the battle). About 15% of the Battle Frontier sets now hold an item that
+  takes part (items section 10.8); Z-Crystals, Life Orb, Choice items, Focus
+  Sash and berries are the next large groups.
+- A holder of Leftovers or Black Sludge with Magic Guard, a type-changing
+  ability (Color Change, Protean, Libero, Imposter), a max-HP-changing one
+  (Power Construct, Tera Shift) or an ability copier (Trace, Receiver, Power
+  of Alchemy, Wandering Spirit) turns every item off: the GC does not run
+  those abilities.
+- V18 orders equal end-of-turn speeds as the reference does (battler order);
+  V17 and earlier keep the player's Pokemon first.
+- The GBA shows no item activation; the GC shows it with the item's name.
