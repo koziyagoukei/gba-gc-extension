@@ -292,3 +292,13 @@ reference tests, FAILED 2,455 both); the failures are the existing ones
   member; M4-W has to add it as a stage of the core, not as a predicate.
 - The confusion self-hit keeps its own formula in every version.
 - Hex does not treat Comatose as sleep; Facade stays unsupported.
+
+## V17: truncated factors (M4-B0, [items](items.md))
+
+Stage bit 6 (`BMOD_FLOORED`) is defined from request V17 for move, ability
+and item records on the fixed-point stages (POWER, ATTACK, DEFENSE, FINAL,
+WEATHER): the percent becomes its 4.12 factor by truncation
+(`PercentToUQ4_12_Floored`, `UQ_4_12_FLOORED`: 110 -> 4505) instead of the
+nearest value (4506). Before V17 the bit stays reserved and is refused; the
+field records keep their V15/V16 checks. V17 adds the attacker's item
+records (`BMSRC_ITEM`) at the end of the POWER chain, after both abilities.

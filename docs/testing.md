@@ -224,3 +224,32 @@ Psychic, L41 = L38 with the Gen 7 x1.5 terrain records and the same seed,
 L42 strict refusal of Rising Voltage on the GBA). The companion logs the
 terrain rules as `PH11` lines. Keys for the scripted runs: a move in the
 second slot is `A,DOWN,A,A`; a spread move in a Double is `A,A` (no target).
+
+## M4-B0 (release 11, [items](items.md))
+
+Native: `battle_test.c` adds `test_v17_wire` (blocks, validation, V16
+unchanged byte for byte, stage bit 6 gates, malformed bytes), `test_v17_init`
+(V16 `BI_ITEMS`, `BI_UNSUPPORTED_ITEM`, normalisation and its notice, strict
+`BI_ITEMS_NORMALIZED`, reserves, the item state model), `test_v17_power`
+(type items, truncated Muscle Band / Wise Glasses, order after the abilities,
+another GBA definition, Struggle, normalised), `test_v17_field_turns` (rocks,
+Terrain Extender, surges, Drizzle, no-end / KEEP / start rules, same weather,
+normalised), `test_v17_formats` (240 random battles with items in four
+formats run twice; every normalised one is event for event the battle
+without items) and `test_v17_expansion_reference`.
+
+Expansion reference (Frontier branch `frontier-gc-m4b0`):
+
+```sh
+make check TESTS="GC V17 reference"
+```
+
+Trace: 12 to 16 are unchanged and compare with M4-T (`battle_trace 15` and
+`16` total `efa20edd`).
+
+Dolphin: Utilities -> GC Ability Lab... L43-L50 are V17 (L43 Single, L44
+Double, L45 Triple, L46 Rotation, L47 = L43 with Leftovers: every item off,
+same seed, L48 = L47 under strict item rules: refused on the GBA, L49 = L43
+with the Gen 3 type item records, same seed, L50 Klutz: every item off). The
+companion logs the items as `PH12` lines. The debug menu list holds up to 56
+entries (`DEBUG_MAX_MENU_ITEMS`).

@@ -183,3 +183,22 @@
 - During the M4-T Dolphin runs, 10 of 65 sessions had one request time out
   and recover on a retry (no link loss other than the deliberate cut); the
   JoyBus first-word loss is still unexplained.
+
+## M4-B0 (release 11, development only)
+
+- Items only as listed in [items](items.md): power items and durations. A
+  battle with any other item, or with an item ability (Klutz, Pickpocket,
+  Magician, Frisk, Pickup ...), runs with every item off (shown on the GBA
+  and the GC) or, under strict item rules, does not start. Most Battle
+  Frontier sets hold items of later stages (Leftovers, berries, Choice items,
+  Focus Sash), so for now they run normalised.
+- The speed items (Macho Brace, power items) were left for later by decision;
+  they are UNSUPPORTED.
+- The GBA's pre-battle "items off" lines are hidden behind the connector's
+  transfer screen; the notice the player sees is the GBA command screen's
+  last line ("ALL ITEMS OFF: <item or ability>") from the first prompt on,
+  and the GC's battle-start message and "ITEMS OFF" marker.
+- V1-V15 requests still ignore `held_item` without checking
+  `RULE_IGNORE_ITEMS` (unchanged; the GBA always sends the rule there).
+- No 1,200-battle V17 trace corpus (the 240 random V17 battles of the native
+  suite and the Lab replays stand in for it).

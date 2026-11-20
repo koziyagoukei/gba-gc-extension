@@ -82,7 +82,8 @@ kind 1–4, arg2 turns) and `BABIL_UNGROUNDED` (36, no arguments), predicates
 `BPRED_TERRAIN` (7, a kind mask, no subject), `BPRED_ON_TERRAIN` (8, mask,
 subject grounded and not semi-invulnerable) and `BPRED_EXPOSED` (9, subject
 not semi-invulnerable, no argument), and the POWER stage for field records.
-No new rule bit. A V16 request must carry `RULE_IGNORE_ITEMS` (the grounded
+No new rule bit. A V16 request must carry `RULE_IGNORE_ITEMS` (V17 carries
+the items instead, [items](items.md); the grounded
 rule has no item input); without it `battle_init` refuses the battle
 (`BI_ITEMS`). APP V16 keeps the V6 action layout.
 
