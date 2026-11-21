@@ -218,3 +218,19 @@
 - V18 orders equal end-of-turn speeds as the reference does (battler order);
   V17 and earlier keep the player's Pokemon first.
 - The GBA shows no item activation; the GC shows it with the item's name.
+
+## M4-B1a+ (release 12 kept, development only)
+
+- Audited Z-Crystals (34) and Mega Stones (92) are held with no effect only
+  in a V18 battle without gimmicks in which no Pokémon changes form by itself
+  or knows a move that reads held items (Knock Off, Poltergeist ...);
+  otherwise they still turn every item off (strict: refuse). Ultranecrozium Z
+  and the Primal orbs are never accepted.
+- The removal and transfer properties of these items are not sent yet; no
+  move that could use them is run.
+- Sunsteel Strike, Moongeist Beam, Sacred Sword, Chip Away, Darkest Lariat
+  and the Shadow moves are unsupported moves in every version now (they were
+  run as plain hits before).
+- About 42% of the Battle Frontier sets now hold an item that takes part,
+  5% with every move and the ability simulated too (items 11.9); Life Orb,
+  Choice items, Focus Sash, Assault Vest and berries are the next groups.

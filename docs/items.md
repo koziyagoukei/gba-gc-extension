@@ -1,8 +1,11 @@
-# Held items (M4-B0 request V17, M4-B1a request V18)
+# Held items (M4-B0 request V17, M4-B1a and M4-B1a+ request V18)
 
 Release 11 (`m4b0-dev`), branches `milestone4b0` and Frontier `frontier-gc-m4b0`;
 M4-B1a (end-of-turn Leftovers and Black Sludge, request V18) is release 12
 (`m4b1a-dev`), branches `milestone4b1a` and `frontier-gc-m4b1a`: section 10.
+M4-B1a+ (audited Z-Crystals and Mega Stones held with no effect in battles
+without gimmicks) keeps release 12 and V18, branches `milestone4b1aplus` and
+`frontier-gc-m4b1aplus`: section 11.
 Built on the V14 shared modifiers ([modifiers](modifiers.md)), the V15
 weather ([weather](weather.md)) and the V16 terrain ([terrain](terrain.md));
 V1–V16 requests keep their meaning byte for byte. M4-B0 brings the item
@@ -375,3 +378,212 @@ Choice Specs 52, Eviolite 30.
 - The GBA screen shows no item activation (the GC does).
 - The abilities of 10.4 are not simulated; such battles run with every item
   off.
+
+## 11. M4-B1a+: Z-Crystals and Mega Stones held with no effect (request V18)
+
+Exporter-only stage on Frontier branch `frontier-gc-m4b1aplus`; the GC side
+(branch `milestone4b1aplus`) changes tests and documents only. Release 12 and
+request / APP V18 stay: the `companion.dol` built from this branch with
+`./build.ps1 -Release 12` is byte for byte the M4-B1a one (SHA-256
+`891B9397…`, 353,888 B). No gimmick is implemented: no Mega Evolution, Z-Move,
+Ultra Burst or Primal Reversion, no form change in the GC, no item moves.
+
+### 11.1 The rule
+
+A held Z-Crystal or Mega Stone has a battle effect only through its gimmick.
+A GC request always has `RULE_NO_GIMMICKS` and the GC runs no gimmick, so an
+audited one is sent as **held, with no effect**, in the V17 / V18 block the
+GC already reads:
+
+| Field | Value |
+|---|---|
+| `PokemonRecord.held_item` | the item's id (kept) |
+| `BattleItem.source` | the same id |
+| `BattleItem.cls` | `BICLASS_NONE` |
+| `BattleItem.count` | 0 |
+
+`BICLASS_NONE` with a non-zero id is a held item, not an empty hand
+(`battle_held_item` returns the id). A later stage that adds Knock Off, Trick,
+Thief, Poltergeist or Acrobatics must read the id and its removal rules,
+never treat it as no item. No class, record kind or protocol bit is added;
+the removal properties themselves come before M4-B2.
+
+`AcceptGimmickItems` decides once the battle's rules are final (the strict
+item rule included) and before `CheckItems`. Every candidate of the battle
+becomes NONE only if all of these hold; otherwise every one stays
+UNSUPPORTED, so `CheckItems` turns every item off (strict: refuses), exactly
+as for any unsupported item:
+
+| # | Condition | Check |
+|---|---|---|
+| 1 | request V18 | `r->version` (V17 and older: `OFF_VERSION`) |
+| 2, 3 | gimmicks forbidden and never run | `RULE_NO_GIMMICKS` (`OFF_RULES`); the GC has no gimmick code; Z-Moves and Max Moves are unsupported moves |
+| 4 | no automatic form change | no Pokémon of either side, bench included, has a form change this build makes by itself in battle: at the battle start, on entry or exit, by HP, weather, status, a move, a hit, the turn end, Battle Bond, or Primal Reversion with its orb held (`ChangesFormByItself`; `OFF_FORM`) |
+| 5, 6 | audited item, safe holder | `GimmickItemCandidate`: on the audited list (11.2), hold effect Z-Crystal / Mega Stone with no parameter; not for a Mega, Primal, Ultra Burst, Gigantamax or Tera form; no Z-Crystal for Arceus; no form change of the holder's species names the item, except Mega Evolution with that Mega Stone |
+| 7 | no move that reads or moves held items | no Pokémon of either side, bench included, knows such a move (Knock Off, Thief / Covet, Trick / Switcheroo, Bestow, Fling, Acrobatics, Poltergeist, Corrosive Gas, Embargo, Magic Room, Recycle, Natural Gift, Judgment / Techno Blast / Multi-Attack, Belch, Stuff Cheeks, Teatime, Bug Bite / Pluck, Incinerate, Z-Moves, Max Moves; `MoveUsesHeldItems`; `OFF_MOVE`). All are unsupported moves the GC never runs, but in this build they see the held item (11.4), so a battle with one is not accepted, supported or not |
+| 8 | moves and abilities | the move-flag rule of 11.3 for every move; item abilities (Klutz, Frisk, Pickpocket …) turn every item off in `CheckItems` as before, accepted gimmick items with them; strict abilities and moves as before |
+| 9 | id kept | `source = held_item`; NONE with an id is not an empty hand (11.1) |
+
+An accepted Z-Crystal never lets another item in: Leftovers and Black Sludge
+beside it act as in M4-B1a; Life Orb beside it turns every item off.
+
+### 11.2 Audited items
+
+All in this build (`src/data/items.h`, `src/data/pokemon/form_change_tables.h`
+with `P_MEGA_EVOLUTIONS` and `P_GEN_9_MEGA_EVOLUTIONS` on), checked by
+`test/battle/gc_gimmick_item_reference.c` against the build's own tables:
+
+| Group | Items | Form changes naming them |
+|---|---|---|
+| Type Z-Crystals (18) | Normalium … Fairium Z | Arceus' Multitype forms (`FORM_CHANGE_ITEM_HOLD`) for the 17 non-Normal ones: refused for Arceus, accepted for any other holder |
+| Signature Z-Crystals (16) | Pikanium, Eevium, Snorlium, Mewnium, Decidium, Incinium, Primarium, Lycanium, Mimikium, Kommonium, Tapunium, Solganium, Lunalium, Marshadium, Aloraichium, Pikashunium Z | none |
+| Mega Stones (92) | every `HOLD_EFFECT_MEGA_STONE` item of this build, Venusaurite … Glimmoranite (Z-A and its DLC included) | only `FORM_CHANGE_BATTLE_MEGA_EVOLUTION_ITEM` (the gimmick), each to its own Mega form(s) |
+
+Left out (UNSUPPORTED as before): Ultranecrozium Z (Ultra Burst), the Red
+and Blue Orbs (Primal Reversion happens by itself on entry), every other
+form item (Rusted Sword / Shield, plates, memories …), and any Z-Crystal or
+Mega Stone added to the game later: the exporter refuses it, and the test
+fails until it is audited.
+
+### 11.3 Moves the exporter no longer sends as plain hits
+
+The move check of condition 8 found moves whose behaviour this build keys to
+move flags the request has no input for. They were sent as supported (run
+with a wrong effect); they are now unsupported (`UnmodelledMoveFlags`,
+`UNSUP_OTHER`, every version and the legacy V1 path; the target-ability flag
+from V11, where abilities take part):
+
+| Flag | Moves | What the GC would miss |
+|---|---|---|
+| `shadowMove` | Shadow Blitz … Shadow Blast and the status Shadow moves | 2× against any non-Shadow Pokémon, no STAB, no PP use (they were `TYPE_MYSTERY` hits) |
+| `ignoresTargetAbility` | Sunsteel Strike, Moongeist Beam (Photon Geyser already unsupported) | they ignore Sturdy, Levitate, Thick Fat, Water Absorb … of the target |
+| `ignoresTargetDefenseEvasionStages` | Sacred Sword, Chip Away, Darkest Lariat | they ignore the target's Defense and evasion stages |
+| `ignoreTypeIfFlyingAndUngrounded` | Thousand Arrows (already unsupported by its effect) | it hits Flying types and Levitate |
+| Z-Moves, Max Moves | every one | gimmicks (no Pokémon knows one) |
+
+Not sent and not needed: crit stages (`RULE_NO_CRITICAL_HITS`); punch, bite,
+pulse, sound, ballistic, wind, slicing and dance flags (only abilities and
+items the GC does not run read them); Minimize, Dive, Magic Coat, Snatch,
+Heal Block (unsupported moves). No Lab or debug fixture uses a move of the
+table, so their requests are unchanged (11.7).
+
+### 11.4 Expansion reference
+
+`make check TESTS="GC V18 gimmick"` (part 1 of the test file), all PASS:
+without its gimmick a Z-Crystal (Normalium Z, Snorlium Z) or a Mega Stone
+(Venusaurite) changes nothing (same damage, same species); Mega Evolution and
+Ultra Burst need the gimmick, while the Red Orb turns Groudon Primal by
+itself; Acrobatics is not doubled with a held Z-Crystal or Mega Stone; Knock
+Off removes neither a Z-Crystal nor its user's own Mega Stone and gets no
+×1.5 against them (it does against a Potion); Trick fails with either item
+on either side; Poltergeist hits a holder of either and fails against an
+empty hand; Sunsteel Strike goes through Sturdy; Sacred Sword ignores
++2 Defense.
+
+### 11.5 Exporter tests
+
+`make check TESTS="GC V18 export"` (parts 2–4), through the real exporter
+(`FrontierGcBattle_Test*`, compiled with `TESTING` only):
+
+| Test | Checks |
+|---|---|
+| audited or refused | 34 Z-Crystals and 92 Mega Stones accepted for a plain holder; Ultranecrozium Z and every other item refused; a new unaudited item fails the test |
+| form changes | every form change of every enabled species that names a Z-Crystal, Mega Stone or orb: only Mega Evolution with its own stone, for a non-gimmick form, gives a candidate |
+| Arceus, Necrozma, orbs | Arceus (any form) with a Z-Crystal, Necrozma with Ultranecrozium Z, the orbs, Zacian's Rusted Sword, Mega Venusaur with its stone: refused; Necrozma with Solganium Z, Charizard with Charizardite X: accepted |
+| move flags | the 22 moves of 11.3 unsupported (Single, Double), the legacy V1 path too; Sunsteel Strike unsupported in V11, supported in V10; Tackle, Iron Head, Close Combat supported |
+| item moves | every move of condition 7 (and every Z-Move and Max Move) unsupported |
+| a Z-Crystal beside Leftovers | the V18 request: NONE, id 377 kept in the record and the block, count 0; Leftovers RECORDS; `RULE_NO_GIMMICKS` set, `RULE_IGNORE_ITEMS` not; strict items: starts |
+| rules and version | gimmicks allowed: UNSUPPORTED, every item off, the stone named (strict: refused); V17: UNSUPPORTED; V18 without gimmicks: NONE |
+| no other item let in | beside Life Orb: every item off, Life Orb named (strict: refused); Frisk: every item off by the ability |
+| form changes, either side and bench | Double with three each: accepted; a Castform, or a Xerneas (battle start only), on the opponent's bench: `OFF_FORM`, every item off; without the stone, the same battle is as in M4-B1a |
+| item moves anywhere | an opponent with Knock Off: `OFF_MOVE`, every item off, the Z-Crystal named (strict: refused); without the Z-Crystal, the same battle simulates its Leftovers as in M4-B1a; a bench partner with Poltergeist in a Double: `OFF_MOVE` |
+| holders refused | Arceus-Fire + Firium Z, Necrozma-Dawn Wings + Ultranecrozium Z, Kyogre + Blue Orb, Mega Venusaur + Venusaurite: UNSUPPORTED, every item off |
+| Lab fixtures byte for byte | L01–L57: each request (battle id 0) equal to the M4-B1a export (`FrontierGcBattle_TestSetLegacyExport`); L58–L61 accepted with every ability and move simulated; L62 Life Orb; L63 not built; L64 `OFF_FORM` |
+| debug fixtures byte for byte | V2–V12 rosters × 4 formats × endurance: 88 requests equal to the M4-B1a export |
+
+### 11.6 GC side
+
+`test_v18_gimmick_items` (native): a V18 Double with Snorlium Z (377) and
+Venusaurite (292) as NONE beside Leftovers and Black Sludge. The wire keeps
+class and id; a NONE block naming another id, or carrying a record, is
+refused; `battle_held_item` gives the id (0 for the empty-hand twin), and
+`bc_item` gives no records; the whole battle is event for event, RNG and
+outcome the one with empty hands (13 Leftovers / Black Sludge events).
+Normalised beside Life Orb, `EV_ITEMS_NORMALIZED` counts 4 held (2 with
+empty hands) and 1 unsupported; strict: inert items alone start, with Life
+Orb the battle is refused. The 240 random V18 battles give the M4-B1a
+numbers (2,810 heals, 848 damages, 109 faints).
+
+### 11.7 Verification
+
+| Check | Result |
+|---|---|
+| Native (-O2, ASan + UBSan) | all suites pass, `test_v18_gimmick_items` added; no GC code changed |
+| Failing first | before the exporter change, the 9 exporter tests of 11.5 then written failed, while the 9 Expansion references of 11.4 passed; after it, all pass. The item-move test (condition 7 for unsupported moves, added after the first review) failed on the first rule (`ACCEPTED` instead of `OFF_MOVE`) and passes after the change |
+| Frontier `make check TESTS="GC V1"` | 93 tests (V14–V18 references and the new file), all PASS; `TESTS="GC V18"` 45 PASS on the final tree |
+| Frontier `make check` (before the item-move test) | 6,898 tests: the 6,876 (name, status) pairs of the M4-B1a run unchanged, the 22 new tests PASS; FAILED 2,455 in both (pre-existing) |
+| Mutations (exporter) | 30 changes (candidate checks, audit list, version / rule / form / item-move conditions, the NONE rewrite, its place before `CheckItems`, each move flag, the legacy path): 26 caught in the first run; 4 survived: 2 test gaps (a species whose only automatic change is at the battle start; the legacy V1 move path), closed with Xerneas and roster-0 checks, then caught; 2 equivalent (the hold-effect parameter check: every audited item has none; the Thousand Arrows flag: its effect is already unsupported) |
+| Dolphin L58–L64 (V18) | (on the build before the item-move rule; the L01–L64 requests are byte for byte the same with it, and L58, L59, L62, L64 rerun on the final ROM are line for line equal) L58 Single: Snorlium Z 377 and Venusaurite 292 arrive as `none`; Tyranitar's Leftovers heals 8 a turn; no event for the gimmick items. L59 Double: Charizardite Y, Ampharosite, Gyaradosite, Steelium Z `none`; Snorlax's Leftovers (+11) and Venusaur's Black Sludge heal (+7) each turn. L60 Triple: three Z-Crystals and two Mega Stones `none`; Nidoking's Black Sludge heals. L61 Rotation: Firium Z, Waterium Z, Venusaurite, Blastoisinite `none`; Black Sludge heals only at the front. L62 = L58 with Life Orb, same seed: "NORMALISED", `EV_ITEMS_NORMALIZED` 4 held / 1 unsupported, no item event. L63 refused on the GBA: "Strict items: not simulated: ウルトラネクロZ". L64 Groudon with the Red Orb: Snorlium Z stays unsupported (`OFF_FORM`), every item off |
+| Dolphin L01–L57 | 54 of 54 battles line for line equal to M4-B1a (request bytes and CRC, events, actions, results); L42, L48, L56 refused on the GBA as before |
+| Legacy V1 (debug "GC Battle (show only)") | the same 745-byte request and move classes as M4-B1a; only the random battle id and damage roll differ |
+| Result contract | GC Z right after the result: "result already final (nonce=d20d2291); not restarting the battle" |
+| Save | Frontier save SHA-256 `AFF1EB7B…` before and after; the profile restored |
+| JoyBus (63 sessions) | GC 123,668 sent, CRC 0, 94 retries, 10 timeouts, all recovered; GBA 123,504 requests, CRC 0, overflows 0; 1 link loss, the deliberate Z cut |
+| Not run | Cube Tester in Dolphin (its V12 requests are among the 88 debug fixtures equal byte for byte) |
+
+### 11.8 Memory, link and time
+
+| Item | M4-B1a | M4-B1a+ |
+|---|---:|---:|
+| GC `companion.dol`, structures, request buffer, event log | 353,888 B DOL | the same binary |
+| Frontier ROM used | 26,365,896 B | 26,368,776 B (+2,880: the audit list, the checks, L58–L64) |
+| EWRAM (`.ewram.sbss`) | 232,048 B | unchanged |
+| A request | — | an accepted item is a 4-byte NONE block, the size of the UNSUPPORTED block it replaces (L58 1,445 B; L62 with Life Orb 1,437 B) |
+| Link | — | nothing new (a NONE item has no label and no event) |
+| GC core per turn (Dolphin peak) | 310 µs | 310 µs overall; L58–L64 at most 269 µs, 20 events |
+| Exporter | — | `AcceptGimmickItems` once per battle: at most 6 Pokémon × (126-item list, form table, 4 moves) |
+
+### 11.9 Battle Frontier coverage (measured)
+
+Every `gBattleFrontierMons` set (2,040) as the player's lead in a V18 Single
+against a plain Snorlax (Immunity, Tackle, no item), through the exporter
+(`GC V18 export tally`, 17 chunks summed). These count sets, not facility
+battles (the player's party is not in this data, and facility battles are
+not exported yet). "M4-B1a" is the same run on the M4-B1a exporter.
+
+| Measure | M4-B1a | M4-B1a+ |
+|---|---:|---:|
+| Requests built (else: the lead has no supported move) | 1,996 | 1,996 (97.8%) |
+| Items take part (not normalised) | 295 | 852 (41.8% of 2,040) |
+| Items, the set's ability and all its moves simulated | 9 | 103 (5.0%) |
+| Strict battle (items, abilities, moves) that starts | 9 | 103 (5.0%) |
+| Z-Crystal holders accepted / holding | 0 / 570 | 484 / 570 |
+| Mega Stone holders accepted / holding | 0 / 102 | 90 / 102 |
+
+Why the other 1,144 built requests turn every item off: another unsupported
+item 1,025 (Life Orb, Choice items, Focus Sash, Assault Vest, berries,
+Heavy-Duty Boots, Rocky Helmet …, as in 10.8); an item ability 28 (Frisk and
+the like, now also beside accepted items); a Z-Crystal or Mega Stone kept
+unsupported 91: 62 `OFF_MOVE` (the set knows Knock Off, Poltergeist or another
+move of condition 7), 27 `OFF_FORM` (exactly the 27 holders whose own species
+changes form by itself: Mimikyu, Aegislash, Battle Bond Greninja, Power
+Construct Zygarde, Darmanitan, Cramorant, Eiscue, Morpeko, Wishiwashi,
+Palafin, Cherrim, Shaymin, Meloetta, Xerneas, Zacian, Zamazenta) and 2
+Ultranecrozium Z. 44 sets build no request (the lead has no supported move).
+
+Codex's static estimate (945 sets by item, 87 with moves and abilities)
+counts candidates per set; the figures above are the exporter's own
+judgement of a whole request: the 44 unbuilt sets, the item-move and
+form-change rules and the opponent's side account for the difference.
+
+### 11.10 Known limits
+
+- A battle with any Pokémon that changes form by itself, or that knows a
+  move reading held items, keeps gimmick items off (conservative: the whole
+  battle, not only the holder).
+- Accepted items show nothing on either screen (no effect, no event).
+- The removal and transfer properties of these items are not sent; a stage
+  that adds an item-moving move must add them first (before M4-B2).
+- Sunsteel Strike, Moongeist Beam, Sacred Sword, Chip Away, Darkest Lariat
+  and the Shadow moves are now unsupported in every version (they were run
+  with a wrong effect before).

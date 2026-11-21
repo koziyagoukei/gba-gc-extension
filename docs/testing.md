@@ -278,3 +278,29 @@ Double with Grassy Surge and a Black Sludge faint, L53 Triple, L54 Rotation,
 L55 = L51 with Life Orb: every item off, same seed, L56 = L55 under strict
 item rules: refused on the GBA, L57 Magic Guard with Black Sludge: every item
 off). The debug menu list holds up to 64 entries (`DEBUG_MAX_MENU_ITEMS`).
+
+## M4-B1a+ (release 12 kept, [items](items.md) section 11)
+
+GC: no code change; the release-12 `companion.dol` of this branch is the
+M4-B1a binary byte for byte. Native: `battle_test.c` adds
+`test_v18_gimmick_items` (an audited Z-Crystal / Mega Stone as `BICLASS_NONE`
+with its id: kept on the wire, held, inert, normalised and strict as in
+items 11.6).
+
+Frontier branch `frontier-gc-m4b1aplus`, `test/battle/gc_gimmick_item_reference.c`:
+
+```sh
+make check TESTS="GC V18 gimmick"   # this build's battles (Expansion facts)
+make check TESTS="GC V18 export"    # the exporter: audit, conditions, move flags, fixtures, tally
+```
+
+`GC V18 export tally` prints one `TALLY` line per chunk of 120 Battle
+Frontier sets; add them up for the coverage of items 11.9. The fixture tests
+print `FIXTURE` lines (request CRC now and with the M4-B1a export).
+
+Dolphin: Utilities -> GC Ability Lab... L58-L64 are V18 (L58 Single, L59
+Double, L60 Triple, L61 Rotation with Z-Crystals and Mega Stones beside
+Leftovers / Black Sludge, L62 = L58 with Life Orb: every item off, same seed,
+L63 Ultranecrozium Z under strict item rules: refused on the GBA, L64 the
+Red Orb beside a Z-Crystal: every item off). The Lab list is full at 64
+entries (`DEBUG_MAX_MENU_ITEMS`).
