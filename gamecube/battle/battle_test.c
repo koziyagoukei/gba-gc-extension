@@ -7952,6 +7952,128 @@ static void test_v18_formats(void) {
     printf("v18 formats: %u battles (%u normalised), item heals %u, item damage %u (%u faints), most events %u\n",
            battles, normalised, heals, hurts, faints, most);
 }
+
+// M4-B1a+ (docs/items.md 11): the Frontier exporter now sends an audited
+// Z-Crystal or Mega Stone of a battle without gimmicks as class NONE with
+// the item's id (Snorlium Z 377, Venusaurite 292 in that build). Nothing
+// changed in the core: the same binary keeps the id as the Pokemon's held
+// item (not an empty hand), the item does nothing, the other items work as
+// before, and a normalised battle counts it among the held items.
+#define I_SNORLIUM_Z I_INERT(377)
+#define I_VENUSAURITE I_INERT(292)
+
+static void gimmick_request(BattleRequest *r, bool with_items) {
+    make_end_turn_items(r, BATTLE_FORMAT_DOUBLE);
+    for (unsigned side = 0; side < 2; ++side) add_reserve(r, side);
+    for (unsigned side = 0; side < 2; ++side) {
+        BattleEntry *e = side ? r->opponent : r->player;
+        for (unsigned i = 0; i < (side ? r->opponent_count : r->player_count); ++i) {
+            e[i].record.hp = (uint16_t)(e[i].record.max_hp - 7 - i);
+            set_move(&e[i], 1, 300 + i, ref_move(40, (uint8_t)((side + i) % R_COUNT), BCAT_PHYSICAL), 10);
+        }
+    }
+    hold(&r->player[0], with_items ? I_SNORLIUM_Z : (BattleItem){0});
+    hold(&r->player[1], I_LEFTOVERS18);
+    hold(&r->opponent[0], with_items ? I_VENUSAURITE : (BattleItem){0});
+    hold(&r->opponent[1], I_BLACK_SLUDGE);
+}
+
+// Runs both battles the same way and checks every event is the same; the
+// number of Leftovers / Black Sludge events (the only items that act).
+static unsigned same_battles(Battle *a, EventLog *la, Battle *c, EventLog *lc) {
+    unsigned items = 0;
+    for (unsigned t = 0; t < 30 && a->outcome == OUTCOME_NONE; ++t) {
+        Position pending;
+        while (battle_pending_replacement(a, &pending)) {
+            const uint8_t mask = battle_replacement_mask(a, pending);
+            uint8_t pick = 0;
+            while (!(mask & (1u << pick))) ++pick;
+            assert(battle_replace(a, pending, pick, la) && battle_replace(c, pending, pick, lc));
+        }
+        if (a->outcome != OUTCOME_NONE) break;
+        Action actions[BC_MAX_ACTIONS];
+        unsigned count = 0;
+        for (uint8_t side = 0; side < 2; ++side) {
+            Position actors[BC_MAX_ACTIVE];
+            const unsigned k = battle_collect_actors(a, side, actors);
+            for (unsigned i = 0; i < k; ++i) battle_choose_at(a, actors[i], &actions[count++]);
+        }
+        for (unsigned i = 0; i < count; ++i) {
+            Action dummy;
+            battle_choose_at(c, actions[i].user, &dummy);
+        }
+        battle_run_turn(a, actions, count, la);
+        battle_run_turn(c, actions, count, lc);
+        assert(la->count == lc->count && !memcmp(la->events, lc->events, la->count * sizeof(BattleEvent)));
+        for (unsigned i = 0; i < la->count; ++i)
+            if (la->events[i].kind == EV_ITEM_HEAL || la->events[i].kind == EV_ITEM_DAMAGE) {
+                assert(la->events[i].item == 472 || la->events[i].item == 487);
+                ++items;
+            }
+    }
+    assert(a->outcome == c->outcome && a->rng == c->rng);
+    return items;
+}
+
+static void test_v18_gimmick_items(void) {
+    static BattleRequest r, bare, d;
+    static Battle a, c;
+    static EventLog la, lc;
+    static uint8_t bytes[4096];
+    gimmick_request(&r, true);
+    gimmick_request(&bare, false);
+    // The wire: the id and class come back as sent; a NONE block must name the
+    // record's item and carry no record (V17 rules, unchanged).
+    const uint32_t n = battle_request_encode(&r, bytes, sizeof bytes);
+    assert(n && battle_request_decode(bytes, n, &d));
+    assert(d.player[0].record.held_item == 377 && d.player[0].mon.item.cls == BICLASS_NONE &&
+           d.player[0].mon.item.source == 377 && d.player[0].mon.item.count == 0);
+    assert(d.opponent[0].record.held_item == 292 && d.opponent[0].mon.item.cls == BICLASS_NONE &&
+           d.opponent[0].mon.item.source == 292);
+    assert(battle_item_valid(&I_SNORLIUM_Z, 377, r.type_count, BATTLE_REQUEST_VERSION_END_TURN_ITEMS));
+    assert(battle_item_valid(&I_SNORLIUM_Z, 377, r.type_count, BATTLE_REQUEST_VERSION_ITEMS));
+    assert(!battle_item_valid(&I_SNORLIUM_Z, 0, r.type_count, BATTLE_REQUEST_VERSION_END_TURN_ITEMS));
+    assert(!battle_item_valid(&I_SNORLIUM_Z, 292, r.type_count, BATTLE_REQUEST_VERSION_END_TURN_ITEMS));
+    BattleItem counted = I_SNORLIUM_Z;
+    counted.count = 1;
+    counted.records[0] = hp_record(BIHP_HEAL, 16, BPRED_NONE, 0);
+    assert(!battle_item_valid(&counted, 377, r.type_count, BATTLE_REQUEST_VERSION_END_TURN_ITEMS));
+    // Held, not an empty hand; no item of the core reads it.
+    assert(battle_init(&a, &d, 11) == BI_OK && battle_init(&c, &bare, 11) == BI_OK);
+    assert(battle_held_item(&a.sides[0].battlers[0]) == 377 && battle_held_item(&c.sides[0].battlers[0]) == 0);
+    assert(battle_held_item(&a.sides[1].battlers[0]) == 292 && battle_held_item(&c.sides[1].battlers[0]) == 0);
+    assert(bc_item(&a, &a.sides[0].battlers[0]) == NULL && bc_item(&a, &a.sides[0].battlers[1]) != NULL);
+    // The battle is event for event the one with empty hands; Leftovers and
+    // Black Sludge act in both.
+    battle_begin(&a, &la);
+    battle_begin(&c, &lc);
+    assert(la.count == lc.count && !memcmp(la.events, lc.events, la.count * sizeof(BattleEvent)));
+    const unsigned items = same_battles(&a, &la, &c, &lc);
+    // Strict items: nothing is normalised, so the battle starts.
+    d.rules |= RULE_STRICT_ITEMS;
+    assert(battle_init(&a, &d, 11) == BI_OK);
+    // Normalised (another item not simulated): the inert items count as held,
+    // not as unsupported, and nothing acts.
+    d.rules = (uint16_t)((d.rules & ~RULE_STRICT_ITEMS) | RULE_IGNORE_ITEMS);
+    hold(&d.player[1], I_LIFE_ORB);
+    bare.rules |= RULE_IGNORE_ITEMS;
+    hold(&bare.player[1], I_LIFE_ORB);
+    assert(battle_init(&a, &d, 11) == BI_OK && battle_init(&c, &bare, 11) == BI_OK);
+    battle_begin(&a, &la);
+    battle_begin(&c, &lc);
+    assert(la.events[0].kind == EV_ITEMS_NORMALIZED && la.events[0].amount == 4 && la.events[0].battler == 1);
+    assert(lc.events[0].kind == EV_ITEMS_NORMALIZED && lc.events[0].amount == 2 && lc.events[0].battler == 1);
+    assert(la.count == lc.count && !memcmp(la.events + 1, lc.events + 1, (la.count - 1) * sizeof(BattleEvent)));
+    // Strict and normalised: refused for the Life Orb, as before.
+    d.rules |= RULE_STRICT_ITEMS;
+    assert(battle_init(&a, &d, 11) == BI_ITEMS_NORMALIZED);
+    // Only inert items, normalised under the strict rule: nothing is lost, so it starts.
+    hold(&d.player[1], (BattleItem){0});
+    hold(&d.opponent[1], (BattleItem){0});
+    assert(battle_init(&a, &d, 11) == BI_OK);
+    printf("v18 gimmick items: inert Z-Crystal / Mega Stone held, %u item events as with empty hands\n", items);
+    assert(items > 0);
+}
 #pragma GCC diagnostic pop
 
 int main(void) {
@@ -8075,6 +8197,7 @@ int main(void) {
     test_v18_positions();
     test_v18_versions();
     test_v18_formats();
+    test_v18_gimmick_items();
     puts("battle tests passed");
     return 0;
 }
