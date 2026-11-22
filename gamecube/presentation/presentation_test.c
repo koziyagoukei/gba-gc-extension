@@ -179,5 +179,16 @@ int main(void) {
     assert(cured && unconfused && anim.actor[0][BPOS_LEFT].condition == BST_NONE &&
            !(anim.actor[1][BPOS_RIGHT].volatiles & BVF_CONFUSED));
     assert(anim.message.kind == MSG_ITEM_ENDURE && anim.message.item == 481 && anim.message.subject.slot == BPOS_CENTER);
+    // EV_ITEM_CONSUMED adds nothing: the log without it plays in as many frames.
+    static EventLog bare;
+    bare.count = 0;
+    for (unsigned i = 0; i < consumable.count; ++i)
+        if (consumable.events[i].kind != EV_ITEM_CONSUMED) bare.events[bare.count++] = consumable.events[i];
+    unsigned with = 0, without = 0;
+    animation_play(&anim, triple, &consumable);
+    while (with < 2000 && !animation_tick(&anim, triple)) ++with;
+    animation_play(&anim, triple, &bare);
+    while (without < 2000 && !animation_tick(&anim, triple)) ++without;
+    assert(bare.count == 5 && with > 0 && with < 2000 && with == without);
     puts("presentation-test OK");
 }
