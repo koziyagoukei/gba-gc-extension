@@ -8074,6 +8074,778 @@ static void test_v18_gimmick_items(void) {
     printf("v18 gimmick items: inert Z-Crystal / Mega Stone held, %u item events as with empty hands\n", items);
     assert(items > 0);
 }
+
+// ------------------------------------------------------------- V19 consumable items
+// (docs/items.md section 12). The items as the Frontier exporter resolves
+// them (ids of that build, diagnostic only): Oran / Sitrus Berry an HP record
+// at the HP threshold, the status berries a cure record, Focus Sash an endure
+// record, each used up when it acts.
+
+static BattleItemRecord threshold_heal(uint8_t op, uint8_t amount) {
+    BattleItemRecord x = {.kind = BITEM_HP, .flags = BIREC_CONSUMED};
+    x.hp.timing = BITIME_HP_THRESHOLD;
+    x.hp.op = op;
+    x.hp.divisor = amount;
+    x.hp.pred = (BattlePredicate){BPRED_HP_AT_MOST, 2};
+    return x;
+}
+static BattleItemRecord cure_record(uint8_t status, uint8_t volatiles) {
+    BattleItemRecord x = {.kind = BITEM_CURE, .flags = BIREC_CONSUMED};
+    x.cure.timing = BITIME_STATUS;
+    x.cure.status = status;
+    x.cure.volatiles = volatiles;
+    return x;
+}
+static BattleItemRecord endure_record(void) {
+    BattleItemRecord x = {.kind = BITEM_ENDURE, .flags = BIREC_CONSUMED};
+    x.endure.timing = BITIME_LETHAL_HIT;
+    x.endure.condition = BIEND_FULL_HP;
+    return x;
+}
+#define I_ORAN IHP(520, threshold_heal(BIHP_HEAL_FIXED, 10))
+#define I_SITRUS IHP(523, threshold_heal(BIHP_HEAL, 4))
+#define I_CHERI IHP(514, cure_record(1u << BST_PARALYSIS, 0))
+#define I_CHESTO IHP(515, cure_record(1u << BST_SLEEP, 0))
+#define I_PECHA IHP(516, cure_record(1u << BST_POISON | 1u << BST_TOXIC, 0))
+#define I_RAWST IHP(517, cure_record(1u << BST_BURN, 0))
+#define I_ASPEAR IHP(518, cure_record(1u << BST_FREEZE | 1u << BST_FROSTBITE, 0))
+#define I_PERSIM IHP(521, cure_record(0, BIVOL_CONFUSION))
+#define I_LUM IHP(522, cure_record(0xfe, BIVOL_CONFUSION))
+#define I_SASH IHP(481, endure_record())
+
+static void make_consumable(BattleRequest *r, uint8_t format) {
+    make_end_turn_items(r, format);
+    r->version = BATTLE_REQUEST_VERSION_CONSUMABLE_ITEMS;
+}
+
+static BattleMove v19_status(uint8_t kind) {
+    BattleMove m = status_move(BTARGET_SINGLE, 0);
+    push(&m, fx(BEFF_STATUS, BWHO_TARGET, 0, kind, 0, 0));
+    return m;
+}
+static BattleMove v19_hit(uint16_t power) { return ref_move(power, R_NORMAL, BCAT_PHYSICAL); }
+static BattleMove v19_hit_with(uint16_t power, BattleEffect e) {
+    BattleMove m = v19_hit(power);
+    push(&m, e);
+    return m;
+}
+static BattleMove v19_multi(uint16_t power, uint8_t hits) {
+    BattleMove m = v19_hit(power);
+    m.effects[0] = fx(BEFF_DAMAGE, BWHO_TARGET, 0, hits, 0, hits);
+    return m;
+}
+static BattleMove v19_spread(uint16_t power) {
+    BattleMove m = v19_hit(power);
+    m.target = BTARGET_ALL_FOES;
+    return m;
+}
+
+// One Pokemon: stats, its first move (id 150) and the wait move in slot 1 (id 151).
+static void v19_mon(BattleEntry *e, uint16_t max_hp, uint16_t hp, uint16_t speed, BattleItem item, BattleMove first) {
+    et_mon(e, &(EtMon){max_hp, hp, speed, R_NORMAL, 0, item, R_NO_ABILITY, first});
+    set_move(e, 1, 151, wait_move(), 40);
+}
+
+typedef struct { EventKind kind; uint8_t side, slot; } Ev19;
+#define E19(kind, side, slot) {kind, side, slot}
+static bool v19_kind(EventKind k) {
+    switch (k) {
+    case EV_MOVE_USED: case EV_DAMAGE: case EV_RECOIL: case EV_DRAIN: case EV_SUBSTITUTE: case EV_CONFUSION_HIT:
+    case EV_STATUS: case EV_CONFUSE: case EV_ABILITY: case EV_ABILITY_DAMAGE: case EV_RESIDUAL:
+    case EV_WEATHER_DAMAGE: case EV_ITEM_HEAL: case EV_ITEM_CURE: case EV_ITEM_ENDURE: case EV_ITEM_CONSUMED:
+    case EV_FAINT: case EV_DRAG_OUT: case EV_WITHDRAW: case EV_SEND_OUT: case EV_STAGE:
+        return true;
+    default:
+        return false;
+    }
+}
+
+typedef struct {
+    Battle b;
+    EventLog log;
+    Ev19 seen[512];
+    BattleEvent full[512];
+    unsigned n;
+} V19Run;
+
+static void v19_take(V19Run *r) {
+    for (unsigned i = 0; i < r->log.count && r->n < 512; ++i) {
+        const BattleEvent *e = &r->log.events[i];
+        if (!v19_kind(e->kind)) continue;
+        // An ability's announcement is the holder's; every other event its target's.
+        const Position p = e->kind == EV_ABILITY ? e->user : e->target;
+        r->full[r->n] = *e;
+        r->seen[r->n++] = (Ev19){e->kind, p.side, p.slot};
+    }
+}
+static void v19_begin(V19Run *r, const BattleRequest *req, uint32_t seed) {
+    r->n = 0;
+    assert(battle_init(&r->b, req, seed) == BI_OK);
+    battle_begin(&r->b, &r->log);
+    v19_take(r);
+}
+static void v19_turn(V19Run *r, const Action *a, unsigned n) {
+    battle_run_turn(&r->b, a, n, &r->log);
+    v19_take(r);
+}
+static Action v19_wait(uint8_t side, uint8_t slot) {
+    Action a = slot_move(side, slot, slot, 1);
+    a.target = (Target){{side, slot}};
+    return a;
+}
+
+static bool v19_item_event(EventKind k) {
+    return k == EV_ITEM_HEAL || k == EV_ITEM_CURE || k == EV_ITEM_ENDURE || k == EV_ITEM_CONSUMED;
+}
+
+// The expected events appear in this order; the item events of the run are
+// exactly the expected ones (the reference's NOT checks).
+static void v19_expect(const char *name, const V19Run *r, const Ev19 *exp, unsigned n) {
+    unsigned j = 0, items = 0, expected_items = 0;
+    for (unsigned i = 0; i < r->n && j < n; ++i)
+        if (r->seen[i].kind == exp[j].kind && r->seen[i].side == exp[j].side && r->seen[i].slot == exp[j].slot) ++j;
+    for (unsigned i = 0; i < r->n; ++i) items += v19_item_event(r->seen[i].kind);
+    for (unsigned i = 0; i < n; ++i) expected_items += v19_item_event(exp[i].kind);
+    if (j != n || items != expected_items) {
+        printf("v19 case \"%s\": matched %u of %u, item events %u (expected %u); got", name, j, n, items, expected_items);
+        for (unsigned i = 0; i < r->n; ++i) printf(" [%u %u:%u]", r->seen[i].kind, r->seen[i].side, r->seen[i].slot);
+        printf("\n");
+        fflush(stdout);
+    }
+    assert(j == n && items == expected_items);
+}
+#define V19_EXPECT(name, run, ...) \
+    v19_expect(name, run, (Ev19[]){__VA_ARGS__}, sizeof((Ev19[]){__VA_ARGS__}) / sizeof(Ev19))
+#define HEAL_USED(side, slot) E19(EV_ITEM_HEAL, side, slot), E19(EV_ITEM_CONSUMED, side, slot)
+#define CURE_USED(side, slot) E19(EV_ITEM_CURE, side, slot), E19(EV_ITEM_CONSUMED, side, slot)
+
+static const BattleEvent *v19_event(const V19Run *r, EventKind kind, unsigned nth) {
+    for (unsigned i = 0; i < r->n; ++i)
+        if (r->full[i].kind == kind && nth-- == 0) return &r->full[i];
+    return NULL;
+}
+
+// The cases of test/battle/gc_consumable_item_reference.c (frontier-gc-m4b1b):
+// the same situations, the same order of events.
+static void test_v19_reference(void) {
+    static BattleRequest r;
+    static V19Run run;
+    const Action wait2[] = {v19_wait(0, 0), v19_wait(1, 0)};
+
+    // Sitrus: half HP or less, max HP / 4 (at least 1), once; Oran 10 up to max HP.
+    static const struct { uint16_t max_hp, hp, healed; bool oran; } th[] = {
+        {200, 125, 50, false}, {200, 126, 0, false}, {201, 125, 50, false}, {3, 2, 1, false},
+        {30, 18, 10, true}, {16, 10, 8, true},
+    };
+    for (unsigned i = 0; i < sizeof th / sizeof *th; ++i) {
+        make_consumable(&r, BATTLE_FORMAT_SINGLE);
+        v19_mon(&r.player[0], th[i].max_hp, th[i].hp, 50, th[i].oran ? I_ORAN : I_SITRUS, wait_move());
+        r.player[0].record.status = BST_POISON;
+        v19_mon(&r.opponent[0], 200, 200, 40, (BattleItem){0}, wait_move());
+        v19_begin(&run, &r, 1);
+        v19_turn(&run, wait2, 2);
+        if (th[i].healed) {
+            V19_EXPECT("threshold", &run, E19(EV_RESIDUAL, 0, 0), HEAL_USED(0, 0));
+            const BattleEvent *h = v19_event(&run, EV_ITEM_HEAL, 0);
+            assert(h->amount == th[i].healed && h->item == (th[i].oran ? 520 : 523));
+            assert(battle_held_item(&run.b.sides[0].battlers[0]) == 0);
+        } else {
+            V19_EXPECT("threshold, not yet", &run, E19(EV_RESIDUAL, 0, 0));
+            assert(battle_held_item(&run.b.sides[0].battlers[0]) == 523);
+        }
+    }
+    // Eaten once over three turns of poison.
+    make_consumable(&r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r.player[0], 200, 125, 50, I_SITRUS, wait_move());
+    r.player[0].record.status = BST_POISON;
+    v19_mon(&r.opponent[0], 200, 200, 40, (BattleItem){0}, wait_move());
+    v19_begin(&run, &r, 1);
+    for (unsigned t = 0; t < 3; ++t) v19_turn(&run, wait2, 2);
+    V19_EXPECT("once", &run, E19(EV_RESIDUAL, 0, 0), HEAL_USED(0, 0), E19(EV_RESIDUAL, 0, 0), E19(EV_RESIDUAL, 0, 0));
+    assert(run.b.sides[0].battlers[0].hp == 100);
+    assert(run.b.sides[0].battlers[0].item_used == &r.player[0] && !run.b.sides[0].battlers[0].item_from);
+    assert(run.b.sides[0].battlers[0].item_used_timing == BITIME_HP_THRESHOLD);
+
+    // Sandstorm: the holder's damage, its berry, then the next Pokemon's damage.
+    make_consumable(&r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r.player[0], 160, 90, 100, I_SITRUS, wait_move());
+    v19_mon(&r.opponent[0], 200, 200, 50, (BattleItem){0}, weather_move(BWEATHER_SANDSTORM, 5));
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, (Action[]){v19_wait(0, 0), {.kind = ACT_MOVE, .user = {1, 0}, .target = {{1, 0}}}}, 2);
+    V19_EXPECT("sandstorm", &run, E19(EV_WEATHER_DAMAGE, 0, 0), HEAL_USED(0, 0), E19(EV_WEATHER_DAMAGE, 1, 0));
+
+    // Poison of the faster first, its berry, then the slower's poison and berry.
+    make_consumable(&r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r.player[0], 200, 125, 50, I_SITRUS, wait_move());
+    v19_mon(&r.opponent[0], 200, 125, 100, I_SITRUS, wait_move());
+    r.player[0].record.status = r.opponent[0].record.status = BST_POISON;
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, wait2, 2);
+    V19_EXPECT("poison order", &run, E19(EV_RESIDUAL, 1, 0), HEAL_USED(1, 0), E19(EV_RESIDUAL, 0, 0), HEAL_USED(0, 0));
+
+    // A recoil move: target hit, recoil, the user's berry, then the target's.
+    make_consumable(&r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r.player[0], 40, 22, 100, I_SITRUS, v19_hit_with(90, fx(BEFF_RECOIL, BWHO_USER, 0, 25, 0, 0)));
+    v19_mon(&r.opponent[0], 200, 101, 50, I_SITRUS, wait_move());
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, (Action[]){move(0, 0, 0), v19_wait(1, 0)}, 2);
+    V19_EXPECT("recoil", &run, E19(EV_DAMAGE, 1, 0), E19(EV_RECOIL, 0, 0), HEAL_USED(0, 0), HEAL_USED(1, 0));
+
+    // A multi-hit move: the berry between the hits.
+    make_consumable(&r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r.player[0], 200, 200, 100, (BattleItem){0}, v19_multi(30, 2));
+    v19_mon(&r.opponent[0], 200, 101, 50, I_SITRUS, wait_move());
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, (Action[]){move(0, 0, 0), v19_wait(1, 0)}, 2);
+    V19_EXPECT("multi-hit", &run, E19(EV_DAMAGE, 1, 0), HEAL_USED(1, 0), E19(EV_DAMAGE, 1, 0));
+
+    // A spread move: both hits, then the berries in battler order.
+    make_consumable(&r, BATTLE_FORMAT_DOUBLE);
+    v19_mon(&r.player[0], 200, 200, 100, (BattleItem){0}, v19_spread(40));
+    v19_mon(&r.player[1], 200, 200, 90, (BattleItem){0}, wait_move());
+    v19_mon(&r.opponent[0], 200, 101, 50, I_SITRUS, wait_move());
+    v19_mon(&r.opponent[1], 200, 101, 40, I_SITRUS, wait_move());
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, (Action[]){move(0, 0, 0), v19_wait(0, 1), v19_wait(1, 0), v19_wait(1, 1)}, 4);
+    V19_EXPECT("spread berries", &run, E19(EV_DAMAGE, 1, 0), E19(EV_DAMAGE, 1, 1), HEAL_USED(1, 0), HEAL_USED(1, 1));
+
+    // A draining move: the drain, then the target's berry.
+    make_consumable(&r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r.player[0], 200, 50, 100, (BattleItem){0}, v19_hit_with(75, fx(BEFF_DRAIN, BWHO_USER, 0, 50, 0, 0)));
+    v19_mon(&r.opponent[0], 200, 101, 50, I_SITRUS, wait_move());
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, (Action[]){move(0, 0, 0), v19_wait(1, 0)}, 2);
+    V19_EXPECT("drain", &run, E19(EV_DAMAGE, 1, 0), E19(EV_DRAIN, 0, 0), HEAL_USED(1, 0));
+
+    // Substitute's HP cost, then the user's berry, before the next action.
+    make_consumable(&r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r.player[0], 200, 140, 100, I_SITRUS, effect_move(BTARGET_SELF, 0, fx(BEFF_SUBSTITUTE, BWHO_USER, 0, 0, 0, 0)));
+    v19_mon(&r.opponent[0], 200, 200, 50, (BattleItem){0}, wait_move());
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, (Action[]){slot_move(0, 0, 0, 0), v19_wait(1, 0)}, 2);
+    V19_EXPECT("substitute", &run, E19(EV_SUBSTITUTE, 0, 0), HEAL_USED(0, 0), E19(EV_MOVE_USED, 1, 0));
+    assert(run.b.sides[0].battlers[0].hp == 140);
+
+    // Rough Skin's damage, then the attacker's berry.
+    make_consumable(&r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r.player[0], 160, 85, 100, I_SITRUS, contact(40, 1));
+    v19_mon(&r.opponent[0], 200, 200, 50, (BattleItem){0}, wait_move());
+    give(&r.opponent[0], HOOKS(24, hk(BABIL_CONTACT_DAMAGE, 0, 0, 8, 0, 0, 0, 0)));
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, (Action[]){move(0, 0, 0), v19_wait(1, 0)}, 2);
+    V19_EXPECT("rough skin", &run, E19(EV_DAMAGE, 1, 0), E19(EV_ABILITY_DAMAGE, 0, 0), HEAL_USED(0, 0));
+
+    // A switch-in at half HP eats on entry; the berry is not back after a switch.
+    make_consumable(&r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r.player[0], 200, 200, 50, (BattleItem){0}, wait_move());
+    add_reserve(&r, 0);
+    v19_mon(&r.player[1], 200, 100, 50, I_SITRUS, wait_move());
+    v19_mon(&r.opponent[0], 200, 200, 40, (BattleItem){0}, wait_move());
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, (Action[]){{.kind = ACT_SWITCH, .user = {0, 0}, .reserve = 1}, v19_wait(1, 0)}, 2);
+    V19_EXPECT("entry", &run, E19(EV_SEND_OUT, 0, 0), HEAL_USED(0, 0));
+    v19_turn(&run, (Action[]){{.kind = ACT_SWITCH, .user = {0, 0}, .reserve = 0}, v19_wait(1, 0)}, 2);
+    v19_turn(&run, (Action[]){{.kind = ACT_SWITCH, .user = {0, 0}, .reserve = 1}, v19_wait(1, 0)}, 2);
+    V19_EXPECT("entry once", &run, E19(EV_SEND_OUT, 0, 0), HEAL_USED(0, 0), E19(EV_SEND_OUT, 0, 0), E19(EV_SEND_OUT, 0, 0));
+
+    // Battle start: each lead's entry ability, then its berry, in speed order.
+    for (unsigned fast = 0; fast < 2; ++fast) {
+        make_consumable(&r, BATTLE_FORMAT_SINGLE);
+        v19_mon(&r.player[0], 200, 100, fast ? 100 : 10, I_SITRUS, wait_move());
+        v19_mon(&r.opponent[0], 200, 200, 50, (BattleItem){0}, wait_move());
+        give(&r.opponent[0], HOOKS(22, hk(BABIL_ENTRY_STAT, BSTAT_ATK, -1, BRANGE_ADJACENT_FOES, 0, 0, 0, 0)));
+        v19_begin(&run, &r, 1);
+        if (fast) V19_EXPECT("start, faster holder", &run, HEAL_USED(0, 0), E19(EV_ABILITY, 1, 0));
+        else V19_EXPECT("start, slower holder", &run, E19(EV_ABILITY, 1, 0), HEAL_USED(0, 0));
+    }
+
+    // Status berries: the status a move gives is cured at once.
+    static const struct { uint8_t kind; uint8_t berry; } st[] = {
+        {BST_PARALYSIS, 0}, {BST_PARALYSIS, 1}, {BST_SLEEP, 2}, {BST_TOXIC, 3}, {BST_BURN, 4}, {BST_BURN, 1},
+    };
+    for (unsigned i = 0; i < sizeof st / sizeof *st; ++i) {
+        const BattleItem berries[] = {I_CHERI, I_LUM, I_CHESTO, I_PECHA, I_RAWST};
+        make_consumable(&r, BATTLE_FORMAT_SINGLE);
+        v19_mon(&r.player[0], 200, 200, 100, (BattleItem){0}, v19_status(st[i].kind));
+        v19_mon(&r.opponent[0], 200, 200, 50, berries[st[i].berry], wait_move());
+        v19_begin(&run, &r, 1);
+        v19_turn(&run, (Action[]){move(0, 0, 0), v19_wait(1, 0)}, 2);
+        V19_EXPECT("status cured", &run, E19(EV_STATUS, 1, 0), CURE_USED(1, 0), E19(EV_MOVE_USED, 1, 0));
+        assert(!run.b.sides[1].battlers[0].status && v19_event(&run, EV_ITEM_CURE, 0)->condition == st[i].kind);
+    }
+    // Aspear: a freeze from a hit (a certain chance here).
+    make_consumable(&r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r.player[0], 200, 200, 100, (BattleItem){0}, v19_hit_with(40, fx(BEFF_STATUS, BWHO_TARGET, 100, BST_FREEZE, 0, 0)));
+    v19_mon(&r.opponent[0], 200, 200, 50, I_ASPEAR, wait_move());
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, (Action[]){move(0, 0, 0), v19_wait(1, 0)}, 2);
+    V19_EXPECT("freeze", &run, E19(EV_DAMAGE, 1, 0), E19(EV_STATUS, 1, 0), CURE_USED(1, 0));
+    // Synchronize: the status given back is cured first, then the target's.
+    make_consumable(&r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r.player[0], 200, 200, 100, I_CHERI, v19_status(BST_PARALYSIS));
+    v19_mon(&r.opponent[0], 200, 200, 50, I_LUM, wait_move());
+    give(&r.opponent[0], SYNCHRONIZE);
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, (Action[]){move(0, 0, 0), v19_wait(1, 0)}, 2);
+    V19_EXPECT("synchronize", &run, E19(EV_STATUS, 1, 0), E19(EV_STATUS, 0, 0), CURE_USED(0, 0), CURE_USED(1, 0));
+    // Static paralyses the attacker; its berry at once, before the foe's move.
+    make_consumable(&r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r.player[0], 200, 200, 100, I_CHERI, contact(40, 1));
+    v19_mon(&r.opponent[0], 200, 200, 50, (BattleItem){0}, wait_move());
+    give(&r.opponent[0], HOOKS(9, hk(BABIL_CONTACT_STATUS, BST_PARALYSIS, 0, 0, 1, 1, 0, 0)));
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, (Action[]){move(0, 0, 0), v19_wait(1, 0)}, 2);
+    V19_EXPECT("static", &run, E19(EV_DAMAGE, 1, 0), E19(EV_STATUS, 0, 0), CURE_USED(0, 0), E19(EV_MOVE_USED, 1, 0));
+    // Confusion is cured at the end of the move (Confuse Ray; Swagger after its +2).
+    for (unsigned i = 0; i < 3; ++i) {
+        make_consumable(&r, BATTLE_FORMAT_SINGLE);
+        BattleMove m = effect_move(BTARGET_SINGLE, 0, fx(BEFF_CONFUSE, BWHO_TARGET, 0, 0, 0, 0));
+        if (i == 2) {
+            m = status_move(BTARGET_SINGLE, 0);
+            push(&m, fx(BEFF_STAT, BWHO_TARGET, 0, BSTAT_ATK, 2, 0));
+            push(&m, fx(BEFF_CONFUSE, BWHO_TARGET, 0, 0, 0, 0));
+        }
+        v19_mon(&r.player[0], 200, 200, 100, (BattleItem){0}, m);
+        v19_mon(&r.opponent[0], 200, 200, 50, i == 0 ? I_PERSIM : I_LUM, wait_move());
+        v19_begin(&run, &r, 1);
+        v19_turn(&run, (Action[]){move(0, 0, 0), v19_wait(1, 0)}, 2);
+        if (i == 2) V19_EXPECT("swagger", &run, E19(EV_STAGE, 1, 0), E19(EV_CONFUSE, 1, 0), CURE_USED(1, 0), E19(EV_MOVE_USED, 1, 0));
+        else V19_EXPECT("confuse", &run, E19(EV_CONFUSE, 1, 0), CURE_USED(1, 0), E19(EV_MOVE_USED, 1, 0));
+        assert(!run.b.sides[1].battlers[0].vol.confusion);
+        assert(v19_event(&run, EV_ITEM_CURE, 0)->condition == BATTLE_CURED_CONFUSION);
+    }
+    // A status the Pokemon enters with.
+    make_consumable(&r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r.player[0], 200, 200, 50, (BattleItem){0}, wait_move());
+    add_reserve(&r, 0);
+    v19_mon(&r.player[1], 200, 200, 50, I_PECHA, wait_move());
+    r.player[1].record.status = BST_POISON;
+    v19_mon(&r.opponent[0], 200, 200, 40, (BattleItem){0}, wait_move());
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, (Action[]){{.kind = ACT_SWITCH, .user = {0, 0}, .reserve = 1}, v19_wait(1, 0)}, 2);
+    V19_EXPECT("status on entry", &run, E19(EV_SEND_OUT, 0, 0), CURE_USED(0, 0));
+    // A berry used up does not cure the next status.
+    make_consumable(&r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r.player[0], 200, 200, 100, (BattleItem){0}, v19_status(BST_PARALYSIS));
+    v19_mon(&r.opponent[0], 200, 200, 50, I_CHERI, wait_move());
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, (Action[]){move(0, 0, 0), v19_wait(1, 0)}, 2);
+    v19_turn(&run, (Action[]){move(0, 0, 0), v19_wait(1, 0)}, 2);
+    V19_EXPECT("cured once", &run, E19(EV_STATUS, 1, 0), CURE_USED(1, 0), E19(EV_STATUS, 1, 0));
+    assert(bc_status_kind(&run.b, &run.b.sides[1].battlers[0]) == BST_PARALYSIS);
+
+    // Focus Sash: at full HP 1 HP is left and the sash is used up; not below full HP.
+    for (unsigned below = 0; below < 2; ++below) {
+        make_consumable(&r, BATTLE_FORMAT_SINGLE);
+        v19_mon(&r.player[0], 200, 200, 100, (BattleItem){0}, v19_hit(250));
+        v19_mon(&r.opponent[0], 20, below ? 19 : 20, 50, I_SASH, wait_move());
+        add_reserve(&r, 1);
+        v19_begin(&run, &r, 1);
+        v19_turn(&run, (Action[]){move(0, 0, 0), v19_wait(1, 0)}, 2);
+        if (below) {
+            V19_EXPECT("sash below full", &run, E19(EV_DAMAGE, 1, 0), E19(EV_FAINT, 1, 0));
+        } else {
+            V19_EXPECT("sash", &run, E19(EV_DAMAGE, 1, 0), E19(EV_ITEM_ENDURE, 1, 0), E19(EV_ITEM_CONSUMED, 1, 0));
+            assert(run.b.sides[1].battlers[0].hp == 1);
+        }
+    }
+    // Once in a multi-hit move.
+    make_consumable(&r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r.player[0], 200, 200, 100, (BattleItem){0}, v19_multi(250, 2));
+    v19_mon(&r.opponent[0], 20, 20, 50, I_SASH, wait_move());
+    add_reserve(&r, 1);
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, (Action[]){move(0, 0, 0), v19_wait(1, 0)}, 2);
+    V19_EXPECT("sash multi-hit", &run, E19(EV_DAMAGE, 1, 0), E19(EV_ITEM_ENDURE, 1, 0), E19(EV_ITEM_CONSUMED, 1, 0),
+               E19(EV_DAMAGE, 1, 0), E19(EV_FAINT, 1, 0));
+    // Sturdy first; the sash is kept.
+    make_consumable(&r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r.player[0], 200, 200, 100, (BattleItem){0}, v19_hit(250));
+    v19_mon(&r.opponent[0], 20, 20, 50, I_SASH, wait_move());
+    give(&r.opponent[0], HOOKS(5, hk(BABIL_STURDY, 0, 0, 0, 0, 0, 0, 0)));
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, (Action[]){move(0, 0, 0), v19_wait(1, 0)}, 2);
+    V19_EXPECT("sturdy first", &run, E19(EV_DAMAGE, 1, 0), E19(EV_ABILITY, 1, 0));
+    assert(battle_held_item(&run.b.sides[1].battlers[0]) == 481);
+    // Not against poison damage.
+    make_consumable(&r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r.player[0], 1, 1, 50, I_SASH, wait_move());
+    r.player[0].record.status = BST_POISON;
+    v19_mon(&r.opponent[0], 200, 200, 40, (BattleItem){0}, wait_move());
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, wait2, 2);
+    V19_EXPECT("sash vs poison", &run, E19(EV_RESIDUAL, 0, 0), E19(EV_FAINT, 0, 0));
+    // A spread move: every target is hit, then Focus Sash; then Sturdy; then status and berry.
+    for (unsigned kind = 0; kind < 3; ++kind) {
+        make_consumable(&r, BATTLE_FORMAT_DOUBLE);
+        BattleMove m = v19_spread(kind == 2 ? 40 : 250);
+        if (kind == 2) push(&m, fx(BEFF_STATUS, BWHO_TARGET, 100, BST_PARALYSIS, 0, 0));
+        v19_mon(&r.player[0], 200, 200, 100, (BattleItem){0}, m);
+        v19_mon(&r.player[1], 200, 200, 90, (BattleItem){0}, wait_move());
+        v19_mon(&r.opponent[0], kind == 2 ? 200 : 20, kind == 2 ? 200 : 20, 50,
+                kind == 0 ? I_SASH : kind == 2 ? I_CHERI : (BattleItem){0}, wait_move());
+        v19_mon(&r.opponent[1], kind == 2 ? 200 : 20, kind == 2 ? 200 : 20, 40, kind == 2 ? I_CHERI : (BattleItem){0},
+                wait_move());
+        if (kind == 1) give(&r.opponent[0], HOOKS(5, hk(BABIL_STURDY, 0, 0, 0, 0, 0, 0, 0)));
+        add_reserve(&r, 1);
+        add_reserve(&r, 1);
+        v19_begin(&run, &r, 1);
+        v19_turn(&run, (Action[]){move(0, 0, 0), v19_wait(0, 1), v19_wait(1, 0), v19_wait(1, 1)}, 4);
+        if (kind == 0)
+            V19_EXPECT("spread sash", &run, E19(EV_DAMAGE, 1, 0), E19(EV_DAMAGE, 1, 1), E19(EV_ITEM_ENDURE, 1, 0),
+                       E19(EV_ITEM_CONSUMED, 1, 0));
+        else if (kind == 1)
+            V19_EXPECT("spread sturdy", &run, E19(EV_DAMAGE, 1, 0), E19(EV_DAMAGE, 1, 1), E19(EV_ABILITY, 1, 0));
+        else
+            V19_EXPECT("spread status", &run, E19(EV_DAMAGE, 1, 0), E19(EV_DAMAGE, 1, 1), E19(EV_STATUS, 1, 0),
+                       CURE_USED(1, 0), E19(EV_STATUS, 1, 1), CURE_USED(1, 1));
+    }
+    printf("v19 reference: consumable item cases passed\n");
+}
+
+// More V19 situations of the reference: the confusion self-hit (berry, Focus
+// Sash), Struggle's recoil, Solar Power's sun damage (no check until the next
+// move end), a turn lost to sleep (its move end checks too), a pivot move
+// and Dragon Tail; and the used-up item across Shift and Rotation.
+static void test_v19_more(void) {
+    static BattleRequest r;
+    static V19Run run;
+    // A confusion self-hit, then the berry, before the next action; Focus Sash holds.
+    for (unsigned sash = 0; sash < 2; ++sash) {
+        make_consumable(&r, BATTLE_FORMAT_SINGLE);
+        r.volatiles.confusion_hit_percent = 100;
+        v19_mon(&r.player[0], sash ? 2 : 200, sash ? 2 : 105, 50, sash ? I_SASH : I_SITRUS, wait_move());
+        v19_mon(&r.opponent[0], 200, 200, 100, (BattleItem){0}, effect_move(BTARGET_SINGLE, 0, fx(BEFF_CONFUSE, BWHO_TARGET, 0, 0, 0, 0)));
+        r.player[0].record.level = 100;
+        v19_begin(&run, &r, 1);
+        v19_turn(&run, (Action[]){v19_wait(0, 0), move(1, 0, 0)}, 2);  // the slower holder hits itself
+        if (sash) {
+            V19_EXPECT("confusion sash", &run, E19(EV_CONFUSION_HIT, 0, 0), E19(EV_ITEM_ENDURE, 0, 0),
+                       E19(EV_ITEM_CONSUMED, 0, 0));
+            assert(run.b.sides[0].battlers[0].hp == 1);
+        } else {
+            v19_turn(&run, (Action[]){v19_wait(0, 0), v19_wait(1, 0)}, 2);
+            V19_EXPECT("confusion berry", &run, E19(EV_CONFUSION_HIT, 0, 0), HEAL_USED(0, 0), E19(EV_MOVE_USED, 1, 0));
+        }
+    }
+    // Struggle's recoil, then the user's berry.
+    make_consumable(&r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r.player[0], 200, 110, 100, I_SITRUS, v19_hit(40));
+    r.player[0].record.pp[0] = r.player[0].record.pp[1] = 0;
+    v19_mon(&r.opponent[0], 200, 200, 50, (BattleItem){0}, wait_move());
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, (Action[]){{.kind = ACT_STRUGGLE, .user = {0, 0}, .target = {{1, 0}}}, v19_wait(1, 0)}, 2);
+    V19_EXPECT("struggle", &run, E19(EV_DAMAGE, 1, 0), E19(EV_RECOIL, 0, 0), HEAL_USED(0, 0));
+    // Solar Power's sun damage: no check then; the berry at the end of the
+    // next move (here the faster foe's), before the holder's own move.
+    make_consumable(&r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r.player[0], 160, 90, 50, I_SITRUS, wait_move());
+    give(&r.player[0], W_SOLAR_POWER);
+    v19_mon(&r.opponent[0], 200, 200, 100, (BattleItem){0}, weather_move(BWEATHER_SUN, 5));
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, (Action[]){v19_wait(0, 0), {.kind = ACT_MOVE, .user = {1, 0}, .target = {{1, 0}}}}, 2);
+    v19_turn(&run, (Action[]){v19_wait(0, 0), v19_wait(1, 0)}, 2);
+    V19_EXPECT("solar power", &run, E19(EV_ABILITY_DAMAGE, 0, 0), E19(EV_MOVE_USED, 1, 0), HEAL_USED(0, 0),
+               E19(EV_MOVE_USED, 0, 0));
+    // A turn lost to sleep still ends with the checks (here the pending berry).
+    make_consumable(&r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r.player[0], 160, 90, 50, I_SITRUS, wait_move());
+    give(&r.player[0], W_SOLAR_POWER);
+    v19_mon(&r.opponent[0], 200, 200, 100, (BattleItem){0}, weather_move(BWEATHER_SUN, 5));
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, (Action[]){v19_wait(0, 0), {.kind = ACT_MOVE, .user = {1, 0}, .target = {{1, 0}}}}, 2);
+    run.b.sides[1].battlers[0].status = BATTLE_CONDITION(BST_SLEEP, 3);
+    run.b.sides[1].battlers[0].sleep_start = 3;
+    v19_turn(&run, (Action[]){v19_wait(0, 0), v19_wait(1, 0)}, 2);
+    V19_EXPECT("lost turn", &run, E19(EV_ABILITY_DAMAGE, 0, 0), HEAL_USED(0, 0), E19(EV_MOVE_USED, 0, 0));
+    // A pivot move: the target's berry before the user leaves.
+    make_consumable(&r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r.player[0], 200, 200, 100, (BattleItem){0}, v19_hit_with(70, fx(BEFF_PIVOT, BWHO_TARGET, 0, 0, 0, 0)));
+    add_reserve(&r, 0);
+    v19_mon(&r.opponent[0], 200, 101, 50, I_SITRUS, wait_move());
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, (Action[]){move(0, 0, 0), v19_wait(1, 0)}, 2);
+    assert(battle_pending_pivot(&run.b, NULL));
+    assert(battle_resume_pivot(&run.b, 1, &run.log));
+    v19_take(&run);
+    V19_EXPECT("pivot", &run, E19(EV_DAMAGE, 1, 0), HEAL_USED(1, 0), E19(EV_WITHDRAW, 0, 0));
+    // Dragon Tail drags the target out before its berry.
+    make_consumable(&r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r.player[0], 200, 200, 100, (BattleItem){0}, v19_hit_with(60, fx(BEFF_FORCE_OUT, BWHO_TARGET, 0, 0, 0, 0)));
+    v19_mon(&r.opponent[0], 200, 101, 50, I_SITRUS, wait_move());
+    add_reserve(&r, 1);
+    hold(&r.opponent[1], (BattleItem){0});
+    r.opponent[1].record.hp = r.opponent[1].record.max_hp = 200;
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, (Action[]){move(0, 0, 0), v19_wait(1, 0)}, 2);
+    V19_EXPECT("dragon tail", &run, E19(EV_DAMAGE, 1, 0), E19(EV_DRAG_OUT, 1, 0));
+    assert(battle_held_item(&run.b.sides[1].battlers[0]) == 523);
+    // Shift (Triple): the berry used at the edge is not back in the center.
+    make_consumable(&r, BATTLE_FORMAT_TRIPLE);
+    for (unsigned i = 0; i < 3; ++i) {
+        v19_mon(&r.player[i], 200, 200, 50, (BattleItem){0}, wait_move());
+        v19_mon(&r.opponent[i], 200, 200, 40, (BattleItem){0}, wait_move());
+    }
+    v19_mon(&r.player[2], 200, 125, 50, I_SITRUS, wait_move());
+    r.player[2].record.status = BST_POISON;
+    v19_begin(&run, &r, 1);
+    Action triple[6];
+    for (uint8_t side = 0; side < 2; ++side)
+        for (uint8_t slot = 0; slot < 3; ++slot) triple[side * 3 + slot] = v19_wait(side, slot);
+    v19_turn(&run, triple, 6);  // poison 25 -> 100: the berry
+    triple[2] = (Action){.kind = ACT_SHIFT, .user = {0, BPOS_RIGHT}};
+    v19_turn(&run, triple, 6);
+    triple[2] = v19_wait(0, BPOS_RIGHT);
+    v19_turn(&run, triple, 6);
+    unsigned heals = 0;
+    for (unsigned i = 0; i < run.n; ++i) heals += run.seen[i].kind == EV_ITEM_HEAL;
+    assert(heals == 1 && !battle_held_item(&run.b.sides[0].battlers[2]));
+    // Rotation: the front eats; rotated away and back it holds nothing.
+    make_consumable(&r, BATTLE_FORMAT_ROTATION);
+    for (unsigned i = 0; i < 3; ++i) {
+        v19_mon(&r.player[i], 200, 200, 50, (BattleItem){0}, wait_move());
+        v19_mon(&r.opponent[i], 200, 200, 40, (BattleItem){0}, wait_move());
+    }
+    v19_mon(&r.player[0], 200, 125, 50, I_SITRUS, wait_move());
+    r.player[0].record.status = BST_POISON;
+    v19_begin(&run, &r, 1);
+    Action rot[] = {v19_wait(0, BPOS_CENTER), v19_wait(1, BPOS_CENTER)};
+    v19_turn(&run, rot, 2);
+    rot[0].rotation = BROT_LEFT;
+    v19_turn(&run, rot, 2);
+    rot[0].rotation = BROT_RIGHT;
+    v19_turn(&run, rot, 2);
+    heals = 0;
+    for (unsigned i = 0; i < run.n; ++i) heals += run.seen[i].kind == EV_ITEM_HEAL;
+    assert(heals == 1 && !battle_held_item(&run.b.sides[0].battlers[0]));
+    assert(run.b.sides[0].battlers[0].item_used == &r.player[0]);
+    printf("v19 more: confusion, Struggle, Solar Power, lost turn, pivot, Dragon Tail, Shift, Rotation\n");
+}
+
+// The V19 records on the wire: every byte checked, V18 refuses them, V18
+// requests are as before; a request built in memory gets the same check.
+static void test_v19_wire(void) {
+    static BattleRequest r, d;
+    static Battle b;
+    static uint8_t bytes[4096];
+    make_consumable(&r, BATTLE_FORMAT_DOUBLE);
+    hold(&r.player[0], I_SITRUS);
+    hold(&r.player[1], I_LUM);
+    hold(&r.opponent[0], I_SASH);
+    hold(&r.opponent[1], I_ORAN);
+    const uint32_t n = battle_request_encode(&r, bytes, sizeof bytes);
+    assert(n && bytes[0] == BATTLE_REQUEST_VERSION_CONSUMABLE_ITEMS && battle_request_decode(bytes, n, &d));
+    for (unsigned side = 0; side < 2; ++side)
+        for (unsigned i = 0; i < 2; ++i) {
+            const BattleItem *a = side ? &r.opponent[i].mon.item : &r.player[i].mon.item;
+            const BattleItem *x = side ? &d.opponent[i].mon.item : &d.player[i].mon.item;
+            assert(a->cls == x->cls && a->count == x->count && a->source == x->source &&
+                   !memcmp(&a->records[0], &x->records[0], sizeof a->records[0]));
+        }
+    // The same blocks in a V18 request are refused; so is every bad byte in V19.
+    const unsigned types = r.type_count;
+    const BattleItem good[] = {I_SITRUS, I_ORAN, I_LUM, I_PERSIM, I_SASH};
+    for (unsigned i = 0; i < sizeof good / sizeof *good; ++i) {
+        assert(battle_item_valid(&good[i], good[i].source, types, BATTLE_REQUEST_VERSION_CONSUMABLE_ITEMS));
+        assert(!battle_item_valid(&good[i], good[i].source, types, BATTLE_REQUEST_VERSION_END_TURN_ITEMS));
+    }
+    BattleItem bad;
+#define BAD(edit) do { bad = good[0]; edit; assert(!battle_item_valid(&bad, bad.source, types, BATTLE_REQUEST_VERSION_CONSUMABLE_ITEMS)); } while (0)
+#define BADC(edit) do { bad = good[2]; edit; assert(!battle_item_valid(&bad, bad.source, types, BATTLE_REQUEST_VERSION_CONSUMABLE_ITEMS)); } while (0)
+#define BADE(edit) do { bad = good[4]; edit; assert(!battle_item_valid(&bad, bad.source, types, BATTLE_REQUEST_VERSION_CONSUMABLE_ITEMS)); } while (0)
+    BAD(bad.records[0].hp.op = BIHP_DAMAGE);
+    BAD(bad.records[0].hp.divisor = 0);
+    BAD(bad.records[0].hp.pred = ((BattlePredicate){BPRED_NONE, 0}));
+    BAD(bad.records[0].hp.pred.arg = 0);
+    BAD(bad.records[0].hp.reserved = 1);
+    BAD(bad.records[0].flags = 2);
+    BAD(bad.records[0].hp.timing = BITIME_STATUS);
+    BAD(bad.records[0].hp.timing = BITIME_COUNT);
+    BAD((bad.records[0].hp.timing = BITIME_END_TURN, bad.records[0].hp.op = BIHP_HEAL_FIXED,
+         bad.records[0].hp.pred = ((BattlePredicate){BPRED_NONE, 0})));
+    BADC(bad.records[0].cure.status = 1);   // BST_NONE's bit
+    BADC((bad.records[0].cure.status = 0, bad.records[0].cure.volatiles = 0));
+    BADC(bad.records[0].cure.volatiles = 2);
+    BADC(bad.records[0].cure.timing = BITIME_HP_THRESHOLD);
+    BADC((bad.count = 2, bad.records[1] = bad.records[0]));  // two cure records
+    BADE(bad.records[0].endure.condition = 0);
+    BADE(bad.records[0].endure.reserved = 1);
+    BADE(bad.records[0].endure.timing = BITIME_END_TURN);
+    BADE((bad.count = 2, bad.records[1] = bad.records[0]));
+    BADE(bad.records[0].kind = BITEM_COUNT);
+    // The consumed flag is for HP, cure and endure records only, and only in V19.
+    BattleItem flagged = I_LEFTOVERS18;
+    flagged.records[0].flags = BIREC_CONSUMED;
+    assert(battle_item_valid(&flagged, flagged.source, types, BATTLE_REQUEST_VERSION_CONSUMABLE_ITEMS));
+    assert(!battle_item_valid(&flagged, flagged.source, types, BATTLE_REQUEST_VERSION_END_TURN_ITEMS));
+    flagged = I_CHARCOAL;
+    flagged.records[0].flags = BIREC_CONSUMED;
+    assert(!battle_item_valid(&flagged, flagged.source, types, BATTLE_REQUEST_VERSION_CONSUMABLE_ITEMS));
+    // On the wire, a byte the decoder carries but validation refuses stops the request.
+    hold(&r.player[0], I_SASH);
+    r.player[0].mon.item.records[0].endure.reserved = 7;
+    assert(!battle_request_encode(&r, bytes, sizeof bytes));
+    // In memory: the core refuses it too.
+    assert(battle_init(&b, &r, 1) == BI_CONDITIONS);
+    // V18 bytes are unchanged: a V18 request has no V19 meaning to carry.
+    make_end_turn_items(&r, BATTLE_FORMAT_DOUBLE);
+    hold(&r.player[0], I_LEFTOVERS18);
+    const uint32_t n18 = battle_request_encode(&r, bytes, sizeof bytes);
+    assert(n18 && bytes[0] == BATTLE_REQUEST_VERSION_END_TURN_ITEMS);
+    printf("v19 wire: records, flags, versions\n");
+}
+
+// Counts the item events of a log; a Pokemon (by roster index) whose item
+// was used up before this log gets no item event in it; the uses in the log
+// are exactly the Pokemon that newly hold nothing (Battler.item_used).
+typedef struct { uint8_t gone[2]; unsigned used, heals, cures, endures; } V19Uses;
+static void v19_scan(const Battle *b, const EventLog *log, V19Uses *u) {
+    unsigned consumed = 0;
+    for (unsigned i = 0; i < log->count; ++i) {
+        const BattleEvent *e = &log->events[i];
+        if (e->kind != EV_ITEM_HEAL && e->kind != EV_ITEM_CURE && e->kind != EV_ITEM_ENDURE && e->kind != EV_ITEM_CONSUMED)
+            continue;
+        const uint8_t index = b->sides[e->target.side].active[e->target.slot];
+        if (index < BATTLE_MAX_PER_SIDE) assert(!(u->gone[e->target.side] & (1u << index)));
+        consumed += e->kind == EV_ITEM_CONSUMED;
+        u->heals += e->kind == EV_ITEM_HEAL;
+        u->cures += e->kind == EV_ITEM_CURE;
+        u->endures += e->kind == EV_ITEM_ENDURE;
+    }
+    unsigned newly = 0;
+    for (uint8_t side = 0; side < 2; ++side)
+        for (uint8_t i = 0; i < b->sides[side].count; ++i) {
+            const Battler *x = &b->sides[side].battlers[i];
+            if (x->item_used && !(u->gone[side] & (1u << i))) {
+                assert(!x->item_from && x->item_used == x->entry);
+                u->gone[side] |= (uint8_t)(1u << i);
+                ++newly;
+            }
+        }
+    assert(newly == consumed);
+    u->used += consumed;
+}
+
+// Random battles in the four formats with consumable items: deterministic,
+// every log fits, each item used at most once and never again after, a
+// normalised battle is event for event the battle without items, and V18
+// requests of the same Pokemon (items unsupported there: normalised) have
+// none of it.
+static void test_v19_formats(void) {
+    static BattleRequest r, bare;
+    static Battle a, c, bb;
+    static EventLog la, lb, lc;
+    const BattleItem items[] = {I_SITRUS, I_ORAN, I_LUM, I_CHERI, I_PECHA, I_SASH, I_PERSIM, I_LEFTOVERS18,
+                                I_BLACK_SLUDGE, I_CHESTO, I_RAWST, {0}};
+    const unsigned n = sizeof items / sizeof *items;
+    const uint8_t formats[] = {BATTLE_FORMAT_SINGLE, BATTLE_FORMAT_DOUBLE, BATTLE_FORMAT_TRIPLE, BATTLE_FORMAT_ROTATION};
+    unsigned battles = 0, normalised = 0, used = 0, heals = 0, cures = 0, endures = 0, most = 0;
+    V19Uses u;
+    for (unsigned f = 0; f < 4; ++f)
+        for (uint32_t seed = 1; seed <= 60; ++seed) {
+            make_consumable(&r, formats[f]);
+            for (unsigned side = 0; side < 2; ++side) add_reserve(&r, side);
+            for (unsigned side = 0; side < 2; ++side) {
+                BattleEntry *e = side ? r.opponent : r.player;
+                const unsigned count = side ? r.opponent_count : r.player_count;
+                for (unsigned i = 0; i < count; ++i) {
+                    e[i].record.max_hp = (uint16_t)(40 + (seed * 7 + i * 11 + side) % 120);
+                    e[i].record.hp = (uint16_t)(e[i].record.max_hp - (seed + i) % 30);
+                    e[i].mon.types[0] = (uint8_t)((seed + 3 * i + side) % (R_COUNT + 1));
+                    e[i].record.speed = (uint16_t)(40 + (seed * 13 + i * 7 + side * 3) % 60);
+                    e[i].record.status = (seed + i + side) % 6 == 0 ? BST_POISON : 0;
+                    set_move(&e[i], 0, 300 + i, ref_move(60 + (seed % 5) * 20, (uint8_t)((seed + i) % R_COUNT),
+                                                         BCAT_PHYSICAL), 10);
+                    set_move(&e[i], 1, 240, v19_status((uint8_t)(1 + (seed + i) % 5)), 6);
+                    BattleMove spread = v19_spread(50);
+                    if ((seed + i) % 3 == 0) push(&spread, fx(BEFF_STATUS, BWHO_TARGET, 30, BST_PARALYSIS, 0, 0));
+                    set_move(&e[i], 2, 250, spread, 6);
+                    set_move(&e[i], 3, 260, (seed + i) % 2 ? v19_multi(25, 2) :
+                             effect_move(BTARGET_SINGLE, 0, fx(BEFF_CONFUSE, BWHO_TARGET, 0, 0, 0, 0)), 6);
+                    hold(&e[i], items[(seed * 5 + side * 3 + i + f) % n]);
+                    if (e[i].mon.item.source == 481) e[i].record.hp = e[i].record.max_hp;  // Focus Sash at full HP
+                    if ((seed + i) % 5 == 0) give(&e[i], SYNCHRONIZE);
+                    if ((seed + i) % 7 == 0) give(&e[i], HOOKS(5, hk(BABIL_STURDY, 0, 0, 0, 0, 0, 0, 0)));
+                }
+            }
+            bare = r;
+            for (unsigned side = 0; side < 2; ++side)
+                for (unsigned i = 0; i < BATTLE_MAX_PER_SIDE; ++i) {
+                    BattleEntry *e = side ? &bare.opponent[i] : &bare.player[i];
+                    e->mon.item = (BattleItem){0};
+                    e->record.held_item = 0;
+                }
+            const bool ignore = seed % 3 == 0;
+            if (ignore) {
+                r.rules |= RULE_IGNORE_ITEMS;
+                ++normalised;
+            }
+            assert(battle_init(&a, &r, seed) == BI_OK && battle_init(&bb, &r, seed) == BI_OK &&
+                   battle_init(&c, &bare, seed) == BI_OK);
+            battle_begin(&a, &la);
+            battle_begin(&bb, &lb);
+            battle_begin(&c, &lc);
+            if (ignore)
+                assert(la.events[0].kind == EV_ITEMS_NORMALIZED && la.count == lc.count + 1 &&
+                       !memcmp(la.events + 1, lc.events, lc.count * sizeof(BattleEvent)));
+            u = (V19Uses){{0}};
+            v19_scan(&a, &la, &u);
+            for (unsigned t = 0; t < 40 && a.outcome == OUTCOME_NONE; ++t) {
+                Position pending;
+                while (battle_pending_replacement(&a, &pending)) {
+                    const uint8_t mask = battle_replacement_mask(&a, pending);
+                    uint8_t pick = 0;
+                    while (!(mask & (1u << pick))) ++pick;
+                    assert(battle_replace(&a, pending, pick, &la) && battle_replace(&bb, pending, pick, &lb));
+                    if (ignore) assert(battle_replace(&c, pending, pick, &lc));
+                    assert(la.count == lb.count && !memcmp(la.events, lb.events, la.count * sizeof(BattleEvent)));
+                    v19_scan(&a, &la, &u);
+                }
+                if (a.outcome != OUTCOME_NONE) break;
+                Action actions[BC_MAX_ACTIONS];
+                unsigned count = 0;
+                for (uint8_t side = 0; side < 2; ++side) {
+                    Position actors[BC_MAX_ACTIVE];
+                    const unsigned k = battle_collect_actors(&a, side, actors);
+                    for (unsigned i = 0; i < k; ++i) battle_choose_at(&a, actors[i], &actions[count++]);
+                }
+                for (unsigned i = 0; i < count; ++i) {
+                    Action dummy;
+                    battle_choose_at(&bb, actions[i].user, &dummy);
+                    if (ignore) battle_choose_at(&c, actions[i].user, &dummy);
+                }
+                battle_run_turn(&a, actions, count, &la);
+                battle_run_turn(&bb, actions, count, &lb);
+                assert(la.count == lb.count && la.count < BC_MAX_EVENTS &&
+                       !memcmp(la.events, lb.events, la.count * sizeof(BattleEvent)));
+                if (la.count > most) most = la.count;
+                if (ignore) {
+                    battle_run_turn(&c, actions, count, &lc);
+                    assert(la.count == lc.count && !memcmp(la.events, lc.events, la.count * sizeof(BattleEvent)));
+                }
+                if (ignore) assert(!u.used);
+                v19_scan(&a, &la, &u);
+            }
+            for (unsigned side = 0; side < 2; ++side)
+                for (unsigned i = 0; i < a.sides[side].count; ++i) {
+                    const Battler *x = &a.sides[side].battlers[i];
+                    if (u.gone[side] & (1u << i)) assert(!x->item_from && !battle_held_item(x) && x->item_used);
+                    else assert(x->item_from == (x->entry->record.held_item ? x->entry : NULL));
+                }
+            assert(!memcmp(&a.sides, &bb.sides, sizeof a.sides) && a.rng == bb.rng);
+            if (ignore) assert(a.rng == c.rng && a.outcome == c.outcome);
+            r.rules &= (uint16_t)~RULE_IGNORE_ITEMS;
+            used += u.used;
+            heals += u.heals;
+            cures += u.cures;
+            endures += u.endures;
+            ++battles;
+        }
+    printf("v19 formats: %u battles (%u normalised), items used %u (heals %u, cures %u, endures %u), most events %u\n",
+           battles, normalised, used, heals, cures, endures, most);
+    fflush(stdout);
+    assert(normalised == 80 && used > 50 && cures > 10 && endures > 0 && heals > 20);
+}
 #pragma GCC diagnostic pop
 
 int main(void) {
@@ -8198,6 +8970,10 @@ int main(void) {
     test_v18_versions();
     test_v18_formats();
     test_v18_gimmick_items();
+    test_v19_reference();
+    test_v19_more();
+    test_v19_wire();
+    test_v19_formats();
     puts("battle tests passed");
     return 0;
 }

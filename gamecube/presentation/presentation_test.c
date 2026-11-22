@@ -154,5 +154,30 @@ int main(void) {
         healed |= anim.message.kind == MSG_ITEM_HEAL && anim.message.item == 472 && anim.message.subject.side == 0;
     assert(healed && anim.actor[0][BPOS_LEFT].hp == 52 && anim.actor[1][BPOS_RIGHT].hp == 7);
     assert(anim.message.kind == MSG_ITEM_DAMAGE && anim.message.item == 487 && anim.message.subject.slot == BPOS_RIGHT);
+    // V19: a status berry clears the status icon, a confusion cure the confusion
+    // mark; Focus Sash is a message; the use itself shows nothing more.
+    const EventLog consumable = {{
+        {.kind = EV_STATUS, .user = {1, BPOS_LEFT}, .target = {0, BPOS_LEFT}, .condition = BST_PARALYSIS},
+        {.kind = EV_ITEM_CURE, .user = {0, BPOS_LEFT}, .target = {0, BPOS_LEFT}, .condition = BST_PARALYSIS,
+         .item = 514},
+        {.kind = EV_ITEM_CONSUMED, .user = {0, BPOS_LEFT}, .target = {0, BPOS_LEFT}, .condition = BITIME_STATUS,
+         .item = 514},
+        {.kind = EV_CONFUSE, .user = {0, BPOS_LEFT}, .target = {1, BPOS_RIGHT}},
+        {.kind = EV_ITEM_CURE, .user = {1, BPOS_RIGHT}, .target = {1, BPOS_RIGHT},
+         .condition = BATTLE_CURED_CONFUSION, .item = 522},
+        {.kind = EV_ITEM_CONSUMED, .user = {1, BPOS_RIGHT}, .target = {1, BPOS_RIGHT}, .item = 522},
+        {.kind = EV_ITEM_ENDURE, .user = {1, BPOS_CENTER}, .target = {1, BPOS_CENTER}, .item = 481},
+        {.kind = EV_ITEM_CONSUMED, .user = {1, BPOS_CENTER}, .target = {1, BPOS_CENTER}, .item = 481},
+    }, 8};
+    animation_play(&anim, triple, &consumable);
+    bool cured = false, unconfused = false;
+    for (unsigned i = 0; i < 600 && !animation_tick(&anim, triple); ++i) {
+        cured |= anim.message.kind == MSG_ITEM_CURE && anim.message.item == 514 &&
+                 anim.message.condition == BST_PARALYSIS;
+        unconfused |= anim.message.kind == MSG_ITEM_CURE && anim.message.condition == BATTLE_CURED_CONFUSION;
+    }
+    assert(cured && unconfused && anim.actor[0][BPOS_LEFT].condition == BST_NONE &&
+           !(anim.actor[1][BPOS_RIGHT].volatiles & BVF_CONFUSED));
+    assert(anim.message.kind == MSG_ITEM_ENDURE && anim.message.item == 481 && anim.message.subject.slot == BPOS_CENTER);
     puts("presentation-test OK");
 }

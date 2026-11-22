@@ -191,7 +191,8 @@ static bool poll_multi_action(BattleMultiAction *a) {
     if (!host_app_to(b.link, b.mode.app_id, opcode, NULL, 0, &d, &n, &status)) return false;
     if (status == APP_OK) {
         switch (b.mode.app_version) {
-        case BATTLE_APP_VERSION_END_TURN_ITEMS:  // V18 to V9 keep the V6 action layout
+        case BATTLE_APP_VERSION_CONSUMABLE_ITEMS:  // V19 to V9 keep the V6 action layout
+        case BATTLE_APP_VERSION_END_TURN_ITEMS:
         case BATTLE_APP_VERSION_ITEMS:
         case BATTLE_APP_VERSION_TERRAIN:
         case BATTLE_APP_VERSION_WEATHER:
@@ -247,11 +248,14 @@ static void build_plan(void) {
             if (b.request.version >= BATTLE_REQUEST_VERSION_ABILITIES && record->ability &&
                 entries[i].mon.ability.cls != BACLASS_NONE)
                 plan_add(battle_ability_label_key(record->ability));
-            // V18: names of items that can act on the screen (an HP record), unless every item is off.
+            // V18: names of items that can act on the screen (an HP record; V19 a cure or endure
+            // record), unless every item is off.
             if (b.request.version >= BATTLE_REQUEST_VERSION_END_TURN_ITEMS && record->held_item &&
                 !(b.request.rules & RULE_IGNORE_ITEMS) && entries[i].mon.item.cls == BICLASS_RECORDS)
                 for (unsigned k = 0; k < entries[i].mon.item.count && k < BATTLE_MAX_ITEM_RECORDS; ++k)
-                    if (entries[i].mon.item.records[k].kind == BITEM_HP) {
+                    if (entries[i].mon.item.records[k].kind == BITEM_HP ||
+                        entries[i].mon.item.records[k].kind == BITEM_CURE ||
+                        entries[i].mon.item.records[k].kind == BITEM_ENDURE) {
                         plan_add(battle_item_label_key(record->held_item));
                         break;
                     }
@@ -348,10 +352,23 @@ static void log_entry(const char *side, const BattleEntry *e) {
                 SYS_Report("PH12   item id=%u record%u modifier stage=%02x percent=%u pred=%02x:%02x,%02x:%02x\n",
                            it->source, i, x->mod.stage, x->mod.percent, x->mod.pred[0].kind, x->mod.pred[0].arg,
                            x->mod.pred[1].kind, x->mod.pred[1].arg);
+            else if (x->kind == BITEM_HP && x->hp.op == BIHP_HEAL_FIXED)  // V19
+                SYS_Report("PH12   item id=%u record%u hp timing=%u heal %u HP pred=%02x:%02x flags=%02x\n", it->source,
+                           i, x->hp.timing, x->hp.divisor, x->hp.pred.kind, x->hp.pred.arg, x->flags);
+            else if (x->kind == BITEM_HP && x->flags)  // V19: a record that uses the item up
+                SYS_Report("PH12   item id=%u record%u hp timing=%u %s 1/%u pred=%02x:%02x flags=%02x\n", it->source, i,
+                           x->hp.timing, x->hp.op == BIHP_HEAL ? "heal" : "damage", x->hp.divisor, x->hp.pred.kind,
+                           x->hp.pred.arg, x->flags);
             else if (x->kind == BITEM_HP)  // V18
                 SYS_Report("PH12   item id=%u record%u hp timing=%u %s 1/%u pred=%02x:%02x\n", it->source, i,
                            x->hp.timing, x->hp.op == BIHP_HEAL ? "heal" : "damage", x->hp.divisor, x->hp.pred.kind,
                            x->hp.pred.arg);
+            else if (x->kind == BITEM_CURE)  // V19
+                SYS_Report("PH12   item id=%u record%u cure timing=%u status=%02x volatiles=%02x flags=%02x\n",
+                           it->source, i, x->cure.timing, x->cure.status, x->cure.volatiles, x->flags);
+            else if (x->kind == BITEM_ENDURE)  // V19
+                SYS_Report("PH12   item id=%u record%u endure timing=%u condition=%u flags=%02x\n", it->source, i,
+                           x->endure.timing, x->endure.condition, x->flags);
             else
                 SYS_Report("PH12   item id=%u record%u %s mask=%02x turns=%u\n", it->source, i,
                            battle_item_kind_name(x->kind), x->arg0, x->arg2);

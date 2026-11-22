@@ -24,6 +24,13 @@
 //                       force-out / pivot;
 //        status move:   the effects in list order; NO_EFFECT if none applied.
 //   6. Recoil once, from the HP all targets (and substitutes) lost; recharge.
+// V19 (docs/items.md 12.4): a single-hit move with several targets hits every
+// target first, then runs each target's results (Sturdy / Focus Sash, its
+// effects, contact abilities, item checks) in turn, as the reference does;
+// earlier requests keep step 5 target by target. The item checks follow the
+// reference's move end: per hit of a multi-hit move (the target's status,
+// the user's, the target's HP), else per target (the target's status, the
+// user's), then after the recoil the user's, the others' HP, and everyone's.
 // Faint resolution, replacement and pivot prompts stay in battle_core.c.
 // The rules come from the request; the code is an independent implementation.
 
@@ -182,10 +189,14 @@ bool bc_confusion_check(Battle *b, Position user, EventLog *log) {
     unsigned damage = (2u * mon->level / 5u + 2u) * rules->confusion_power * atk / (def ? def : 1) / 50u + 2u;
     if ((rules->flags & BVR_CONFUSION_BURN) && bc_status_kind(b, mon) == BST_BURN) damage /= 2;
     if (!damage) damage = 1;
-    // Sturdy also holds against the confusion self-hit (Gen 5 rule).
-    const uint16_t amount = bc_ability_endure(b, user, (uint16_t)(damage > 0xffff ? 0xffff : damage), &endured);
+    // Sturdy also holds against the confusion self-hit (Gen 5 rule); so does
+    // Focus Sash (V19: the reference's self-hit goes through the same step).
+    bool sash = false;
+    uint16_t amount = bc_ability_endure(b, user, (uint16_t)(damage > 0xffff ? 0xffff : damage), &endured);
+    if (!endured) amount = bc_item_endure(b, user, amount, &sash);
     bc_apply_damage(b, (BattleEvent){.kind = EV_CONFUSION_HIT, .user = user, .target = user}, amount, log);
     if (endured) bc_ability_event(b, log, user, user, bc_ability(b, battle_at(b, user), BABIL_STURDY));
+    if (sash) bc_item_endured(b, user, log);
     return true;
 }
 
@@ -204,6 +215,12 @@ typedef struct {
     uint8_t struck[2];  // roster indices whose Pokemon (not substitute) this move hit
     bool per_use_done;  // BETIME_PER_USE effects already ran for this use
     bool typeless;      // Struggle: no type chart, no thaw
+    bool deferred;      // V19 single-hit spread move: every target is hit first, results after
+    struct {
+        bool attempted, landed, struck, sturdy, sash;
+        uint8_t effectiveness;
+        unsigned lost;
+    } hit[2][BC_MAX_ACTIVE];  // per target position, between the two passes of a deferred move
 } MoveContext;
 
 static Position subject(const MoveContext *c, const BattleEffect *e, Position target) {
@@ -248,6 +265,9 @@ void bc_set_status(Battle *b, Position source, Position target, uint8_t kind, ui
     bc_emit(log, (BattleEvent){.kind = EV_STATUS, .user = source, .target = target, .move_id = move_id,
                                .condition = kind});
     bc_ability_status_set(b, source, target, kind, move_id, log);
+    // V19: the holder's status berry, at once (after Synchronize gave the
+    // status back, whose own berry has acted already).
+    bc_item_status_check(b, target, log);
 }
 
 // V16: a terrain kept an effect off the Pokemon: shown for a certain effect,
@@ -455,6 +475,33 @@ static void run_secondaries(MoveContext *c, unsigned timing, Position target, bo
     }
 }
 
+// What follows a hit on the Pokemon itself: Sturdy or Focus Sash (V19), the
+// per-hit effects, then contact abilities.
+static void hit_aftermath(MoveContext *c, Position target, bool sturdy, bool sash) {
+    Battle *b = c->b;
+    if (sturdy) bc_ability_event(b, c->log, target, target, bc_ability(b, battle_at(b, target), BABIL_STURDY));
+    if (sash) bc_item_endured(b, target, c->log);
+    run_secondaries(c, BETIME_PER_HIT, target, true);
+    bc_ability_contact(b, c->user, target, c->move, c->id, c->log);
+}
+
+// A Fire hit thaws a frozen target (BCR_THAW_ON_FIRE_HIT); `ev` is the hit's event.
+static void thaw(MoveContext *c, Position target, bool struck, BattleEvent ev) {
+    const Battler *defender = battle_at(c->b, target);
+    if (struck && !c->typeless && !defender->fainted && bc_status_kind(c->b, defender) == BST_FREEZE &&
+        (c->b->request->conditions.flags & BCR_THAW_ON_FIRE_HIT) && c->move->type == c->b->request->conditions.fire_type)
+        bc_cure_status(bc_mutable_at(c->b, target), ev, c->log);
+}
+
+// V19, between the hits of a multi-hit move (the reference's move end per
+// hit): the target's status, the user's checks, then the target's HP.
+static void per_hit_items(MoveContext *c, Position target) {
+    if (!bc_items_consumable(c->b)) return;
+    bc_item_status_check(c->b, target, c->log);
+    bc_items_actor_check(c->b, c->user, c->log);
+    bc_item_hp_check(c->b, target, c->log);
+}
+
 // Damage for one target. Returns the HP the target and its substitute lost;
 // *struck tells whether the Pokemon itself took a hit.
 static unsigned strike(MoveContext *c, const BattleEffect *damage, Position target, bool *landed, bool *struck) {
@@ -500,30 +547,36 @@ static unsigned strike(MoveContext *c, const BattleEffect *damage, Position targ
             if (!mon->vol.substitute_hp) {
                 bc_emit(c->log, (BattleEvent){.kind = EV_SUBSTITUTE_BREAK, .user = c->user, .target = target,
                                               .move_id = c->id});
-                if (!(b->request->volatiles.flags & BVR_SUBSTITUTE_MULTI_HIT_CONTINUES)) break;
+                if (!(b->request->volatiles.flags & BVR_SUBSTITUTE_MULTI_HIT_CONTINUES)) {
+                    if (damage->arg2 > 1) per_hit_items(c, target);
+                    break;
+                }
             }
         } else {
             const uint16_t before = defender->hp;
-            bool endured;
+            bool endured, sash = false;
             amount = bc_ability_endure(b, target, amount, &endured);
+            if (!endured) amount = bc_item_endure(b, target, amount, &sash);  // V19 Focus Sash, after Sturdy
             ev.kind = EV_DAMAGE;
             bc_apply_damage(b, ev, amount, c->log);
-            if (endured) bc_ability_event(b, c->log, target, target, bc_ability(b, battle_at(b, target), BABIL_STURDY));
             lost += before - battle_at(b, target)->hp;
             *struck = true;
-            run_secondaries(c, BETIME_PER_HIT, target, true);
-            bc_ability_contact(b, c->user, target, c->move, c->id, c->log);
+            if (c->deferred) {
+                c->hit[target.side][target.slot].sturdy = endured;
+                c->hit[target.side][target.slot].sash = sash;
+            } else {
+                hit_aftermath(c, target, endured, sash);
+            }
         }
+        if (damage->arg2 > 1) per_hit_items(c, target);
         // A multi-hit move stops when the target or the user is down.
         if (h + 1 >= total || battle_at(b, target)->fainted || battle_at(b, c->user)->fainted) break;
     }
     if (total > 1)
         bc_emit(c->log, (BattleEvent){.kind = EV_MULTI_HIT, .user = c->user, .target = target, .move_id = c->id,
                                       .amount = (uint16_t)hits});
-    const Battler *defender = battle_at(b, target);
-    if (*struck && !c->typeless && !defender->fainted && bc_status_kind(b, defender) == BST_FREEZE &&
-        (b->request->conditions.flags & BCR_THAW_ON_FIRE_HIT) && c->move->type == b->request->conditions.fire_type)
-        bc_cure_status(bc_mutable_at(b, target), ev, c->log);
+    if (!c->deferred) thaw(c, target, *struck, ev);
+    else c->hit[target.side][target.slot].effectiveness = ev.effectiveness;
     return lost;
 }
 
@@ -540,15 +593,31 @@ static bool evaded(MoveContext *c, Position target) {
     return true;
 }
 
-// V16: Psychic Terrain comes before Protect (the reference's target-failure order).
-static void damaging_target(MoveContext *c, const BattleEffect *damage, Position target) {
+// The hit on one target. V16: Psychic Terrain comes before Protect (the
+// reference's target-failure order). Returns false if it never got there.
+static bool damaging_hit(MoveContext *c, const BattleEffect *damage, Position target) {
     if (bc_terrain_blocks_move(c->b, c->user, target, c->move, c->id, c->log) ||
         blocked_by_protect(c, target) || evaded(c, target) ||
-        bc_ability_blocks_move(c->b, c->user, target, c->move, c->typeless, c->id, c->log)) return;
+        bc_ability_blocks_move(c->b, c->user, target, c->move, c->typeless, c->id, c->log)) return false;
     bool landed, struck;
     const uint8_t index = c->b->sides[target.side].active[target.slot];
     const unsigned lost = strike(c, damage, target, &landed, &struck);
     if (struck) c->struck[target.side] |= (uint8_t)(1u << index);
+    c->hit[target.side][target.slot].landed = landed;
+    c->hit[target.side][target.slot].struck = struck;
+    c->hit[target.side][target.slot].lost = lost;
+    return true;
+}
+
+// The results for one target after its hit.
+static void damaging_results(MoveContext *c, const BattleEffect *damage, Position target) {
+    const bool landed = c->hit[target.side][target.slot].landed, struck = c->hit[target.side][target.slot].struck;
+    const unsigned lost = c->hit[target.side][target.slot].lost;
+    if (c->deferred && struck) {
+        hit_aftermath(c, target, c->hit[target.side][target.slot].sturdy, c->hit[target.side][target.slot].sash);
+        thaw(c, target, struck, (BattleEvent){.kind = EV_DAMAGE, .user = c->user, .target = target, .move_id = c->id,
+                                              .effectiveness = c->hit[target.side][target.slot].effectiveness});
+    }
     if (!landed) return;
     c->landed = true;
     c->lost += lost;
@@ -578,6 +647,16 @@ static void damaging_target(MoveContext *c, const BattleEffect *damage, Position
         c->per_use_done = true;
         run_secondaries(c, BETIME_PER_USE, c->user, true);
     }
+    // V19, the target's move end (a multi-hit move had it per hit): its
+    // status (confusion), then the user's checks.
+    if (damage->arg2 == 1 && bc_items_consumable(c->b)) {
+        bc_item_status_check(c->b, target, c->log);
+        bc_items_actor_check(c->b, c->user, c->log);
+    }
+}
+
+static void damaging_target(MoveContext *c, const BattleEffect *damage, Position target) {
+    if (damaging_hit(c, damage, target)) damaging_results(c, damage, target);
 }
 
 static void status_target(MoveContext *c, Position target) {
@@ -597,6 +676,11 @@ static void status_target(MoveContext *c, Position target) {
     bool applied = false;
     for (unsigned i = 0; i < c->move->effect_count; ++i) applied |= apply(c, &c->move->effects[i], target);
     if (!applied) bc_emit(c->log, ev);
+    // V19, the target's move end: its status (confusion), then the user's checks.
+    if (bc_items_consumable(c->b)) {
+        bc_item_status_check(c->b, target, c->log);
+        bc_items_actor_check(c->b, c->user, c->log);
+    }
 }
 
 static bool last_to_move(const Battle *b) {
@@ -644,10 +728,14 @@ bool bc_struggle_strike(Battle *b, Position user, Position target, const BattleM
     bool landed, struck;
     strike(&c, &damage, target, &landed, &struck);
     if (struck && battle_at(b, target)->fainted) *kos = 1;
+    if (landed && bc_items_consumable(b)) {  // V19, the target's move end
+        bc_item_status_check(b, target, log);
+        bc_items_actor_check(b, user, log);
+    }
     return landed;
 }
 
-bool bc_execute_move(Battle *b, Position user, uint8_t slot, Position selected, EventLog *log) {
+static bool execute_move(Battle *b, Position user, uint8_t slot, Position selected, EventLog *log, bool *checked) {
     Battler *a = bc_mutable_at(b, user);
     const BattleMove *m = &a->moves[slot];
     // V15: a move whose type follows the weather (Weather Ball) is that type for
@@ -708,6 +796,8 @@ bool bc_execute_move(Battle *b, Position user, uint8_t slot, Position selected, 
         return false;
     }
     c.spread = damage && count > 1;
+    // V19: a single-hit spread move hits every target, then gives each one's results.
+    c.deferred = c.spread && damage->arg2 == 1 && b->request->version >= BATTLE_REQUEST_VERSION_CONSUMABLE_ITEMS;
     bool all_fainted = true;
     for (uint8_t side = 0; side < 2; ++side)
         for (uint8_t s = 0; s < BC_MAX_ACTIVE; ++s) {
@@ -715,10 +805,23 @@ bool bc_execute_move(Battle *b, Position user, uint8_t slot, Position selected, 
             const Position target = {side, s};
             const Battler *mon = battle_at(b, target);
             if (!mon || (mon->fainted && !same(target, user))) continue;
-            if (damage) damaging_target(&c, damage, target);
+            if (c.deferred) c.hit[side][s].attempted = damaging_hit(&c, damage, target);
+            else if (damage) damaging_target(&c, damage, target);
             else status_target(&c, target);
-            if (!battle_at(b, target)->fainted) all_fainted = false;
+            if (!c.deferred && !battle_at(b, target)->fainted) all_fainted = false;
         }
+    if (c.deferred)
+        for (uint8_t side = 0; side < 2; ++side)
+            for (uint8_t s = 0; s < BC_MAX_ACTIVE; ++s) {
+                if (!(targets[side] & (1u << s)) || !c.hit[side][s].attempted) continue;
+                damaging_results(&c, damage, (Position){side, s});
+            }
+    if (c.deferred)
+        for (uint8_t side = 0; side < 2; ++side)
+            for (uint8_t s = 0; s < BC_MAX_ACTIVE; ++s)
+                if ((targets[side] & (1u << s)) && battle_at(b, (Position){side, s}) &&
+                    !battle_at(b, (Position){side, s})->fainted)
+                    all_fainted = false;
     // Once after all targets (e.g. a spread move lowering the user's Defense).
     if (damage && c.landed) run_secondaries(&c, BETIME_AFTER_MOVE, user, true);
     if (recoil && c.lost && !battle_at(b, user)->fainted && !bc_ability_no_recoil(b, user)) {
@@ -726,9 +829,23 @@ bool bc_execute_move(Battle *b, Position user, uint8_t slot, Position selected, 
         bc_apply_damage(b, (BattleEvent){.kind = EV_RECOIL, .user = user, .target = user, .move_id = id},
                         (uint16_t)(amount ? amount : 1), log);
     }
+    // V19: the user's item checks after its recoil (MOVEEND_ITEM_EFFECTS_ATTACKER_2), before Moxie.
+    if (bc_items_consumable(b)) {
+        bc_items_actor_check(b, user, log);
+        *checked = true;
+    }
     if (damage) bc_ability_after_move(b, user, knocked_out(&c), log);  // Moxie, after recoil
     if (c.landed && find_effect(m, BEFF_RECHARGE) && !battle_at(b, user)->fainted &&
         !(all_fainted && (b->request->volatiles.flags & BVR_RECHARGE_SKIP_ON_KO)))
         bc_mutable_at(b, user)->vol.recharge = 2;  // blocks the next turn, ticks down at turn ends
     return c.pivot;
+}
+
+// Every path of a move ends with the reference's move end (V19 item checks;
+// nothing earlier).
+bool bc_execute_move(Battle *b, Position user, uint8_t slot, Position selected, EventLog *log) {
+    bool checked = false;
+    const bool pivot = execute_move(b, user, slot, selected, log, &checked);
+    bc_items_after_action(b, user, checked, log);
+    return pivot;
 }

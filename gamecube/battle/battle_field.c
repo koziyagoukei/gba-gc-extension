@@ -114,6 +114,9 @@ static void residual(Battle *b, Position p, uint8_t kind, EventLog *log) {
     unsigned amount = mon->max_hp / rules->residual_divisor;
     bc_apply_damage(b, (BattleEvent){.kind = EV_WEATHER_DAMAGE, .user = p, .target = p, .condition = kind},
                     (uint16_t)(amount ? amount : 1), log);
+    // V19: the weather's damage checks the HP berry at once (BattleScript_DoTurnDmg);
+    // an ability's sun damage above does not (the berry waits for the next check).
+    bc_item_hp_check(b, p, log);
 }
 
 // First the countdown (a weather that ends now does nothing more this turn),

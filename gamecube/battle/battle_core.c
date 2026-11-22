@@ -520,6 +520,7 @@ static void place(Battle *b, Position p, uint8_t index, EventLog *log) {
 static void send_out(Battle *b, Position p, uint8_t index, EventLog *log) {
     place(b, p, index, log);
     bc_ability_on_entry(b, p, log);
+    bc_item_on_entry(b, p, log);  // V19: after its entry abilities (FIRST_EVENT_BLOCK_ITEMS)
 }
 
 // Entry abilities of several Pokemon entering together, in speed order (a
@@ -546,7 +547,11 @@ static void entries_by_speed(Battle *b, const uint8_t mask[2], EventLog *log) {
             order[j] = p;
             tie[j] = t;
         }
-    for (unsigned i = 0; i < count; ++i) bc_ability_on_entry(b, order[i], log);
+    // V19: each Pokemon's item right after its own entry abilities.
+    for (unsigned i = 0; i < count; ++i) {
+        bc_ability_on_entry(b, order[i], log);
+        bc_item_on_entry(b, order[i], log);
+    }
 }
 
 // V15: the replacements after a turn enter together; their entry abilities
@@ -791,12 +796,17 @@ static void execute_struggle(Battle *b, Position user, EventLog *log) {
     // Protect, semi-invulnerable states and substitutes apply as to any hit;
     // the recoil follows only a hit that landed (a substitute hit counts).
     unsigned kos;
-    if (!bc_struggle_strike(b, user, target, &move, log, &kos)) return;
+    if (!bc_struggle_strike(b, user, target, &move, log, &kos)) {
+        bc_items_after_action(b, user, false, log);  // V19: the move end
+        return;
+    }
     const unsigned max_hp = battle_at(b, user)->max_hp;
     const unsigned rounding = rules->struggle_recoil == BSTRUGGLE_MAX_HP_NEAREST ? 2 : 0;
     const uint16_t recoil = (max_hp + rounding) / 4u;
     bc_apply_damage(b, (BattleEvent){.kind = EV_RECOIL, .user = user, .target = user}, recoil ? recoil : 1, log);
+    bc_items_actor_check(b, user, log);  // V19: after the recoil, before Moxie
     bc_ability_after_move(b, user, kos, log);  // Moxie, after recoil
+    bc_items_after_action(b, user, true, log);
 }
 
 BattleActionState battle_action_state(const Battle *b, Position p) {
@@ -931,6 +941,7 @@ static void resolve_end_of_turn(Battle *b, EventLog *log) {
             if (mon->fainted || (kind != groups[g] && !(kind == BST_TOXIC && groups[g] == BST_POISON))) continue;
             bc_apply_damage(b, (BattleEvent){.kind = EV_RESIDUAL, .user = order[i], .target = order[i],
                                          .condition = kind}, residual_damage(b, mon, kind), log);
+            bc_item_hp_check(b, order[i], log);  // V19: at once (BattleScript_DoTurnDmg)
         }
     // V16: the terrain counts down after the status damage, before Speed Boost.
     bc_terrain_end_turn(b, log);
@@ -967,6 +978,7 @@ static void continue_turn(Battle *b, EventLog *log) {
             // A lost action breaks a Protect chain and cancels a charging move.
             mon->vol.protect_uses = 0;
             bc_cancel_charge(b, user, log);
+            bc_items_after_action(b, user, false, log);  // V19: the move end runs all the same
         } else if (action->action.kind == ACT_STRUGGLE) {
             mon->vol.protect_uses = 0;
             execute_struggle(b, user, log);

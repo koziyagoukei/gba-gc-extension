@@ -20,6 +20,9 @@ typedef enum {
     MSG_ITEMS_NORMALIZED,
     // V18 item HP records: subject = holder, item = its item id.
     MSG_ITEM_HEAL, MSG_ITEM_DAMAGE,
+    // V19 consumable items: subject = holder, item = its item id; MSG_ITEM_CURE
+    // condition = the BST_* status cured, or BATTLE_CURED_CONFUSION.
+    MSG_ITEM_CURE, MSG_ITEM_ENDURE,
 } MessageKind;
 
 typedef struct {

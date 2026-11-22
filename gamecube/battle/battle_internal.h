@@ -141,6 +141,20 @@ void bc_items_begin_battle(Battle *battle, EventLog *log);  // EV_ITEMS_NORMALIZ
 uint8_t bc_item_field_turns(const Battle *battle, Position source, uint8_t record_kind, uint8_t bit, uint8_t turns);
 // V18: the BITEM_HP records of the item at `position` for one BITIME_* timing.
 void bc_item_hp(Battle *battle, Position position, uint8_t timing, EventLog *log);
+// V19 consumable items (docs/items.md 12). Each runs only on a V19 request
+// with items simulated and a record of its kind; it acts at most once per
+// item (BIREC_CONSUMED uses the item up).
+bool bc_items_consumable(const Battle *battle);  // V19 rules: item checks, two-phase spread hits
+bool bc_item_hp_check(Battle *battle, Position position, EventLog *log);      // BITIME_HP_THRESHOLD
+bool bc_item_status_check(Battle *battle, Position position, EventLog *log);  // BITIME_STATUS
+// A lethal hit at full HP: the HP loss that leaves 1 HP (*endured set), or `amount`.
+uint16_t bc_item_endure(const Battle *battle, Position target, uint16_t amount, bool *endured);
+void bc_item_endured(Battle *battle, Position target, EventLog *log);  // EV_ITEM_ENDURE, then the use
+void bc_item_on_entry(Battle *battle, Position position, EventLog *log);  // status, then HP check
+// The end of an action (the reference's move end): the actor's checks (once),
+// every other Pokemon's HP check, then every Pokemon's checks, in battler order.
+void bc_items_actor_check(Battle *battle, Position actor, EventLog *log);
+void bc_items_after_action(Battle *battle, Position actor, bool actor_checked, EventLog *log);
 
 // Ability hooks (battle_abilities.c, docs/abilities.md). All are inert unless
 // the request is V11+ without RULE_IGNORE_ABILITIES. An ability is a list of

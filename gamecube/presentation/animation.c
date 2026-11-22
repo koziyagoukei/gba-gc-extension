@@ -269,6 +269,19 @@ void animation_play(BattleAnimation *a, const BattleLayout *layout, const EventL
             add(a, (AnimationStep){.kind = ANIM_HP, .target = e->target, .hp = e->hp_after});
             wait(a, 18);
             break;
+        case EV_ITEM_CURE:  // V19: a status berry
+            if (!battle_layout_anchor(layout, e->target)) break;
+            if (e->condition == BATTLE_CURED_CONFUSION) volatile_step(a, e->target, 0, BVF_CONFUSED);
+            else add(a, (AnimationStep){.kind = ANIM_CONDITION, .target = e->target, .condition = BST_NONE});
+            message(a, (SceneMessage){.kind = MSG_ITEM_CURE, .subject = e->target, .condition = e->condition,
+                                      .item = e->item}, 32);
+            break;
+        case EV_ITEM_ENDURE:  // V19: Focus Sash
+            if (!battle_layout_anchor(layout, e->target)) break;
+            message(a, (SceneMessage){.kind = MSG_ITEM_ENDURE, .subject = e->target, .item = e->item}, 32);
+            break;
+        case EV_ITEM_CONSUMED:  // V19: shown by the message of what it did
+            break;
         case EV_WEATHER_DAMAGE:
             if (!battle_layout_anchor(layout, e->target)) break;
             message(a, (SceneMessage){.kind = MSG_WEATHER_DAMAGE, .subject = e->target, .condition = e->condition}, 0);

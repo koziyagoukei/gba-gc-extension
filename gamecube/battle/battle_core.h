@@ -84,6 +84,12 @@ typedef struct {
     // entry's (entry->record.held_item, entry->mon.item); the definition goes
     // with the item, not the holder. B0 never changes it during a battle.
     const BattleEntry *item_from;
+    // V19 (docs/items.md 12.2): the item it used up last (NULL: none), with
+    // the timing that used it (BITIME_*) and the turns completed then. Using
+    // an item sets item_from to NULL: the roster Pokemon holds nothing from
+    // then on, whatever position it takes (switch, Shift, Rotation).
+    const BattleEntry *item_used;
+    uint8_t item_used_timing, item_used_turn;
 } Battler;
 
 typedef struct {
@@ -126,8 +132,13 @@ typedef enum { EV_MOVE_USED, EV_MISS, EV_DAMAGE, EV_NO_EFFECT, EV_FAINT, EV_FORF
                                       // (amount = Pokemon holding an item, battler = those not simulated)
               // V18 item HP records: target = holder, item = its item id, amount and hp_after.
               EV_ITEM_HEAL,           // the holder regains HP from its item (Leftovers)
-              EV_ITEM_DAMAGE          // the holder loses HP to its item (Black Sludge); EV_FAINT may follow
+              EV_ITEM_DAMAGE,         // the holder loses HP to its item (Black Sludge); EV_FAINT may follow
+              // V19 consumable items (docs/items.md 12): target = holder, item = its item id.
+              EV_ITEM_CURE,           // condition = the BST_* status cured, or BATTLE_CURED_CONFUSION
+              EV_ITEM_ENDURE,         // the holder kept 1 HP from a lethal hit (Focus Sash)
+              EV_ITEM_CONSUMED        // the item is used up (condition = BITIME_*); it holds nothing now
 } EventKind;
+#define BATTLE_CURED_CONFUSION 0xffu  // EV_ITEM_CURE: confusion, not a major status
 typedef struct {
     EventKind kind;
     Position user, target;
