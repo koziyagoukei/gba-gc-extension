@@ -1,0 +1,127 @@
+effect_id,hold_effect,explicit_items,tags,dispatcher_flags,usual_self_loss,enum_line,flags_line,dispatch_case_line,primary_read_sites,candidate_test
+0,HOLD_EFFECT_NONE,0,ITM-PRESENCE,,kept-on-activation,6,3,,,
+1,HOLD_EFFECT_RESTORE_HP,2,ITM-HP,onSwitchIn onHpThreshold,used-on-activation,7,7,1161,src/battle_debug.c:2161 src/battle_hold_effects.c:1161,test/battle/hold_effect/restore_hp.c
+2,HOLD_EFFECT_CURE_PAR,1,ITM-CURE,onSwitchIn onStatusChange,used-on-activation,8,13,1140,src/battle_debug.c:2162 src/battle_hold_effects.c:1140,test/battle/hold_effect/cure_par.c
+3,HOLD_EFFECT_CURE_SLP,1,ITM-CURE,onSwitchIn onStatusChange,used-on-activation,9,19,1152,src/battle_debug.c:2163 src/battle_hold_effects.c:1152,test/battle/hold_effect/cure_slp.c
+4,HOLD_EFFECT_CURE_PSN,1,ITM-CURE,onSwitchIn onStatusChange,used-on-activation,10,25,1143,src/battle_debug.c:2164 src/battle_hold_effects.c:1143,test/battle/hold_effect/cure_psn.c
+5,HOLD_EFFECT_CURE_BRN,1,ITM-CURE,onSwitchIn onStatusChange,used-on-activation,11,31,1146,src/battle_debug.c:2165 src/battle_hold_effects.c:1146,test/battle/hold_effect/cure_brn.c
+6,HOLD_EFFECT_CURE_FRZ,1,ITM-CURE,onSwitchIn onStatusChange,used-on-activation,12,37,1149,src/battle_debug.c:2166 src/battle_hold_effects.c:1149,test/battle/hold_effect/cure_frz.c
+7,HOLD_EFFECT_RESTORE_PP,1,ITM-MOVE-END,onSwitchIn sprayLeppaBlunder,used-on-activation,13,43,1167,src/battle_debug.c:2167 src/battle_hold_effects.c:1167,test/battle/hold_effect/restore_pp.c
+8,HOLD_EFFECT_CURE_CONFUSION,1,ITM-CURE,onSwitchIn onStatusChange,used-on-activation,14,49,1155,src/battle_debug.c:2168 src/battle_hold_effects.c:1155,test/battle/hold_effect/cure_confusion.c
+9,HOLD_EFFECT_CURE_STATUS,1,ITM-CURE,onSwitchIn onStatusChange,used-on-activation,15,55,1158,src/battle_debug.c:2169 src/battle_hold_effects.c:1158,test/battle/hold_effect/cure_status.c
+10,HOLD_EFFECT_CONFUSE_FLAVOR,5,ITM-HP,onSwitchIn onHpThreshold,used-on-activation,16,61,1170,src/battle_debug.c:2170 src/battle_hold_effects.c:1170,
+11,HOLD_EFFECT_ATTACK_UP,1,ITM-STAGE,onSwitchIn onHpThreshold,used-on-activation,17,67,1173,src/battle_debug.c:2171 src/battle_hold_effects.c:1173,test/battle/hold_effect/attack_up.c
+12,HOLD_EFFECT_DEFENSE_UP,1,ITM-STAGE,onSwitchIn onHpThreshold,used-on-activation,18,73,1176,src/battle_debug.c:2172 src/battle_hold_effects.c:1176,test/battle/hold_effect/defense_up.c
+13,HOLD_EFFECT_SPEED_UP,1,ITM-STAGE,onSwitchIn onHpThreshold,used-on-activation,19,79,1179,src/battle_debug.c:2173 src/battle_hold_effects.c:1179,test/battle/hold_effect/speed_up.c
+14,HOLD_EFFECT_SP_ATTACK_UP,1,ITM-STAGE,onSwitchIn onHpThreshold,used-on-activation,20,85,1182,src/battle_debug.c:2174 src/battle_hold_effects.c:1182,test/battle/hold_effect/sp_attack_up.c
+15,HOLD_EFFECT_SP_DEFENSE_UP,1,ITM-STAGE,onSwitchIn onHpThreshold,used-on-activation,21,91,1185,src/battle_debug.c:2175 src/battle_hold_effects.c:1185,test/battle/hold_effect/sp_defense_up.c
+16,HOLD_EFFECT_CRITICAL_UP,1,ITM-CRITICAL,onSwitchIn onHpThreshold,used-on-activation,22,97,1188,src/battle_debug.c:2176 src/battle_hold_effects.c:1188,test/battle/hold_effect/critical_up.c
+17,HOLD_EFFECT_RANDOM_STAT_UP,1,ITM-STAGE,onSwitchIn onHpThreshold,used-on-activation,23,103,1191,src/battle_debug.c:2177 src/battle_hold_effects.c:1191,test/battle/hold_effect/random_stat_up.c
+18,HOLD_EFFECT_EVASION_UP,2,ITM-ACCURACY,onSwitchIn onHpThreshold,kept-on-activation,24,109,,src/battle_debug.c:2178 src/battle_util.c:10847,test/battle/hold_effect/evasion_up.c
+19,HOLD_EFFECT_WHITE_HERB,1,ITM-MOVE-END ITM-STAGE ITM-RESIDUAL,whiteHerb onFling orbsWhiteHerbActivation,used-on-activation,25,115,1059,src/battle_debug.c:2179 src/battle_hold_effects.c:1059 src/battle_move_resolution.c:5213 src/battle_set_effect.c:874,test/battle/hold_effect/white_herb.c
+20,HOLD_EFFECT_MACHO_BRACE,1,ITM-STATS ITM-ORDER ITM-POLICY,,kept-on-activation,26,122,,src/battle_debug.c:2180 src/battle_main.c:4637,test/battle/hold_effect/macho_brace.c
+21,HOLD_EFFECT_EXP_SHARE,1,ITM-POLICY,,kept-on-activation,27,126,,src/battle_debug.c:2181 src/battle_script_commands.c:2199,test/battle/hold_effect/exp_share.c
+22,HOLD_EFFECT_QUICK_CLAW,1,ITM-ORDER,,kept-on-activation,28,130,,src/battle_debug.c:2182 src/battle_main.c:5182,test/battle/hold_effect/quick_claw.c
+23,HOLD_EFFECT_FRIENDSHIP_UP,1,ITM-POLICY,,kept-on-activation,29,134,,src/battle_debug.c:2183,test/battle/hold_effect/friendship_up.c
+24,HOLD_EFFECT_MENTAL_HERB,1,ITM-CURE,onTargetAfterHit onAttackerAfterHit onFling,used-on-activation,30,138,1101,src/battle_debug.c:2184 src/battle_hold_effects.c:1101 src/battle_set_effect.c:873,test/battle/hold_effect/mental_herb.c
+25,HOLD_EFFECT_CHOICE_BAND,1,ITM-STATS ITM-ORDER,,kept-on-activation,31,145,,src/battle_debug.c:2185 src/battle_util.c:7297,test/battle/hold_effect/choice_band.c
+26,HOLD_EFFECT_FLINCH,2,ITM-MOVE-END,onAttackerAfterHit,kept-on-activation,32,149,1065,src/battle_debug.c:2186 src/battle_hold_effects.c:1065 src/battle_set_effect.c:869,test/battle/hold_effect/flinch.c
+27,HOLD_EFFECT_DOUBLE_PRIZE,2,ITM-POLICY,onSwitchIn,kept-on-activation,33,154,1044,src/battle_debug.c:2187 src/battle_hold_effects.c:1044 src/battle_util.c:5933,test/battle/hold_effect/double_prize.c
+28,HOLD_EFFECT_REPEL,2,ITM-POLICY,,kept-on-activation,34,159,,src/battle_debug.c:2188,test/battle/hold_effect/repel.c
+29,HOLD_EFFECT_SOUL_DEW,1,ITM-DAMAGE,,kept-on-activation,35,163,,src/battle_debug.c:2189 src/battle_util.c:6958,test/battle/hold_effect/soul_dew.c
+30,HOLD_EFFECT_DEEP_SEA_TOOTH,1,ITM-STATS,,kept-on-activation,36,167,,src/battle_debug.c:2190 src/battle_util.c:7289,test/battle/hold_effect/deep_sea_tooth.c
+31,HOLD_EFFECT_DEEP_SEA_SCALE,1,ITM-STATS,,kept-on-activation,37,171,,src/battle_debug.c:2191 src/battle_util.c:7460,test/battle/hold_effect/deep_sea_scale.c
+32,HOLD_EFFECT_CAN_ALWAYS_RUN,1,ITM-POLICY,,kept-on-activation,38,175,,src/battle_debug.c:2192 src/battle_main.c:3834 src/battle_util.c:679,test/battle/hold_effect/can_always_run.c
+33,HOLD_EFFECT_PREVENT_EVOLVE,1,ITM-POLICY,,kept-on-activation,39,179,,src/battle_debug.c:2193,test/battle/hold_effect/prevent_evolve.c
+34,HOLD_EFFECT_FOCUS_BAND,1,ITM-ENDURE,,kept-on-activation,40,183,,src/battle_debug.c:2194 src/battle_util.c:8315,test/battle/hold_effect/focus_band.c
+35,HOLD_EFFECT_LUCKY_EGG,1,ITM-POLICY,,kept-on-activation,41,187,,src/battle_debug.c:2195 src/battle_script_commands.c:9397,test/battle/hold_effect/lucky_egg.c
+36,HOLD_EFFECT_SCOPE_LENS,2,ITM-CRITICAL,,kept-on-activation,42,191,,src/battle_debug.c:2196 src/battle_util.c:8127,test/battle/hold_effect/scope_lens.c
+37,HOLD_EFFECT_LEFTOVERS,1,ITM-RESIDUAL,leftovers,kept-on-activation,43,195,1131,src/battle_debug.c:2197 src/battle_hold_effects.c:1131,test/battle/hold_effect/leftovers.c
+38,HOLD_EFFECT_LIGHT_BALL,1,ITM-STATS,,kept-on-activation,44,200,,src/battle_debug.c:2198 src/battle_set_effect.c:858 src/battle_util.c:7293,test/battle/hold_effect/light_ball.c
+39,HOLD_EFFECT_TYPE_POWER,23,ITM-DAMAGE,,kept-on-activation,45,204,,src/battle_debug.c:2199 src/battle_set_effect.c:862 src/battle_util.c:6964,test/battle/hold_effect/type_power.c
+40,HOLD_EFFECT_SHELL_BELL,1,ITM-HP ITM-MOVE-END,lifeOrbShellBell,kept-on-activation,46,208,1113,src/battle_debug.c:2200 src/battle_hold_effects.c:1113,test/battle/hold_effect/shell_bell.c
+41,HOLD_EFFECT_LUCKY_PUNCH,1,ITM-CRITICAL,,kept-on-activation,47,213,,src/battle_debug.c:2201 src/battle_util.c:8130,test/battle/hold_effect/lucky_punch.c
+42,HOLD_EFFECT_METAL_POWDER,1,ITM-STATS,,kept-on-activation,48,217,,src/battle_debug.c:2202 src/battle_util.c:7464,test/battle/hold_effect/metal_powder.c
+43,HOLD_EFFECT_THICK_CLUB,1,ITM-STATS,,kept-on-activation,49,221,,src/battle_debug.c:2203 src/battle_util.c:7285,test/battle/hold_effect/thick_club.c
+44,HOLD_EFFECT_LEEK,1,ITM-CRITICAL,,kept-on-activation,50,225,,src/battle_debug.c:2204 src/battle_util.c:8113,test/battle/hold_effect/leek.c
+45,HOLD_EFFECT_CHOICE_SCARF,1,ITM-STATS ITM-ORDER,,kept-on-activation,52,229,,src/battle_debug.c:2205 src/battle_main.c:4641,test/battle/hold_effect/choice_scarf.c
+46,HOLD_EFFECT_CHOICE_SPECS,1,ITM-STATS ITM-ORDER,,kept-on-activation,53,233,,src/battle_debug.c:2206 src/battle_util.c:7301,test/battle/hold_effect/choice_specs.c
+47,HOLD_EFFECT_DAMP_ROCK,1,ITM-FIELD,,kept-on-activation,54,237,,src/battle_debug.c:2207 src/battle_util.c:172,test/battle/hold_effect/damp_rock.c
+48,HOLD_EFFECT_GRIP_CLAW,1,ITM-RESIDUAL,,kept-on-activation,55,241,,src/battle_debug.c:2208 src/battle_util.c:11222,test/battle/hold_effect/grip_claw.c
+49,HOLD_EFFECT_HEAT_ROCK,1,ITM-FIELD,,kept-on-activation,56,245,,src/battle_debug.c:2209 src/battle_util.c:208,test/battle/hold_effect/heat_rock.c
+50,HOLD_EFFECT_ICY_ROCK,1,ITM-FIELD,,kept-on-activation,57,249,,src/battle_debug.c:2210 src/battle_util.c:244,test/battle/hold_effect/icy_rock.c
+51,HOLD_EFFECT_LIGHT_CLAY,1,ITM-FIELD,,kept-on-activation,58,253,,src/battle_debug.c:2211 src/battle_script_commands.c:1624 src/battle_set_effect.c:1064,test/battle/hold_effect/light_clay.c
+52,HOLD_EFFECT_SMOOTH_ROCK,1,ITM-FIELD,,kept-on-activation,59,257,,src/battle_debug.c:2212 src/battle_util.c:232,test/battle/hold_effect/smooth_rock.c
+53,HOLD_EFFECT_POWER_HERB,1,ITM-SPECIAL,,used-on-activation,60,261,,src/battle_debug.c:2213 src/battle_move_resolution.c:2013,test/battle/hold_effect/power_herb.c
+54,HOLD_EFFECT_BIG_ROOT,1,ITM-HP ITM-RESIDUAL,,kept-on-activation,61,265,,src/battle_debug.c:2214 src/battle_util.c:1874,test/battle/hold_effect/big_root.c
+55,HOLD_EFFECT_EXPERT_BELT,1,ITM-DAMAGE,,kept-on-activation,62,269,,src/battle_debug.c:2215 src/battle_util.c:7811,test/battle/hold_effect/expert_belt.c
+56,HOLD_EFFECT_LIFE_ORB,1,ITM-DAMAGE ITM-MOVE-END,lifeOrbShellBell,kept-on-activation,63,273,1116,src/battle_debug.c:2216 src/battle_hold_effects.c:1116 src/battle_util.c:7815,test/battle/hold_effect/life_orb.c
+57,HOLD_EFFECT_METRONOME,1,ITM-DAMAGE,,kept-on-activation,64,278,,src/battle_debug.c:2217 src/battle_util.c:7804,test/battle/hold_effect/metronome.c
+58,HOLD_EFFECT_MUSCLE_BAND,1,ITM-DAMAGE,,kept-on-activation,65,282,,src/battle_debug.c:2218 src/battle_util.c:6938,test/battle/hold_effect/muscle_band.c
+59,HOLD_EFFECT_WIDE_LENS,1,ITM-ACCURACY,,kept-on-activation,66,286,,src/battle_debug.c:2219 src/battle_util.c:10833,test/battle/hold_effect/wide_lens.c
+60,HOLD_EFFECT_WISE_GLASSES,1,ITM-DAMAGE,,kept-on-activation,67,290,,src/battle_debug.c:2220 src/battle_util.c:6942,test/battle/hold_effect/wise_glasses.c
+61,HOLD_EFFECT_ZOOM_LENS,1,ITM-ACCURACY,,kept-on-activation,68,294,,src/battle_debug.c:2221 src/battle_util.c:10836,test/battle/hold_effect/zoom_lens.c
+62,HOLD_EFFECT_LAGGING_TAIL,2,ITM-ORDER,,kept-on-activation,69,298,,src/battle_debug.c:2222 src/battle_main.c:4348,test/battle/hold_effect/lagging_tail.c
+63,HOLD_EFFECT_FOCUS_SASH,1,ITM-ENDURE,,used-on-activation,70,302,,src/battle_debug.c:2223 src/battle_util.c:8322,test/battle/hold_effect/focus_sash.c
+64,HOLD_EFFECT_FLAME_ORB,1,ITM-RESIDUAL,orbs orbsWhiteHerbActivation,kept-on-activation,71,306,1128,src/battle_debug.c:2224 src/battle_hold_effects.c:1128 src/battle_set_effect.c:850,test/battle/hold_effect/flame_orb.c
+65,HOLD_EFFECT_TOXIC_ORB,1,ITM-RESIDUAL,orbs orbsWhiteHerbActivation,kept-on-activation,72,312,1125,src/battle_debug.c:2225 src/battle_hold_effects.c:1125 src/battle_set_effect.c:854,test/battle/hold_effect/toxic_orb.c
+66,HOLD_EFFECT_STICKY_BARB,1,ITM-HIT ITM-RESIDUAL,onTargetAfterHit orbs orbsWhiteHerbActivation,transfer,73,318,1119,src/battle_debug.c:2226 src/battle_hold_effects.c:1119,test/battle/hold_effect/sticky_barb.c
+67,HOLD_EFFECT_IRON_BALL,1,ITM-ORDER ITM-FIELD,,kept-on-activation,74,325,,src/battle_debug.c:2227 src/battle_main.c:4639 src/battle_util.c:6153,test/battle/hold_effect/iron_ball.c
+68,HOLD_EFFECT_BLACK_SLUDGE,1,ITM-RESIDUAL,leftovers,kept-on-activation,75,329,1134,src/battle_debug.c:2228 src/battle_hold_effects.c:1134,test/battle/hold_effect/black_sludge.c
+69,HOLD_EFFECT_DESTINY_KNOT,1,ITM-SPECIAL,,kept-on-activation,76,334,,src/battle_debug.c:2229,test/battle/hold_effect/destiny_knot.c
+70,HOLD_EFFECT_SHED_SHELL,1,ITM-ORDER ITM-SWITCH,,kept-on-activation,77,338,,src/battle_debug.c:2230 src/battle_main.c:4162 src/battle_script_commands.c:3470,test/battle/hold_effect/shed_shell.c
+71,HOLD_EFFECT_QUICK_POWDER,1,ITM-STATS ITM-ORDER,,kept-on-activation,78,342,,src/battle_debug.c:2231 src/battle_main.c:4643,test/battle/hold_effect/quick_powder.c
+72,HOLD_EFFECT_ADAMANT_ORB,2,ITM-DAMAGE,,kept-on-activation,79,346,,src/battle_debug.c:2232 src/battle_util.c:6950,test/battle/hold_effect/adamant_orb.c
+73,HOLD_EFFECT_LUSTROUS_ORB,2,ITM-DAMAGE,,kept-on-activation,80,350,,src/battle_debug.c:2233 src/battle_util.c:6946,test/battle/hold_effect/lustrous_orb.c
+74,HOLD_EFFECT_GRISEOUS_ORB,2,ITM-DAMAGE ITM-GIMMICK,,kept-on-activation,81,354,,src/battle_debug.c:2234 src/battle_util.c:6954,test/battle/hold_effect/griseous_orb.c
+75,HOLD_EFFECT_ENIGMA_BERRY,1,ITM-HP ITM-HIT,onTargetAfterHit,used-on-activation,82,358,1095,src/battle_debug.c:2235 src/battle_hold_effects.c:1095,test/battle/hold_effect/enigma_berry.c
+76,HOLD_EFFECT_RESIST_BERRY,18,ITM-DAMAGE,,used-on-activation,83,363,,src/battle_debug.c:2236 src/battle_util.c:7828,test/battle/hold_effect/resist_berry.c
+77,HOLD_EFFECT_POWER_ITEM,6,ITM-STATS ITM-ORDER ITM-POLICY,,kept-on-activation,84,367,,src/battle_debug.c:2237 src/battle_main.c:4637,test/battle/hold_effect/power_item.c
+78,HOLD_EFFECT_RESTORE_PCT_HP,1,ITM-HP,onSwitchIn onHpThreshold,used-on-activation,85,371,1164,src/battle_debug.c:2238 src/battle_hold_effects.c:1164,test/battle/hold_effect/restore_pct_hp.c
+79,HOLD_EFFECT_MICLE_BERRY,1,ITM-ACCURACY,onSwitchIn onHpThreshold,used-on-activation,86,377,1194,src/battle_debug.c:2239 src/battle_hold_effects.c:1194,test/battle/hold_effect/micle_berry.c
+80,HOLD_EFFECT_CUSTAP_BERRY,1,ITM-ORDER,,used-on-activation,87,383,,src/battle_debug.c:2240 src/battle_main.c:5183,test/battle/hold_effect/custap_berry.c
+81,HOLD_EFFECT_JABOCA_BERRY,1,ITM-HIT,onTargetAfterHit,used-on-activation,88,387,1089,src/battle_debug.c:2241 src/battle_hold_effects.c:1037 src/battle_set_effect.c:473,test/battle/hold_effect/jaboca_berry.c
+82,HOLD_EFFECT_ROWAP_BERRY,1,ITM-HIT,onTargetAfterHit,used-on-activation,89,392,1092,src/battle_debug.c:2242 src/battle_hold_effects.c:1036,test/battle/hold_effect/rowap_berry.c
+83,HOLD_EFFECT_KEE_BERRY,1,ITM-HIT ITM-STAGE,keeMarangaBerry,used-on-activation,90,397,1107,src/battle_debug.c:2243 src/battle_hold_effects.c:1107,test/battle/hold_effect/kee_berry.c
+84,HOLD_EFFECT_MARANGA_BERRY,1,ITM-HIT ITM-STAGE,keeMarangaBerry,used-on-activation,91,402,1110,src/battle_debug.c:2244 src/battle_hold_effects.c:1110,test/battle/hold_effect/maranga_berry.c
+85,HOLD_EFFECT_PLATE,17,ITM-DAMAGE ITM-GIMMICK,,kept-on-activation,92,407,,src/battle_debug.c:2245 src/battle_util.c:6965,test/battle/hold_effect/plate.c
+86,HOLD_EFFECT_FLOAT_STONE,1,ITM-SPECIAL,,kept-on-activation,94,411,,src/battle_debug.c:2246 src/battle_util.c:6209,test/battle/hold_effect/float_stone.c
+87,HOLD_EFFECT_EVIOLITE,1,ITM-STATS,,kept-on-activation,95,415,,src/battle_debug.c:2247 src/battle_util.c:7468,test/battle/hold_effect/eviolite.c
+88,HOLD_EFFECT_ASSAULT_VEST,1,ITM-STATS ITM-ORDER,,kept-on-activation,96,419,,src/battle_debug.c:2248 src/battle_util.c:1640,test/battle/hold_effect/assault_vest.c
+89,HOLD_EFFECT_DRIVE,4,ITM-GIMMICK,,kept-on-activation,97,423,,src/battle_debug.c:2249,test/battle/hold_effect/drive.c
+90,HOLD_EFFECT_GEMS,18,ITM-DAMAGE,,used-on-activation,98,427,,src/battle_debug.c:2250 src/battle_main.c:6034 src/battle_set_effect.c:458 src/battle_util.c:6491,test/battle/hold_effect/gems.c
+91,HOLD_EFFECT_ROCKY_HELMET,1,ITM-HIT,onTargetAfterHit,kept-on-activation,99,431,1071,src/battle_debug.c:2251 src/battle_hold_effects.c:1038,test/battle/hold_effect/rocky_helmet.c
+92,HOLD_EFFECT_AIR_BALLOON,1,ITM-HIT ITM-SWITCH ITM-FIELD,onTargetAfterHit onSwitchIn,burst-not-ordinary-consumption,100,436,1068,src/battle_debug.c:2252 src/battle_hold_effects.c:201 src/battle_script_commands.c:4546 src/battle_util.c:6144,test/battle/hold_effect/air_balloon.c
+93,HOLD_EFFECT_RED_CARD,1,ITM-MOVE-END ITM-SWITCH,,used-on-activation,101,442,,src/battle_debug.c:2253 src/battle_move_resolution.c:4846,test/battle/hold_effect/red_card.c
+94,HOLD_EFFECT_RING_TARGET,1,ITM-SPECIAL,,kept-on-activation,102,446,,src/battle_debug.c:2254 src/battle_util.c:8371,test/battle/hold_effect/ring_target.c
+95,HOLD_EFFECT_BINDING_BAND,1,ITM-RESIDUAL,,kept-on-activation,103,450,,src/battle_debug.c:2255 src/battle_util.c:11230,test/battle/hold_effect/binding_band.c
+96,HOLD_EFFECT_EJECT_BUTTON,1,ITM-MOVE-END ITM-SWITCH,,used-on-activation,104,454,,src/battle_debug.c:2256 src/battle_move_resolution.c:4842 src/battle_util.c:10484,test/battle/hold_effect/eject_button.c
+97,HOLD_EFFECT_ABSORB_BULB,1,ITM-HIT ITM-STAGE,onTargetAfterHit,used-on-activation,105,458,1086,src/battle_debug.c:2257 src/battle_hold_effects.c:1086,test/battle/hold_effect/absorb_bulb.c
+98,HOLD_EFFECT_CELL_BATTERY,1,ITM-HIT ITM-STAGE,onTargetAfterHit,used-on-activation,106,463,1083,src/battle_debug.c:2258 src/battle_hold_effects.c:1083,test/battle/hold_effect/cell_battery.c
+99,HOLD_EFFECT_MEGA_STONE,92,ITM-GIMMICK,,kept-on-activation,108,468,,src/battle_connector.c:296 src/battle_debug.c:2259 src/battle_dynamax.c:122 src/battle_terastal.c:127,test/battle/hold_effect/mega_stone.c
+100,HOLD_EFFECT_SAFETY_GOGGLES,1,ITM-FIELD ITM-SPECIAL,,kept-on-activation,109,472,,src/battle_debug.c:2260 src/battle_end_turn.c:169 src/battle_util.c:11037,test/battle/hold_effect/safety_goggles.c
+101,HOLD_EFFECT_LUMINOUS_MOSS,1,ITM-HIT ITM-STAGE,onTargetAfterHit,used-on-activation,110,476,1080,src/battle_debug.c:2261 src/battle_hold_effects.c:1080,test/battle/hold_effect/luminous_moss.c
+102,HOLD_EFFECT_SNOWBALL,1,ITM-HIT ITM-STAGE,onTargetAfterHit,used-on-activation,111,481,1077,src/battle_debug.c:2262 src/battle_hold_effects.c:1077,test/battle/hold_effect/snowball.c
+103,HOLD_EFFECT_WEAKNESS_POLICY,1,ITM-HIT ITM-STAGE,onTargetAfterHit,used-on-activation,112,486,1074,src/battle_debug.c:2263 src/battle_hold_effects.c:1074,test/battle/hold_effect/weakness_policy.c
+104,HOLD_EFFECT_PRIMAL_ORB,2,ITM-GIMMICK,,kept-on-activation,113,491,,src/battle_debug.c:2264,test/battle/hold_effect/primal_orb.c
+105,HOLD_EFFECT_PROTECTIVE_PADS,1,ITM-SPECIAL,,kept-on-activation,115,495,,src/battle_debug.c:2265 src/battle_util.c:5972,test/battle/hold_effect/protective_pads.c
+106,HOLD_EFFECT_TERRAIN_EXTENDER,1,ITM-FIELD,,kept-on-activation,116,499,,src/battle_debug.c:2266 src/battle_util.c:2203,test/battle/hold_effect/terrain_extender.c
+107,HOLD_EFFECT_TERRAIN_SEED,4,ITM-STAGE ITM-FIELD,onSwitchIn onEffect,used-on-activation,117,503,1050,src/battle_debug.c:2267 src/battle_hold_effects.c:1050 src/battle_script_commands.c:11934,test/battle/hold_effect/terrain_seed.c
+108,HOLD_EFFECT_ADRENALINE_ORB,1,ITM-STAGE,,used-on-activation,118,509,,src/battle_debug.c:2268 src/battle_script_commands.c:12383,test/battle/hold_effect/adrenaline_orb.c
+109,HOLD_EFFECT_MEMORY,17,ITM-GIMMICK,,kept-on-activation,119,513,,src/battle_debug.c:2269,test/battle/hold_effect/memory.c
+110,HOLD_EFFECT_Z_CRYSTAL,35,ITM-GIMMICK,,kept-on-activation,120,517,,src/battle_connector.c:296 src/battle_debug.c:2270 src/battle_dynamax.c:122 src/battle_move_resolution.c:629 src/battle_terastal.c:127 src/battle_util.c:8840 src/battle_z_move.c:144,test/battle/hold_effect/z_crystal.c
+111,HOLD_EFFECT_UTILITY_UMBRELLA,1,ITM-FIELD,,kept-on-activation,122,521,,src/battle_debug.c:2271 src/battle_main.c:4605 src/battle_move_resolution.c:1861 src/battle_script_commands.c:6921 src/battle_util.c:7226,test/battle/hold_effect/utility_umbrella.c
+112,HOLD_EFFECT_EJECT_PACK,1,ITM-MOVE-END ITM-SWITCH,,used-on-activation,123,525,,src/battle_debug.c:2272 src/battle_move_resolution.c:5217 src/battle_util.c:10408,test/battle/hold_effect/eject_pack.c
+113,HOLD_EFFECT_ROOM_SERVICE,1,ITM-STAGE ITM-FIELD,onSwitchIn onEffect,used-on-activation,124,529,1047,src/battle_debug.c:2273 src/battle_hold_effects.c:1047 src/battle_script_commands.c:11924,test/battle/hold_effect/room_service.c
+114,HOLD_EFFECT_BLUNDER_POLICY,1,ITM-ACCURACY ITM-MOVE-END ITM-STAGE,sprayLeppaBlunder,used-on-activation,125,535,1098,src/battle_debug.c:2274 src/battle_hold_effects.c:1098 src/battle_move_resolution.c:2653,test/battle/hold_effect/blunder_policy.c
+115,HOLD_EFFECT_HEAVY_DUTY_BOOTS,1,ITM-SWITCH,,kept-on-activation,126,540,,src/battle_debug.c:2275 src/battle_util.c:9699,test/battle/hold_effect/heavy_duty_boots.c
+116,HOLD_EFFECT_THROAT_SPRAY,1,ITM-MOVE-END ITM-STAGE,sprayLeppaBlunder,used-on-activation,127,544,1104,src/battle_debug.c:2276 src/battle_hold_effects.c:1104,test/battle/hold_effect/throat_spray.c
+117,HOLD_EFFECT_ABILITY_SHIELD,1,ITM-SPECIAL,,kept-on-activation,129,549,,src/battle_debug.c:2277 src/battle_script_commands.c:7265 src/battle_util.c:3308,test/battle/hold_effect/ability_shield.c
+118,HOLD_EFFECT_CLEAR_AMULET,1,ITM-STAGE ITM-SPECIAL,,kept-on-activation,130,553,,src/battle_debug.c:2278 src/battle_stat_change.c:628,test/battle/hold_effect/clear_amulet.c
+119,HOLD_EFFECT_MIRROR_HERB,1,ITM-MOVE-END ITM-STAGE ITM-RESIDUAL,mirrorHerb,used-on-activation,131,557,1062,src/battle_debug.c:2279 src/battle_hold_effects.c:1062 src/battle_move_resolution.c:5221 src/battle_stat_change.c:423,test/battle/hold_effect/mirror_herb.c
+120,HOLD_EFFECT_PUNCHING_GLOVE,1,ITM-DAMAGE ITM-SPECIAL,,kept-on-activation,132,562,,src/battle_debug.c:2280 src/battle_util.c:5988,test/battle/hold_effect/punching_glove.c
+121,HOLD_EFFECT_COVERT_CLOAK,1,ITM-SPECIAL,,kept-on-activation,133,566,,src/battle_debug.c:2281 src/battle_util.c:10324,test/battle/hold_effect/covert_cloak.c
+122,HOLD_EFFECT_LOADED_DICE,1,ITM-SPECIAL,,kept-on-activation,134,570,,src/battle_debug.c:2282 src/battle_move_resolution.c:2465,test/battle/hold_effect/loaded_dice.c
+123,HOLD_EFFECT_BOOSTER_ENERGY,1,ITM-STAGE,onEffect boosterEnergy,used-on-activation,135,574,1056,src/battle_debug.c:2283 src/battle_hold_effects.c:1056 src/battle_script_commands.c:10535 src/battle_util.c:9129,test/battle/hold_effect/booster_energy.c
+124,HOLD_EFFECT_OGERPON_MASK,3,ITM-DAMAGE ITM-GIMMICK,,kept-on-activation,136,580,,src/battle_debug.c:2284 src/battle_util.c:6973,test/battle/hold_effect/ogerpon_mask.c
+125,HOLD_EFFECT_BERSERK_GENE,1,ITM-STAGE,onSwitchIn,used-on-activation,138,584,1053,src/battle_debug.c:2285 src/battle_hold_effects.c:1053,test/battle/hold_effect/berserk_gene.c

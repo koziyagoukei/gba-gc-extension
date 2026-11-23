@@ -1,5 +1,7 @@
 # 持ち物・特性の発動順
 
+[持ち物処理の詳細監査](../item-mechanics/README.md) に、ACT-002補修後の品目・発動順・状態遷移・GC対応台帳と実装計画を記録する。
+
 ## ITEM-001
 
 `SOURCE_CONFIRMED` — `ItemBattleEffects` は現在有効なholdEffect、発動タイミング、きんちょうかんによる抑止、生存条件を確認する。Expansionの有効性はマジックルーム、さしおさえ、ぶきよう等を含む。所持ID、現在の効果、発動できるかは別状態。HP回復のオレン／オボンは基本条件が生存かつ `HP <= floor(maxHP / 2)`、かいふくふうじ等で回復できない場合は発動しない。基準品目は固定10／最大HPの25%、最小回復と最大HP上限を適用する。世代分岐は [設定の逆引き](build-rules.md)。[HasEnoughHpToEatBerry](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/20debd3e44fb3da4c5a6834f73883fc95a8a1747/src/battle_util.c#L5698) · [有効な持ち物判定](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/20debd3e44fb3da4c5a6834f73883fc95a8a1747/src/battle_util.c#L5915) · [ItemHealHp](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/20debd3e44fb3da4c5a6834f73883fc95a8a1747/src/battle_hold_effects.c#L805) · [ItemBattleEffects](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/20debd3e44fb3da4c5a6834f73883fc95a8a1747/src/battle_hold_effects.c#L1020)
