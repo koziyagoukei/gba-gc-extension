@@ -972,6 +972,8 @@ static void continue_turn(Battle *b, EventLog *log) {
         current->status = TA_INTERRUPTED;
         if (mon->vol.recharge) {
             bc_emit(log, (BattleEvent){.kind = EV_RECHARGE, .user = user, .target = user});
+            // ACT-002: BattleScript_MoveUsedMustRecharge ends with moveendall (V19).
+            bc_items_after_action(b, user, false, log);
         } else if (blocked_by_status(b, user, false, log) ||
                    (mon->vol.flinched && (bc_emit(log, (BattleEvent){.kind = EV_FLINCH, .user = user, .target = user}), true)) ||
                    bc_confusion_check(b, user, log) || blocked_by_status(b, user, true, log)) {

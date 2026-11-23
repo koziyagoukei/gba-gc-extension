@@ -8153,7 +8153,7 @@ static bool v19_kind(EventKind k) {
     case EV_MOVE_USED: case EV_DAMAGE: case EV_RECOIL: case EV_DRAIN: case EV_SUBSTITUTE: case EV_CONFUSION_HIT:
     case EV_STATUS: case EV_CONFUSE: case EV_ABILITY: case EV_ABILITY_DAMAGE: case EV_RESIDUAL:
     case EV_WEATHER_DAMAGE: case EV_ITEM_HEAL: case EV_ITEM_CURE: case EV_ITEM_ENDURE: case EV_ITEM_CONSUMED:
-    case EV_FAINT: case EV_DRAG_OUT: case EV_WITHDRAW: case EV_SEND_OUT: case EV_STAGE:
+    case EV_FAINT: case EV_DRAG_OUT: case EV_WITHDRAW: case EV_SEND_OUT: case EV_STAGE: case EV_RECHARGE:
         return true;
     default:
         return false;
@@ -8821,6 +8821,119 @@ static void test_v19_gaps(void) {
 
 // The V19 records on the wire: every byte checked, V18 refuses them, V18
 // requests are as before; a request built in memory gets the same check.
+// ACT-002 (docs/battle-reference, test/battle/gc_recharge_item_reference.c):
+// a turn lost to recharging ends with the move end's item checks, as
+// BattleScript_MoveUsedMustRecharge's moveendall: the user's, every other
+// Pokemon's HP (battler order), then everyone's, before the next action;
+// the recharge spends no PP. Solar Power's sun damage leaves the berry due.
+static BattleMove v19_beam(void) { return v19_hit_with(150, fx(BEFF_RECHARGE, BWHO_USER, 0, 0, 0, 0)); }
+
+// One recharging Pokemon (the player's lead, Speed 100, 160/90, Solar Power,
+// `item`) against a sun-setting foe (999 HP, Speed 50); every other Pokemon waits.
+static void v19_recharge_setup(BattleRequest *r, uint8_t format, BattleItem item) {
+    make_consumable(r, format);
+    const unsigned per = format == BATTLE_FORMAT_SINGLE ? 1 : format == BATTLE_FORMAT_DOUBLE ? 2 : 3;
+    for (unsigned i = 0; i < per; ++i) {
+        v19_mon(&r->player[i], 200, 200, 20, (BattleItem){0}, wait_move());
+        v19_mon(&r->opponent[i], 200, 200, 10, (BattleItem){0}, wait_move());
+    }
+    v19_mon(&r->player[0], 160, 90, 100, item, v19_beam());
+    give(&r->player[0], W_SOLAR_POWER);
+    v19_mon(&r->opponent[0], 999, 999, 50, (BattleItem){0}, weather_move(BWEATHER_SUN, 5));
+}
+
+// The two turns: Hyper Beam and the sun, then the recharge (every other Pokemon waits).
+static void v19_recharge_turns(V19Run *run, const BattleRequest *r, uint8_t format) {
+    const unsigned per = format == BATTLE_FORMAT_SINGLE ? 1 : format == BATTLE_FORMAT_DOUBLE ? 2 : 3;
+    const uint8_t lead = format == BATTLE_FORMAT_ROTATION ? BPOS_CENTER : 0;
+    const unsigned count = format == BATTLE_FORMAT_ROTATION ? 2 : 2 * per;
+    Action a[6];
+    unsigned n = 0;
+    for (uint8_t side = 0; side < 2; ++side)
+        for (uint8_t slot = 0; slot < (format == BATTLE_FORMAT_ROTATION ? 1 : per); ++slot)
+            a[n++] = v19_wait(side, format == BATTLE_FORMAT_ROTATION ? lead : slot);
+    a[0] = move(0, lead, lead);
+    a[count / 2] = (Action){.kind = ACT_MOVE, .user = {1, lead}, .target = {{1, lead}}};
+    v19_begin(run, r, 1);
+    const Battler *user = battle_at(&run->b, (Position){0, lead});
+    const uint8_t pp = user->pp[0];
+    v19_turn(run, a, count);
+    assert(battle_action_state(&run->b, (Position){0, lead}) == BAS_RECHARGING && user->pp[0] == pp - 1);
+    a[count / 2] = v19_wait(1, lead);
+    v19_turn(run, a, count);
+    assert(user->pp[0] == pp - 1);  // the recharge spends no PP
+}
+
+static void test_v19_recharge(void) {
+    static BattleRequest r;
+    static V19Run run;
+    // Codex's case (Single): 90 -> 70 by the sun, no check; the recharge turn:
+    // the recharge, the berry (70 -> 110), the foe's move, the turn's sun damage.
+    static const uint8_t formats[] = {BATTLE_FORMAT_SINGLE, BATTLE_FORMAT_DOUBLE, BATTLE_FORMAT_TRIPLE,
+                                      BATTLE_FORMAT_ROTATION};
+    for (unsigned f = 0; f < sizeof(formats); ++f) {
+        const uint8_t lead = formats[f] == BATTLE_FORMAT_ROTATION ? BPOS_CENTER : 0;
+        v19_recharge_setup(&r, formats[f], I_SITRUS);
+        v19_recharge_turns(&run, &r, formats[f]);
+        V19_EXPECT("recharge", &run, E19(EV_MOVE_USED, 1, lead), E19(EV_ABILITY_DAMAGE, 0, lead),
+                   E19(EV_RECHARGE, 0, lead), HEAL_USED(0, lead), E19(EV_MOVE_USED, 1, lead),
+                   E19(EV_ABILITY_DAMAGE, 0, lead));
+        const Battler *user = battle_at(&run.b, (Position){0, lead});
+        assert(user->hp == 90 && !battle_held_item(user) && user->item_used_turn == 1);
+    }
+    // Strict item rules: the same battle (the berry is simulated exactly).
+    v19_recharge_setup(&r, BATTLE_FORMAT_SINGLE, I_SITRUS);
+    r.rules |= RULE_STRICT_ITEMS;
+    v19_recharge_turns(&run, &r, BATTLE_FORMAT_SINGLE);
+    V19_EXPECT("recharge strict", &run, E19(EV_RECHARGE, 0, 0), HEAL_USED(0, 0), E19(EV_MOVE_USED, 1, 0));
+    // No berry, or every item normalised away (RULE_IGNORE_ITEMS): nothing at the move end.
+    for (unsigned off = 0; off < 2; ++off) {
+        v19_recharge_setup(&r, BATTLE_FORMAT_SINGLE, off ? I_SITRUS : (BattleItem){0});
+        if (off) r.rules |= RULE_IGNORE_ITEMS;
+        v19_recharge_turns(&run, &r, BATTLE_FORMAT_SINGLE);
+        V19_EXPECT("recharge, no item", &run, E19(EV_RECHARGE, 0, 0), E19(EV_MOVE_USED, 1, 0));
+        assert(run.b.sides[0].battlers[0].hp == 50);
+    }
+    // A status berry: a status the Pokemon holds on its recharge turn (set here
+    // directly; every status of this build is checked when it comes). The
+    // recharge comes before the paralysis roll.
+    v19_recharge_setup(&r, BATTLE_FORMAT_SINGLE, I_CHERI);
+    r.player[0].record.hp = 160;
+    r.opponent[0].record.speed = 10;  // still slower once paralysis halves the user's Speed
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, (Action[]){move(0, 0, 0), {.kind = ACT_MOVE, .user = {1, 0}, .target = {{1, 0}}}}, 2);
+    run.b.sides[0].battlers[0].status = BST_PARALYSIS;
+    v19_turn(&run, (Action[]){move(0, 0, 0), v19_wait(1, 0)}, 2);
+    V19_EXPECT("recharge, status", &run, E19(EV_RECHARGE, 0, 0), CURE_USED(0, 0), E19(EV_MOVE_USED, 1, 0));
+    assert(!run.b.sides[0].battlers[0].status);
+    // Double: the recharging Pokemon's own berry first (the attacker's check),
+    // then an ally's and a foe's in battler order (player left, opponent left,
+    // player right, opponent right), before the next action.
+    v19_recharge_setup(&r, BATTLE_FORMAT_DOUBLE, I_SITRUS);
+    r.opponent[0].record.speed = 80;
+    v19_mon(&r.player[1], 160, 90, 50, I_SITRUS, wait_move());
+    give(&r.player[1], W_SOLAR_POWER);
+    v19_mon(&r.opponent[1], 160, 90, 40, I_SITRUS, wait_move());
+    give(&r.opponent[1], W_SOLAR_POWER);
+    v19_recharge_turns(&run, &r, BATTLE_FORMAT_DOUBLE);
+    V19_EXPECT("recharge double", &run, E19(EV_ABILITY_DAMAGE, 0, 0), E19(EV_ABILITY_DAMAGE, 0, 1),
+               E19(EV_ABILITY_DAMAGE, 1, 1), E19(EV_RECHARGE, 0, 0), HEAL_USED(0, 0), HEAL_USED(0, 1), HEAL_USED(1, 1), E19(EV_MOVE_USED, 1, 0));
+    // Knocked out before its recharge turn: skipped (no recharge, no move end
+    // of its own); its berry stays.
+    v19_recharge_setup(&r, BATTLE_FORMAT_SINGLE, I_SITRUS);
+    r.player[0].record.max_hp = 16, r.player[0].record.hp = 9, r.player[0].record.speed = 40;
+    add_reserve(&r, 0);
+    hold(&r.player[1], (BattleItem){0});
+    set_move(&r.opponent[0], 2, 152, v19_hit(250), 10);
+    v19_begin(&run, &r, 1);
+    v19_turn(&run, (Action[]){move(0, 0, 0), {.kind = ACT_MOVE, .user = {1, 0}, .target = {{1, 0}}}}, 2);
+    v19_turn(&run, (Action[]){move(0, 0, 0), slot_move(1, 0, 0, 2)}, 2);
+    V19_EXPECT("recharge, knocked out first", &run, E19(EV_ABILITY_DAMAGE, 0, 0), E19(EV_DAMAGE, 0, 0),
+               E19(EV_FAINT, 0, 0));
+    assert(!v19_event(&run, EV_RECHARGE, 0) && battle_held_item(&run.b.sides[0].battlers[0]) == 523);
+    printf("v19 recharge: the move end after the recharge, four formats, strict, items off, status, Double, KO\n");
+}
+
 static void test_v19_wire(void) {
     static BattleRequest r, d;
     static Battle b;
@@ -9175,6 +9288,7 @@ int main(void) {
     test_v19_reference();
     test_v19_more();
     test_v19_gaps();
+    test_v19_recharge();
     test_v19_wire();
     test_v19_formats();
     puts("battle tests passed");
