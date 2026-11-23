@@ -16,17 +16,19 @@
 | [DMG-002](damage-resolution.md#dmg-002) | 満タン耐久 → V19のがんじょう・タスキ | SUPPORTED / TEST_CONFIRMED | 既存の満タン・連続技・自傷・どく残留の参照例 |
 | [DMG-003](damage-resolution.md#dmg-003) | 単発範囲・連続技・反動の代表順 → V19 strike等 | SUPPORTED / TEST_CONFIRMED | 既存の比較例。多対象かつ連続ヒットは未監査 |
 | [ITEM-001](items.md#item-001) | 回復・治療・消費 → V19 bc_item_*_check | SUPPORTED / TEST_CONFIRMED | 基本きのみ、治療、交代の既存参照例 |
-| [ITEM-002](items.md#item-002) | 個体別残留と日照特性の保留 → V19の残留処理・MoveEnd | SUPPORTED / TEST_CONFIRMED | 既存のどく・砂嵐・日照ダメージの範囲。反動待機は ACT-002 |
+| [ITEM-002](items.md#item-002) | 個体別残留と日照特性の保留 → V19の残留処理・MoveEnd | SUPPORTED / TEST_CONFIRMED | 既存のどく・砂嵐・日照ダメージの範囲。反動待機は ACT-002（補修済み） |
 | [ITEM-003](items.md#item-003) | 持ち物抑制・交換・復活 → 開始時の拒否／正規化 | UNSUPPORTED / SOURCE_CONFIRMED | ぶきよう、きんちょうかん等と譲渡・復活は後段 |
 | [ACT-001a](status-and-volatiles.md#act-001) | 完全まひ・混乱自傷後のMoveEnd → V19行動後チェック | SUPPORTED / TEST_CONFIRMED | 既存のまひ・自傷の固定ケース |
-| [ACT-001b](status-and-volatiles.md#act-001) | 睡眠・凍結・ひるみ・失敗・実行時PP不足 → V19個別経路 | UNVERIFIED / SOURCE_CONFIRMED | GCの睡眠試験あり。保留品を使う両側比較待ち |
+| [ACT-001b](status-and-volatiles.md#act-001) | 睡眠・凍結・ひるみ・失敗・実行時PP不足 → V19個別経路 | UNVERIFIED / SOURCE_CONFIRMED | 睡眠は保留きのみを両側で比較し一致（ACT-002の比較ケース）。こおり・ひるみ・失敗・実行時PP不足は比較待ち |
 | [ACT-001c](status-and-volatiles.md#act-001) | 行動前のひんしでスキップ → TA_SKIPPED | PARTIAL / SOURCE_CONFIRMED | 入口は両側のコードで確認。全員の持ち物順は未試験 |
-| [ACT-002](status-and-volatiles.md#act-002) | 反動待機後にMoveEnd → EV_RECHARGEのみ | MISMATCH / SOURCE_CONFIRMED | V19消費有効戦。B1c前に補修を推奨 |
+| [ACT-002](status-and-volatiles.md#act-002) | 反動待機後にMoveEnd → EV_RECHARGE後に bc_items_after_action（V19） | SUPPORTED / TEST_CONFIRMED | V19消費有効戦。Single／DoubleをExpansionと比較し、Dolphin L72でも確認。Triple／Rotation、状態異常きのみ、RULE_IGNORE_ITEMS、厳密モードはネイティブ試験。選択対象の未処理の状態異常は到達しない（open-questions） |
 | [MOVE-001](move-and-ability-audit.md#move-001) | 特性無視、Shadow等 → Exporterで拒否 | UNSUPPORTED / SOURCE_CONFIRMED | 受理判定と効果再現を別に扱う。技フィールド台帳へ |
 | [RULE-001](build-rules.md#rule-001) | 急所・メガ／Z／ゲンシ等 → 現行GCルールでは発動しない | NOT_APPLICABLE / SOURCE_CONFIRMED | V19。解禁時に寿命・順序を照合 |
 | [FIELD-001](build-rules.md#field-001) | ゲンシ天候・未表現の場効果 → V15/V16の対応レコードのみ | UNSUPPORTED / SOURCE_CONFIRMED | ゲンシ天候等。追加時に持ち物連携を照合 |
 | [FIELD-002](build-rules.md#field-002) | 通常天候とフィールドの比較済み補正 → V15/V16 | SUPPORTED / TEST_CONFIRMED | 既存の固定ダメージ値とV19残留の参照範囲 |
 
-件数は SUPPORTED 8、PARTIAL 7、UNSUPPORTED 3、MISMATCH 1、UNVERIFIED 1、NOT_APPLICABLE 2、計22件。分岐の全件試験率とは区別する。
+件数は SUPPORTED 9、PARTIAL 7、UNSUPPORTED 3、MISMATCH 0、UNVERIFIED 1、NOT_APPLICABLE 2、計22件。分岐の全件試験率とは区別する。
 
-根拠。[行動中断](https://github.com/koziyagoukei/gba-gc-extension/blob/ba16c9455f25b7588486d0021aa1ae9b68627e11/gamecube/battle/battle_core.c#L952) · [V19対応試験](https://github.com/koziyagoukei/gba-gc-extension/blob/ba16c9455f25b7588486d0021aa1ae9b68627e11/gamecube/battle/battle_test.c#L8230) · [ゲンシ天候の対応外](https://github.com/koziyagoukei/gba-gc-extension/blob/ba16c9455f25b7588486d0021aa1ae9b68627e11/docs/weather.md#L111) · [Exporterのフラグ検査](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/20debd3e44fb3da4c5a6834f73883fc95a8a1747/src/frontier_gc_battle.c#L630)
+ACT-002の補修。[GCの修正](https://github.com/koziyagoukei/gba-gc-extension/blob/78b3125be6efc57d710f51c730e564111bcb4b3e/gamecube/battle/battle_core.c#L973) · [GCの試験](https://github.com/koziyagoukei/gba-gc-extension/blob/78b3125be6efc57d710f51c730e564111bcb4b3e/gamecube/battle/battle_test.c#L8867) · [Expansion参照試験](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/329ceb28ad48f52c60803e6beb4686260bca1f3f/test/battle/gc_recharge_item_reference.c#L24)
+
+根拠（初版）。[行動中断](https://github.com/koziyagoukei/gba-gc-extension/blob/ba16c9455f25b7588486d0021aa1ae9b68627e11/gamecube/battle/battle_core.c#L952) · [V19対応試験](https://github.com/koziyagoukei/gba-gc-extension/blob/ba16c9455f25b7588486d0021aa1ae9b68627e11/gamecube/battle/battle_test.c#L8230) · [ゲンシ天候の対応外](https://github.com/koziyagoukei/gba-gc-extension/blob/ba16c9455f25b7588486d0021aa1ae9b68627e11/docs/weather.md#L111) · [Exporterのフラグ検査](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/20debd3e44fb3da4c5a6834f73883fc95a8a1747/src/frontier_gc_battle.c#L630)

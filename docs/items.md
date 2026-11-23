@@ -808,11 +808,47 @@ status berry. Sets holding: Focus Sash 113, an HP berry 39, a status berry
 
 ### 12.10 Known limits
 
-- An action lost to recharge runs no move-end item pass; this was not
-  compared with the reference (a turn lost to full paralysis was).
+- (Repaired, 12.11) An action lost to recharge ran no move-end item pass.
 - The ALL pass runs before a pivot's switch; a U-turn user with Solar Power
   at the berry threshold would differ (no fixture or Frontier set needs it).
 - Item-moving moves stay unsupported; Recycle, Harvest and Cud Chew have the
   history but are not simulated.
 - Every other berry and consumable item stays unsupported (12, Deferred).
 - The GBA screen shows no item activation (the GC does).
+
+### 12.11 ACT-002 repair: the recharge turn's move end
+
+Branches `milestone4b1b-act002` and Frontier `frontier-gc-m4b1b-act002`,
+still release 13 and request V19 (no new version). The battle-reference
+audit (`docs/battle-reference`, ACT-002) found that this build's
+`CancelerRecharge` sends a recharging Pokemon to
+`BattleScript_MoveUsedMustRecharge`, which ends with `moveendall`: the turn
+it must recharge runs the move end's item checks like any other lost turn,
+while the GC's `continue_turn` stopped at `EV_RECHARGE`. A berry left due by
+damage that checks no item (Solar Power's sun damage) was therefore eaten
+after the next Pokemon's move instead of before it.
+
+`continue_turn` now calls `bc_items_after_action(b, user, false, log)` after
+`EV_RECHARGE`, the call the other lost turns make: the user's status, then
+HP; every other Pokemon's HP in battler order; everyone's status, then HP.
+It does nothing below V19, so V1-V18 and their fixed-seed traces are
+unchanged. The recharge still spends no PP, and a Pokemon knocked out
+before its recharge turn is skipped (no recharge, no move end of its own).
+
+| Check | Result |
+|---|---|
+| Expansion reference (`gc_recharge_item_reference.c`) | 6 tests PASS: Solar Power leaves Sitrus due, the recharge message (matched in this build's Japanese text), the berry 70 -> 110, then the foe's move, PP spent once; no berry and Unnerve: nothing; Double: the recharging Pokemon's own berry, then an ally's and a foe's in battler order; knocked out first: skipped, berry kept; a sleeping Pokemon's lost turn in the same order; `recharge.c` without its English MESSAGE |
+| GC before the repair | `test_v19_recharge` fails: `EV_RECHARGE`, the foe's move, then the berry |
+| GC after the repair | `test_v19_recharge` passes: Single, Double, Triple, Rotation; strict items; no berry; `RULE_IGNORE_ITEMS`; a status berry (status set directly: every status of this build checks items when it comes); Double order; knocked out first. -O2, `-Werror`, ASan/UBSan, presentation pass |
+| Mutations | 9: 6 caught (no call, the call before the message, only the user's check, no check of the other Pokemon's HP, no recharge turn, and the user's own check skipped once the Double case had the user's berry due); 3 equivalent (the pass twice: nothing is left to eat; resetting the Protect chain on the recharge turn: the recharge move already reset it; a pass on a fainted Pokemon's skipped action: the move that knocked it out already ran every check) |
+| Traces V12-V19 (1,200 battles each) | identical to M4-B1b |
+| Dolphin L72 (new) | "Must recharge!" (56/118), "Restored HP with its held item." Sitrus (85/118), then the foe's Sunny Day; PP 4/5; core peak 48 us, 8 events |
+| Dolphin L01-L71 | 71 of 71 line for line equal to M4-B1b (66 battles, 5 GBA refusals) |
+| Result contract, JoyBus, save | "result already final; not restarting the battle"; 72 sessions, CRC 0 both ways, no overflow, one deliberate link cut; Frontier save AFF1EB7B before and after |
+| Sizes | Battle 4,472, BattleRequest 6,344, EventLog 47,812, max request 3,165 unchanged; companion text +32 B (289,918), DOL 361,824 unchanged; ROM used +192 B (L72) |
+| Frontier `make check` | 6,951 tests: 4,035 PASS, 2,455 FAILED (the same 2,455 as M4-B1b; `recharge.c` keeps failing on its English text); against M4-B1b (6,945) no test changed status and the only additions are the 6 recharge reference tests, all PASS |
+
+Still open: Expansion checks the chosen target's pending status
+(`MOVEEND_ITEM_EFFECTS_TARGET`) before the user on every lost turn; the GC
+checks the user first. No supported effect leaves a status pending, so no
+battle shows it (battle-reference open questions).

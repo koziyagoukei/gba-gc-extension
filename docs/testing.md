@@ -335,3 +335,11 @@ Rotation: only the front; L69 = L65 with Life Orb: every item off, same
 seed; L70 Cud Chew with Sitrus: every item off; L71 Figy Berry under strict
 item rules: refused on the GBA). The Lab list holds 72 entries
 (`DEBUG_MAX_MENU_ITEMS`).
+
+ACT-002 repair (branches `milestone4b1b-act002`, `frontier-gc-m4b1b-act002`,
+[items](items.md) 12.11): `battle_test.c` adds `test_v19_recharge`; the
+Frontier file `test/battle/gc_recharge_item_reference.c` adds 6 tests under
+the same prefix (`GC V19 reference`, 47 tests). Lab L72 (`V19 recharge
+Sitrus`): Charizard (Solar Power, Sitrus Berry) uses Hyper Beam in sun; on
+the recharge turn the GC shows the recharge, then the berry, then the foe's
+move.

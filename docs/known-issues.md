@@ -246,6 +246,9 @@
 - Cud Chew on a berry holder turns every item off (the GC does not eat a
   berry twice); Recycle, Harvest, Belch and the item-moving moves stay
   unsupported.
-- An action lost to recharge runs no move-end item check (not compared with
-  the reference). The move-end check runs before a pivot's switch.
+- The move-end check runs before a pivot's switch. (An action lost to
+  recharge now runs the move-end item checks: ACT-002, items 12.11.)
+- On every lost turn the GC checks the user's items before the chosen
+  target's pending status; Expansion checks the target first. No supported
+  effect leaves a status pending, so no battle shows the difference.
 - The GBA shows no item activation; the GC shows it with the item's name.
