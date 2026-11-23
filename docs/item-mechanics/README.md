@@ -1,5 +1,7 @@
 # 持ち物処理の監査
 
+[特性システムの詳細監査](../ability-mechanics/README.md) に、全特性の索引、B1c関連の発動順、特性の有効性・状態遷移、GC V19対応台帳を記録する。
+
 対象は ACT-002 補修後の GC `44c51538c7e5efbeb27bee91d5cc8a0a89cab14b` と Frontier `2d1e107ad820a3b0a601af968b49856f74151ee1`。Request/APP V19、release 13。対象ExpansionのCコード、スクリプト、実データ、設定、試験を使い、戦闘での発動順を記録する。対象コードと設定への参照はコミットを固定する。[ACT-002の補修記録](https://github.com/koziyagoukei/gba-gc-extension/blob/44c51538c7e5efbeb27bee91d5cc8a0a89cab14b/docs/items.md#L818) · [GEN_LATEST](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/2d1e107ad820a3b0a601af968b49856f74151ee1/include/config/general.h#L74)
 
 ## 索引
