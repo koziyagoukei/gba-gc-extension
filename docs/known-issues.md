@@ -234,3 +234,18 @@
 - About 42% of the Battle Frontier sets now hold an item that takes part,
   5% with every move and the ability simulated too (items 11.9); Life Orb,
   Choice items, Focus Sash, Assault Vest and berries are the next groups.
+
+## M4-B1b (release 13, development only)
+
+- Consumable items are Oran, Sitrus, Cheri, Chesto, Pecha, Rawst, Aspear,
+  Persim and Lum Berry and Focus Sash. Every other berry, Berry Juice, Focus
+  Band, the herbs, Air Balloon, Weakness Policy, Red Card, Eject Button and
+  the like still turn every item off (strict: refuse).
+- A used-up item is back after the battle: the result carries no item and
+  the GBA save is not changed (items 12.6 has the plan for a later stage).
+- Cud Chew on a berry holder turns every item off (the GC does not eat a
+  berry twice); Recycle, Harvest, Belch and the item-moving moves stay
+  unsupported.
+- An action lost to recharge runs no move-end item check (not compared with
+  the reference). The move-end check runs before a pivot's switch.
+- The GBA shows no item activation; the GC shows it with the item's name.

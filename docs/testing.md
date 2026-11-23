@@ -304,3 +304,34 @@ Leftovers / Black Sludge, L62 = L58 with Life Orb: every item off, same seed,
 L63 Ultranecrozium Z under strict item rules: refused on the GBA, L64 the
 Red Orb beside a Z-Crystal: every item off). The Lab list is full at 64
 entries (`DEBUG_MAX_MENU_ITEMS`).
+
+## M4-B1b (release 13, [items](items.md) section 12)
+
+Native: `battle_test.c` adds `test_v19_reference` and `test_v19_more` (the
+Expansion facts of items 12.1 as GC battles: thresholds, amounts, every
+check point, spread and multi-hit order, Focus Sash, switches), `test_v19_wire`
+(records, flags, versions, refusals) and `test_v19_formats` (240 random
+battles in four formats, run twice: identical events, state and RNG; the
+normalised ones event for event the battle without items; every used-up
+item checked against the battler state) and `test_v19_gaps` (the cases the
+mutation run found missing: history, a fainted holder, the lost-turn and
+per-target order, battler order across sides). `presentation_test.c` adds
+the V19 messages and plays a log without `EV_ITEM_CONSUMED` in the same frames.
+
+Frontier branch `frontier-gc-m4b1b`:
+
+```sh
+make check TESTS="GC V19 reference"   # this build's battles (Expansion facts), 41 tests
+make check TESTS="GC V19 export"      # the exporter: records, unsupported berries, abilities, strict, tally
+```
+
+`GC V19 export tally` prints one `TALLY19` line per chunk of Battle Frontier
+sets (V18 and V19 side by side); add them up for items 12.9.
+
+Dolphin: Utilities -> GC Ability Lab... L65-L71 are V19 (L65 Single: Lum
+against Thunder Wave, Sitrus after a hit, Focus Sash; L66 Double: a spread
+hit, Oran, Chesto, Pecha, Focus Sash; L67 Triple: Rawst, Cheri, Persim; L68
+Rotation: only the front; L69 = L65 with Life Orb: every item off, same
+seed; L70 Cud Chew with Sitrus: every item off; L71 Figy Berry under strict
+item rules: refused on the GBA). The Lab list holds 72 entries
+(`DEBUG_MAX_MENU_ITEMS`).

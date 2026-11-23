@@ -587,3 +587,232 @@ form-change rules and the opponent's side account for the difference.
 - Sunsteel Strike, Moongeist Beam, Sacred Sword, Chip Away, Darkest Lariat
   and the Shadow moves are now unsupported in every version (they were run
   with a wrong effect before).
+
+## 12. M4-B1b: consumable items (request V19)
+
+Release 13 (`m4b1b-dev`), branches `milestone4b1b` and Frontier
+`frontier-gc-m4b1b`, built on M4-B1a+. V1–V18 keep their bytes, operations,
+events, order and Lab results (12.7).
+
+| Supported (V19) | Hold effect (this build) | Record |
+|---|---|---|
+| Oran Berry | `RESTORE_HP` 10 | HP, at HP ≤ max HP / 2: heal 10 (fixed), used up |
+| Sitrus Berry | `RESTORE_PCT_HP` 25 | HP, at HP ≤ max HP / 2: heal max HP / 4 (at least 1), used up |
+| Cheri / Chesto / Pecha / Rawst / Aspear Berry | `CURE_PAR` / `CURE_SLP` / `CURE_PSN` / `CURE_BRN` / `CURE_FRZ` | cure paralysis / sleep / poison and bad poison / burn / freeze and frostbite, used up |
+| Persim Berry | `CURE_CONFUSION` | cure confusion, used up |
+| Lum Berry | `CURE_STATUS` | cure every major status, then confusion, used up |
+| Focus Sash | `FOCUS_SASH` | endure: a lethal hit at full HP leaves 1 HP, used up |
+
+The exporter maps hold effects, not item ids, so any berry of this build
+with one of these hold effects (and a parameter the record can carry) is
+the same record; there are exactly these nine berries now (12.5).
+
+Deferred (still UNSUPPORTED: every item off, strict: refused): Berry Juice
+(not a berry: the berry rules of Bug Bite, Cud Chew, Ripen and Harvest differ,
+and no Frontier set holds it), Focus Band (a chance, not this), Leppa, the
+confusion-heal berries (Figy …, they confuse by nature), the stat and pinch
+berries, the type-resist berries, Enigma, Jaboca / Rowap, Kee / Maranga,
+Micle, Custap, Starf, White Herb, Mental Herb, Power Herb, Air Balloon,
+Weakness Policy, Red Card, Eject Button / Pack, Throat Spray, the seeds,
+Booster Energy … Each acts at a point or with a rule (a stat stage change, a
+priority change, a forced switch, a move PP) this stage does not model.
+
+### 12.1 Check against Expansion
+
+Read in this Frontier build: `battle_hold_effects.c` (`ItemBattleEffects`
+with `IsOnSwitchInActivation`, `IsOnHpThresholdActivation`,
+`IsOnStatusChangeActivation`, `ItemHealHp`, `TryCureParalysis` …
+`TryCureAnyStatus`), `GetBattlerHoldEffectInternal`, `HasEnoughHpToEatBerry`,
+the endure step of the damage (`IsBattlerAtMaxHp`, after Sturdy),
+`Cmd_moveend` (`MOVEEND_ITEM_EFFECTS_TARGET`, `…_ATTACKER`,
+`…_ATTACKER_2`, the HP check of the other Pokémon, `MOVEEND_ITEMS_EFFECTS_ALL`),
+`Cmd_removeitem` (`cudChewTimer`), the battle scripts
+`BattleScript_HangedOnMsg`, `BattleScript_DoTurnDmg`,
+`BattleScript_ItemHealHP_RemoveItemRet`, and the build's own hold-effect
+tests. 41 reference tests (`make check TESTS="GC V19 reference"`,
+`test/battle/gc_consumable_item_reference.c`) fix what the GC follows:
+
+| Point | This build |
+|---|---|
+| HP threshold | HP ≤ max HP / 2 (floor); Sitrus heals max HP × 25 / 100 = max HP / 4, at least 1; Oran 10; both capped at max HP; eaten once |
+| A status from a move | cured at once, after Synchronize (the status Synchronize gives back is cured first, by its own berry) |
+| A status from a hit, Static, a thaw | damage, then the status, then the berry; Aspear thaws a freeze from a hit |
+| Confusion | cured at the end of the move (`ITEM_EFFECTS_TARGET`): Confuse Ray, Swagger |
+| On entry | a status the Pokémon enters with, then HP it enters with; at the battle start each lead's entry ability, then its item, in speed order |
+| A single hit | the attacker's check after its recoil and drain (`…_ATTACKER_2`), before Moxie; then the other Pokémon's HP in battler order; then every Pokémon's status and HP (`…_ALL`) |
+| A multi-hit move | the target's status, the attacker's checks, then the target's HP, between the hits |
+| A spread move | every target is hit first; then each target in turn: Sturdy / Focus Sash, its effects and contact abilities, its status berry, the attacker's checks |
+| Residual damage | weather damage and status damage: the HP berry at once; Solar Power and Dry Skin sun damage: no check, the berry waits for the next move end (also after a turn lost to full paralysis) |
+| Other HP losses | Substitute's cost, Rough Skin, Struggle's recoil, a confusion self-hit: the berry right after (Substitute: no animation in this build) |
+| Switches | a pivot move: the target's berry before the user leaves; Dragon Tail drags the target out before its berry; a berry eaten before a switch is not back after it |
+| Focus Sash | at full HP only, after Sturdy (Sturdy holds first and the sash is kept); also against a confusion self-hit; not against poison or weather; once in a multi-hit move; the HP bar, then the message |
+| Turned off | `GetBattlerHoldEffectInternal`: Klutz, Embargo, Magic Room; Unnerve / As One stop berries |
+
+### 12.2 The consumption state
+
+| State | Where |
+|---|---|
+| Item at the battle start | `BattleEntry.record.held_item` with `BattleEntry.mon.item` (the request; never changed) |
+| Item held now | `Battler.item_from` (an entry, or NULL: holds nothing). `battle_held_item()` and `bc_item()` read only this, so a used-up item has no id and no record |
+| Used up | `item_from == NULL` and `Battler.item_used` set |
+| Last item used up | `Battler.item_used` (the entry whose item it was) |
+| Why and when | `Battler.item_used_timing` (`BITIME_HP_THRESHOLD`, `BITIME_STATUS`, `BITIME_LETHAL_HIT`) and `Battler.item_used_turn` (the turns completed then); `EV_ITEM_CONSUMED` carries both and the item id |
+| End of the battle | nothing: the result carries no item, the GBA save keeps the held item (12.6) |
+
+The state belongs to the roster Pokémon (`Battler`, one per roster entry,
+not per position), so a switch, Shift or Rotation never brings an item back.
+A record with `BIREC_CONSUMED` that acts uses the item up (`use_up`); a
+record without it (Leftovers, Black Sludge) never does. The history is one
+item deep: enough for Recycle, Harvest, Belch or Cud Chew later, which need
+"the last item used up"; nothing else is kept.
+
+### 12.3 Request V19
+
+V19 is V18's layout (no block, no size change: the largest request stays
+3,165 B) with two record kinds, one HP timing and one record flag:
+
+| Byte | `BITEM_HP` at `BITIME_HP_THRESHOLD` | `BITEM_CURE` | `BITEM_ENDURE` |
+|---|---|---|---|
+| 0 | kind 4 | kind 5 | kind 6 |
+| 1 | timing 2 | timing `BITIME_STATUS` 3 | timing `BITIME_LETHAL_HIT` 4 |
+| 2 | `BIHP_HEAL` (1) or `BIHP_HEAL_FIXED` (3) | major status mask (1 << `BST_*`, bits 1–7) | condition `BIEND_FULL_HP` 1 |
+| 3 | divisor, or the fixed HP (≥ 1) | volatile mask (`BIVOL_CONFUSION` 1) | 0 |
+| 4–5 | predicate `BPRED_HP_AT_MOST`, argument ≥ 1 (HP ≤ max HP / argument) | 0 | 0 |
+| 6 | 0 | 0 | 0 |
+| 7 | flags: `BIREC_CONSUMED` (1) | flags | flags |
+
+The decoder and `battle_item_valid` refuse these records in V18 and
+earlier, `BIREC_CONSUMED` on any other record or in V18, any other timing,
+operation, predicate or condition, an empty or unknown mask, a reserved or
+padding byte, and a second CURE or ENDURE record in one item (they would
+contradict each other). `bc_items_check` applies the same check to a request
+built in memory. No item id goes into the core: the records are the
+definition; the id is only for the name.
+
+### 12.4 Check points and order
+
+Each check is a call at its own point, not an event engine:
+
+| Check | Called from | Does |
+|---|---|---|
+| `bc_item_status_check` | `bc_set_status` (a status given, after Synchronize); the move's end per target; entry; the actor and ALL passes | the first CURE record that matches cures, emits `EV_ITEM_CURE` (status, then confusion), uses the item up |
+| `bc_item_hp_check` | weather damage, status damage, entry, between hits, the actor and ALL passes | the first threshold record whose predicate holds heals, emits `EV_ITEM_HEAL`, uses the item up |
+| `bc_item_endure` / `bc_item_endured` | the damage of a hit and of a confusion self-hit, after Sturdy | the amount becomes HP − 1; then `EV_ITEM_ENDURE` and the item used up where the reference shows it |
+| `bc_item_on_entry` | `send_out`, and the battle start after each lead's entry abilities | status, else HP |
+| `bc_items_actor_check` | after the recoil and drain, before Moxie; Struggle after its recoil | the actor's status, else its HP |
+| `bc_items_after_action` | the end of every move (`bc_execute_move`), Struggle, an action lost to sleep, freeze, paralysis or confusion | the actor (unless done), every other Pokémon's HP, then every Pokémon's status and HP, in battler order |
+
+Battler order is the reference's: player left, opponent left, player right,
+opponent right … over the Pokémon on the field. A single-hit spread move in
+V19 hits every target first, then gives each its results (Sturdy, Focus
+Sash, effects, contact abilities, its status berry); V18 and earlier keep the
+target-by-target order (their events are unchanged, 12.7).
+
+Presentation: "Restored HP with its held item." (as in V18), "Cured by its
+held item!" with the status label or CONF, "Hung on using its held item!",
+each with the holder's name and the item's game-rendered label;
+`EV_ITEM_CONSUMED` shows nothing (the message of what it did says it). The
+companion logs the records (`PH12 item id=523 record0 hp timing=2 heal 1/4
+pred=01:02 flags=01`, `… cure timing=3 status=fe volatiles=01 flags=01`,
+`… endure timing=4 condition=1 flags=01`).
+
+### 12.5 Exporter, normalisation, strict mode
+
+`ResolveItem` (V19 rosters only, `ConsumableItemsEnabled`): a berry goes to
+`ResolveConsumable`, which reads its hold effect and parameter
+(`RESTORE_HP` → fixed heal; `RESTORE_PCT_HP` with a percent dividing 100 →
+heal 100 / percent; `CURE_*` → the masks), else it stays UNSUPPORTED;
+`HOLD_EFFECT_FOCUS_SASH` → the endure record. A V18 roster sends every berry
+and Focus Sash as UNSUPPORTED as before.
+
+The M4-B0 rules stay: all or nothing (`RULE_IGNORE_ITEMS`), strict refusal,
+the item ability list, which already holds every ability that eats, steals,
+gives or blocks berries (Klutz, Gluttony, Ripen, Cheek Pouch, Harvest,
+Pickup, Unnerve, As One, Unburden, Symbiosis, Pickpocket, Magician, Sticky
+Hold, Frisk, Ball Fetch …): any of them on either side turns every item off.
+New in V19 (`ConsumableItemAbility`): Cud Chew on a holder of a berry with a
+used-up record (the GC does not eat it again). `HpItemAbility` (Power
+Construct …) applies to the threshold records too. Z-Crystal and Mega Stone
+acceptance (section 11), strict moves and abilities and `RULE_IGNORE_ITEMS`
+are unchanged; item-moving moves (Bug Bite, Pluck, Incinerate, Knock Off,
+Fling, Belch …) are unsupported moves the GC never runs.
+
+### 12.6 Persistence (a later stage; design memo)
+
+M4-B1b changes nothing in the save: the result carries HP, PP and status
+only, so a used-up berry or sash is back after the battle, as in a facility
+battle. A later stage that makes it permanent should:
+
+- add one result field per party entry, "item used up" (or the held item
+  after the battle), set from `item_from == NULL && item_used == entry`;
+- apply it on the GBA under the same nonce rule as the result (a result
+  already applied is never applied again, so the item cannot be removed
+  twice), and only where the game would (not in facility battles, which
+  restore items);
+- keep the GC side free of item ids: the GBA maps "used up" to the entry's
+  own `held_item`.
+
+### 12.7 Verification
+
+| Check | Result |
+|---|---|
+| Native (-O2, ASan + UBSan, presentation, asset check) | all suites pass. New: `test_v19_reference` (the reference cases as GC battles), `test_v19_more`, `test_v19_gaps` (added after the first mutation run), `test_v19_wire`, `test_v19_formats` (240 random battles in four formats run twice: identical events, state and RNG; the 80 normalised ones event for event the battle without items; 298 items used up; 545 heal (Leftovers included), 148 cure and 1 endure events; at most 28 events in a turn); the presentation test checks the new messages and that `EV_ITEM_CONSUMED` adds no frame |
+| Expansion reference (`make check TESTS="GC V19 reference"`) | 41 tests, all PASS: the 36 written with the code and 5 added after the mutation run (a multi-hit move into Rough Skin, Moxie after the berry, a confusing contact hit, Focus Sash before the hit's paralysis, a lead's own entry ability before its own berry), each agreeing with the GC order it fixes |
+| Exporter (`make check TESTS="GC V19 export"`) | 5 tests PASS: the nine berries and Focus Sash as records (V19) and UNSUPPORTED (V18); every other berry and Berry Juice UNSUPPORTED, every berry UNSUPPORTED before V19; Cud Chew, Gluttony, Unnerve, Ripen, Cheek Pouch, Harvest, Power Construct turn items off; strict refusal of Figy Berry; a Z-Crystal beside a berry accepted; the tally |
+| Mutations (GC core) | 94 changes (records, thresholds, amounts, cap, use-up and history, each check point, battler order, spread two-pass, Focus Sash, validation, wire, presentation): 64 caught in the first run; of the 30 that survived, 25 were test gaps, closed by `test_v19_gaps` and stronger cases (entry before the next action, Struggle with a target berry, V18 refusal without the flag, a type predicate at the threshold, the consumed event's frames) and then caught; 5 remain: 4 equivalent (the sleep counter reset: read only while asleep and set by every new sleep; normalised items: `bc_item` already gives no records; V19 checks on a V18 request: it has no V19 records; Sash before Sturdy: never both) and the kind name of the companion log (diagnostic only) |
+| Mutations (exporter) | 22 changes to `src/frontier_gc_battle.c` (the version gate, the threshold, Oran and Sitrus amounts, use-up flags, Focus Sash condition, each cure mask, Persim, unknown berries, Berry Juice, the berry pocket path, Cud Chew): 19 caught in the first run; 1 test gap (a berry with no hold effect, such as Razz Berry, reaching the hold-effect switch in a V18 roster, where HOLD_EFFECT_NONE means no item) closed by checking every berry before V19, then caught; 2 equivalent: the divisibility check of the percent (every percent berry is 25) and Cud Chew with a record not used up (every berry record is) |
+| Traces V12–V18 (1,200 battles each) | identical to M4-B1a+ (V18 total `65a3b885`) |
+| Frontier `make check` | 6,945 tests: 4,029 PASS, 2,455 FAILED (the same 2,455 as M4-B1a+ and `frontier-hack`); against the M4-B1a+ run (6,899) no test changed status and the only additions are the 46 V19 tests (41 reference, 5 exporter), all PASS |
+| Frontier `GC V1` | the V14–V18 references and exporter tests PASS; the L01–L64 fixture requests byte for byte the M4-B1a+ ones (64 `FIXTURE` lines identical) |
+| Dolphin L65–L71 (V19) | L65 Single: Lum cures Snorlax's paralysis at once ("Cured by its held item!" PAR), Jolteon's Sitrus +27 after a hit (47 → 74), Tyranitar's Focus Sash holds at 1 HP ("Hung on using its held item!") and is gone. L66 Double: a Sitrus +31, Lum cures a paralysis, Oran +10. L67 Triple: Sitrus +27, Persim cures confusion. L68 Rotation: only the front: Sitrus +46, then Lum cures sleep after rotations. L69 = L65 with Life Orb, same seed: "NORMALISED", no item event. L70 Cud Chew with Sitrus: every item off. L71 refused on the GBA: "Strict items: not simulated: フィラのみ" |
+| Dolphin L01–L64 | 60 of 60 battles line for line equal to M4-B1a+ (request bytes and CRC, events, actions, results); L42, L48, L56, L63 refused on the GBA as before |
+| Result contract (V19, L65) | GC Z right after the result: "result already final (nonce=ff57373a); not restarting the battle"; nothing applied twice |
+| Save | Frontier save SHA-256 `AFF1EB7B…` before and after; the profile restored (`F838F993…`, expansion ROM) |
+| JoyBus (70 sessions) | GC 141,193 sent, CRC 0, 124 retries, 7 timeouts, all recovered; GBA 140,987 requests, CRC 0, overflows 0; 1 link loss, the deliberate Z cut |
+| Not run | Cube Tester and the debug-menu V1–V12 entries in Dolphin (their requests are among the byte-for-byte fixtures); a real GameCube and GBA |
+
+### 12.8 Memory, link and time
+
+| Item | M4-B1a+ | M4-B1b |
+|---|---:|---:|
+| `BattleRequest` / `EventLog` (x86-64 host) | 6,344 / 47,812 B | unchanged |
+| `Battle` (x86-64 host) | 4,280 B | 4,472 B (+16 per `Battler`: the history) |
+| Request buffer `BATTLE_REQUEST_MAX_BYTES(6, 21)` | 3,165 B | 3,165 B |
+| ELF text / data / bss | 283,310 / 70,276 / 3,002,528 | 289,886 / 71,644 / 3,002,624 |
+| DOL | 353,888 B | 361,824 B |
+| Frontier ROM used | 26,368,776 B | 26,371,452 B |
+| EWRAM (`.ewram.sbss`); GBA request heap | 232,048 B; `BattleRequest` | unchanged |
+| A V19 request | — | the same 8 B per record (L65 1,421 B, L66–L68 1,805 B) |
+| Link | — | one label per item name, once per session (about 200 wire bytes each; L66: 6 labels, 1,187 B) |
+| GC core per turn (Dolphin peak) | 310 µs | 319 µs overall (a V18 Lab, as noise); V19 peak 163 µs (L67 Triple, 17 events) |
+| Events per turn | — | at most 3 more per item use (heal / cure / endure, the use); 28 in the worst random turn; the log holds 1,992 |
+
+### 12.9 Battle Frontier coverage (measured)
+
+The run of 11.9 (every `gBattleFrontierMons` set as the player's lead in a
+Single against a plain Snorlax), V18 and V19 side by side (`GC V19 export
+tally`). Sets, not facility battles, and not a win rate.
+
+| Measure | V18 | V19 |
+|---|---:|---:|
+| Requests built | 1,996 | 1,996 |
+| Items take part (not normalised) | 852 | 992 (48.6% of 2,040) |
+| Items, ability and all moves simulated | 103 | 108 |
+| Strict battle that starts | 103 | 108 |
+
+The 140 more sets whose items take part: Focus Sash 100, HP berries 22,
+status berries 18; of the 5 more fully simulated, 4 hold Focus Sash and 1 a
+status berry. Sets holding: Focus Sash 113, an HP berry 39, a status berry
+19; the rest are kept off by another item of the battle, an item ability
+(48 in V19, Cud Chew among them) or an unsupported move or ability.
+
+### 12.10 Known limits
+
+- An action lost to recharge runs no move-end item pass; this was not
+  compared with the reference (a turn lost to full paralysis was).
+- The ALL pass runs before a pivot's switch; a U-turn user with Solar Power
+  at the berry threshold would differ (no fixture or Frontier set needs it).
+- Item-moving moves stay unsupported; Recycle, Harvest and Cud Chew have the
+  history but are not simulated.
+- Every other berry and consumable item stays unsupported (12, Deferred).
+- The GBA screen shows no item activation (the GC does).
