@@ -9242,6 +9242,246 @@ static void test_abl_g04(void) {
            "substitute, miss, Double\n");
 }
 
+// M4-B1c-0a: Life Orb (docs/items.md section 13), against the Expansion
+// reference test/battle/gc_life_orb_reference.c (frontier-gc-m4b1c0a).
+//
+// V19 has no Life Orb: its item block is UNSUPPORTED, and the codec refuses
+// an item modifier outside the power stage. The damage arithmetic is already
+// the reference's: a 130% truncated (BMOD_FLOORED) record at BMOD_FINAL, held
+// here by the attacker's ability as a stand-in, gives the reference's numbers.
+#define LO_STANDIN MODS(500, modr(BMOD_FINAL | BMOD_FLOORED, 130, 0, 0, 0, 0))
+#define LO_NEAREST_STANDIN MODS(500, modr(BMOD_FINAL, 130, 0, 0, 0, 0))
+#define HALF_STANDIN MODS(501, modr(BMOD_FINAL | BMODF_DEFENDER, 50, 0, 0, 0, 0))
+
+typedef struct {
+    const char *name;
+    RefMon atk, def;
+    BattleMove move;
+    uint16_t none[3], life_orb[3], nearest[3];  // the reference's values; nearest: 5325 instead of 5324
+} LifeOrbCase;
+
+static void test_c0a_life_orb_arithmetic(void) {
+    const BattleItem nothing = {0};
+    const LifeOrbCase cases[] = {
+        {"physical: Strength 80, STAB (Snorlax L50 Atk 100 vs Def 100)",
+         RMON(50, R_NORMAL, R_NORMAL, 100, 300, 300, 100, 0, R_NO_ABILITY),
+         RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 30, 0, R_NO_ABILITY),
+         ref_move(80, R_NORMAL, BCAT_PHYSICAL), {55, 51, 46}, {71, 66, 60}, {72, 66, 60}},
+        {"special: Hyper Voice 90, STAB (Snorlax L50 SpA 100 vs SpD 100)",
+         RMON(50, R_NORMAL, R_NORMAL, 100, 300, 300, 100, 0, R_NO_ABILITY),
+         RMON(50, R_NORMAL, R_NORMAL, 100, 999, 999, 30, 0, R_NO_ABILITY),
+         ref_move(90, R_NORMAL, BCAT_SPECIAL), {61, 57, 51}, {79, 74, 66}, {79, 74, 66}},
+        {"truncated factor: Strength (Snorlax L100 Atk 400 vs Def 60)",
+         RMON(100, R_NORMAL, R_NORMAL, 400, 300, 300, 100, 0, R_NO_ABILITY),
+         RMON(100, R_NORMAL, R_NORMAL, 60, 999, 999, 30, 0, R_NO_ABILITY),
+         ref_move(80, R_NORMAL, BCAT_PHYSICAL), {675, 627, 573}, {877, 815, 745}, {878, 815, 745}},
+    };
+    for (unsigned i = 0; i < sizeof cases / sizeof *cases; ++i) {
+        const LifeOrbCase *k = &cases[i];
+        RefMon orb = k->atk, near = k->atk;
+        orb.ability = LO_STANDIN;
+        near.ability = LO_NEAREST_STANDIN;
+        printf("  lo %u %-66s", i + 1, k->name);
+        for (unsigned r = 0; r < 3; ++r) {
+            const uint16_t none = i_damage(&k->atk, &k->def, k->move, nothing, nothing, 0, ref_rolls[r]);
+            const uint16_t lo = i_damage(&orb, &k->def, k->move, nothing, nothing, 0, ref_rolls[r]);
+            const uint16_t nearest = i_damage(&near, &k->def, k->move, nothing, nothing, 0, ref_rolls[r]);
+            printf(" %u%%: none=%u lo=%u nearest=%u", ref_rolls[r], none, lo, nearest);
+            fflush(stdout);
+            assert(none == k->none[r] && lo == k->life_orb[r] && nearest == k->nearest[r]);
+        }
+        printf("\n");
+    }
+    // One final chain with a defender's x0.5 (Multiscale at full HP in the reference,
+    // 108 -> 70): hd(5324, 2048) = 2662 once on the damage, faster or slower.
+    for (unsigned s = 0; s < 2; ++s) {
+        const uint16_t speed = s ? 10 : 100;
+        const RefMon atk = RMON(50, R_NORMAL, R_NORMAL, 200, 300, 300, speed, 0, R_NO_ABILITY);
+        RefMon orb = atk;
+        orb.ability = LO_STANDIN;
+        const RefMon def = RMON(50, R_DRAGON, R_FLYING, 100, 999, 999, 50, 0, R_NO_ABILITY);
+        RefMon half = def;
+        half.ability = HALF_STANDIN;
+        const BattleMove strength = ref_move(80, R_NORMAL, BCAT_PHYSICAL);
+        assert(i_damage(&atk, &def, strength, nothing, nothing, 0, 100) == 108);
+        assert(i_damage(&orb, &half, strength, nothing, nothing, 0, 100) == 70);
+    }
+    // The V19 codec refuses what V20 needs: a final-stage item modifier and an
+    // after-move HP record (timing 5, the design's BITIME_AFTER_MOVE).
+    BattleItem orb_item = {.cls = BICLASS_RECORDS, .count = 1, .source = 270};
+    orb_item.records[0].kind = BITEM_MODIFIER;
+    orb_item.records[0].mod = modr(BMOD_FINAL | BMOD_FLOORED, 130, 0, 0, 0, 0);
+    assert(!battle_item_valid(&orb_item, 270, R_COUNT, BATTLE_REQUEST_VERSION_CONSUMABLE_ITEMS));
+    orb_item.records[0].mod = modr(BMOD_POWER | BMOD_FLOORED, 130, 0, 0, 0, 0);
+    assert(battle_item_valid(&orb_item, 270, R_COUNT, BATTLE_REQUEST_VERSION_CONSUMABLE_ITEMS));  // power: valid
+    orb_item.records[0] = (BattleItemRecord){.kind = BITEM_HP};
+    orb_item.records[0].hp.timing = 5;
+    orb_item.records[0].hp.op = BIHP_DAMAGE;
+    orb_item.records[0].hp.divisor = 10;
+    assert(!battle_item_valid(&orb_item, 270, R_COUNT, BATTLE_REQUEST_VERSION_CONSUMABLE_ITEMS));
+    printf("c0a life orb: V19 arithmetic gives the reference's numbers (stand-in); V19 refuses the V20 records\n");
+}
+
+#ifdef GC_TEST_V20
+// ---------------------------------------------------------------- V20 (not built by default)
+//
+// The Life Orb cases a V20 core must pass (docs/items.md 13.7), built only
+// with -DGC_TEST_V20 (tools/v20-tests.sh). Before V20 every
+// case fails at the start (the request is refused), which this build reports
+// instead of stopping. The identifiers are the design's until the protocol
+// defines them.
+#ifndef BATTLE_REQUEST_VERSION_MOVE_ITEMS
+#define BATTLE_REQUEST_VERSION_MOVE_ITEMS 20
+#endif
+#ifndef BITIME_AFTER_MOVE
+#define BITIME_AFTER_MOVE 5
+#endif
+
+static unsigned v20_checks, v20_failed;
+#define V20_CHECK(name, cond)                                                   \
+    do {                                                                        \
+        ++v20_checks;                                                           \
+        if (!(cond)) {                                                          \
+            ++v20_failed;                                                       \
+            printf("  v20 FAIL %-44s %s\n", name, #cond);                       \
+        }                                                                       \
+    } while (0)
+
+static BattleItem v20_life_orb(void) {
+    BattleItem it = {.cls = BICLASS_RECORDS, .count = 2, .source = 270};
+    it.records[0].kind = BITEM_MODIFIER;
+    it.records[0].mod = modr(BMOD_FINAL | BMOD_FLOORED, 130, 0, 0, 0, 0);
+    it.records[1].kind = BITEM_HP;
+    it.records[1].hp.timing = BITIME_AFTER_MOVE;
+    it.records[1].hp.op = BIHP_DAMAGE;
+    it.records[1].hp.divisor = 10;
+    return it;
+}
+
+typedef struct {
+    Battle b;
+    EventLog log;
+    bool started;
+} V20Run;
+
+static bool v20_start(V20Run *run, const BattleRequest *r, uint32_t seed) {
+    static BattleRequest d;
+    static uint8_t bytes[8192];
+    run->started = false;
+    const uint32_t n = battle_request_encode(r, bytes, sizeof bytes);
+    if (!n || !battle_request_decode(bytes, n, &d) || battle_init(&run->b, &d, seed) != BI_OK) return false;
+    battle_begin(&run->b, &run->log);
+    return run->started = true;
+}
+
+// Single V20: the holder (Life Orb, Speed 100) uses `m` on a 999 HP foe (Speed 30) that uses `foe_move`.
+static void v20_single(BattleRequest *r, uint16_t max_hp, uint16_t hp, BattleMove m, BattleMove foe_move) {
+    make_consumable(r, BATTLE_FORMAT_SINGLE);
+    r->version = BATTLE_REQUEST_VERSION_MOVE_ITEMS;
+    v19_mon(&r->player[0], max_hp, hp, 100, v20_life_orb(), m);
+    v19_mon(&r->opponent[0], 999, 999, 30, (BattleItem){0}, foe_move);
+}
+
+static const BattleEvent *v20_nth(const EventLog *log, EventKind kind, uint8_t side, unsigned nth) {
+    for (unsigned i = 0; i < log->count; ++i)
+        if (log->events[i].kind == kind && log->events[i].target.side == side && nth-- == 0) return &log->events[i];
+    return NULL;
+}
+static unsigned v20_index(const EventLog *log, const BattleEvent *e) { return e ? (unsigned)(e - log->events) : ~0u; }
+
+static int test_v20_life_orb(void) {
+    static BattleRequest r;
+    static V20Run run;
+    const Action hit[] = {move(0, 0, 0), move(1, 0, 0)};
+    // 1. Accepted, and the damage of the reference (physical, three rolls).
+    v20_single(&r, 300, 300, ref_move(80, R_NORMAL, BCAT_PHYSICAL), wait_move());
+    V20_CHECK("a V20 Life Orb request starts", v20_start(&run, &r, 1));
+    if (run.started) {
+        const unsigned rolls[3] = {100, 93, 85};
+        const uint16_t expect[3] = {71, 66, 60};
+        Battler *a = battle_active(&run.b, 0), *d = battle_active(&run.b, 1);
+        a->attack = 100, d->defense = 100;
+        for (unsigned k = 0; k < 3; ++k) {
+            uint8_t eff;
+            V20_CHECK("damage x5324/4096 (reference 71/66/60)",
+                      bc_calculate_damage(&run.b, a, &a->moves[0], d, rolls[k], false, 0, &eff) == expect[k]);
+        }
+    }
+    // 2. The loss: max HP / 10, at least 1, after the hit (an item event of the holder).
+    const uint16_t max_hps[4] = {105, 109, 9, 1}, losses[4] = {10, 10, 1, 1};
+    for (unsigned k = 0; k < 4; ++k) {
+        v20_single(&r, max_hps[k], max_hps[k], v19_hit(40), wait_move());
+        if (!v20_start(&run, &r, 1)) { V20_CHECK("the loss (request starts)", false); continue; }
+        battle_run_turn(&run.b, hit, 2, &run.log);
+        const BattleEvent *loss = v20_nth(&run.log, EV_ITEM_DAMAGE, 0, 0);
+        V20_CHECK("max HP / 10, at least 1", loss && loss->amount == losses[k]);
+        V20_CHECK("after the hit", v20_index(&run.log, loss) > v20_index(&run.log, v20_nth(&run.log, EV_DAMAGE, 1, 0)));
+        if (k == 3) V20_CHECK("1 HP: the holder faints", run.b.sides[0].battlers[0].fainted);
+    }
+    // 3. No loss without a hit: a miss, an immunity, Protect, a status move.
+    for (unsigned k = 0; k < 4; ++k) {
+        BattleMove m = v19_hit(40), foe = wait_move();
+        if (k == 0) m.accuracy = 1;
+        if (k == 2) {
+            foe = status_move(BTARGET_SELF, 0);
+            push(&foe, fx(BEFF_PROTECT, BWHO_USER, 0, 3, 0, 0));
+        }
+        if (k == 3) m = wait_move();
+        v20_single(&r, 300, 300, m, foe);
+        if (k == 1) {
+            r.opponent[0].mon.types[0] = r.opponent[0].mon.types[1] = R_GHOST;
+            r.type_chart[R_NORMAL * r.type_count + R_GHOST] = 0;
+        }
+        if (k == 2) r.opponent[0].record.speed = 200;
+        if (!v20_start(&run, &r, 1)) { V20_CHECK("no hit (request starts)", false); continue; }
+        battle_run_turn(&run.b, hit, 2, &run.log);
+        V20_CHECK("no loss without a hit", !v20_nth(&run.log, EV_ITEM_DAMAGE, 0, 0) && battle_active(&run.b, 0)->hp == 300);
+    }
+    // 4. A substitute: the loss.
+    v20_single(&r, 300, 300, v19_hit(40), wait_move());
+    if (v20_start(&run, &r, 1)) {
+        battle_active(&run.b, 1)->vol.substitute_hp = 200;
+        battle_run_turn(&run.b, hit, 2, &run.log);
+        V20_CHECK("a hit on a substitute costs HP", battle_active(&run.b, 0)->hp == 270);
+    } else V20_CHECK("substitute (request starts)", false);
+    // 5. A two-hit move: one loss, after the hit count.
+    v20_single(&r, 300, 300, v19_multi(40, 2), wait_move());
+    if (v20_start(&run, &r, 1)) {
+        battle_run_turn(&run.b, hit, 2, &run.log);
+        V20_CHECK("one loss for two hits", event_count(&run.log, EV_ITEM_DAMAGE) == 1);
+        V20_CHECK("after the hit count", v20_index(&run.log, v20_nth(&run.log, EV_ITEM_DAMAGE, 0, 0)) >
+                                             v20_index(&run.log, find(&run.log, EV_MULTI_HIT)));
+    } else V20_CHECK("two hits (request starts)", false);
+    // 6. Recoil first, then the loss.
+    v20_single(&r, 300, 300, v19_hit_with(80, fx(BEFF_RECOIL, BWHO_USER, 0, 33, 0, 0)), wait_move());
+    if (v20_start(&run, &r, 1)) {
+        battle_run_turn(&run.b, hit, 2, &run.log);
+        V20_CHECK("recoil, then the loss", v20_index(&run.log, v20_nth(&run.log, EV_ITEM_DAMAGE, 0, 0)) >
+                                              v20_index(&run.log, find(&run.log, EV_RECOIL)));
+    } else V20_CHECK("recoil (request starts)", false);
+    // 7. A knock-out, then the holder's own faint (the target's first).
+    v20_single(&r, 200, 1, v19_hit(40), wait_move());
+    r.opponent[0].record.hp = 1;
+    add_reserve(&r, 1);
+    if (v20_start(&run, &r, 1)) {
+        battle_run_turn(&run.b, hit, 2, &run.log);
+        V20_CHECK("the target faints before the holder",
+                  v20_index(&run.log, v20_nth(&run.log, EV_FAINT, 1, 0)) < v20_index(&run.log, v20_nth(&run.log, EV_FAINT, 0, 0)));
+    } else V20_CHECK("knock-out (request starts)", false);
+    // 8. Hyper Beam: no loss on the recharge turn.
+    v20_single(&r, 300, 300, v19_beam(), wait_move());
+    if (v20_start(&run, &r, 1)) {
+        battle_run_turn(&run.b, hit, 2, &run.log);
+        const Action wait[] = {v19_wait(0, 0), v19_wait(1, 0)};
+        battle_run_turn(&run.b, wait, 2, &run.log);
+        V20_CHECK("no loss on the recharge turn", battle_active(&run.b, 0)->hp == 270);
+    } else V20_CHECK("recharge (request starts)", false);
+    printf("v20 life orb: %u of %u checks failed%s\n", v20_failed, v20_checks,
+           v20_failed ? " (expected until the core implements request V20)" : "");
+    return v20_failed ? 1 : 0;
+}
+#endif
+
 static void test_v19_wire(void) {
     static BattleRequest r, d;
     static Battle b;
@@ -9472,6 +9712,9 @@ static void test_v19_formats(void) {
 #pragma GCC diagnostic pop
 
 int main(void) {
+#ifdef GC_TEST_V20
+    return test_v20_life_orb();  // only the V20 cases (docs/items.md 13.7)
+#endif
     test_request_roundtrip();
     test_messages();
     test_core();
@@ -9599,6 +9842,7 @@ int main(void) {
     test_v19_recharge();
     test_abl_g05();
     test_abl_g04();
+    test_c0a_life_orb_arithmetic();
     test_v19_wire();
     test_v19_formats();
     puts("battle tests passed");
