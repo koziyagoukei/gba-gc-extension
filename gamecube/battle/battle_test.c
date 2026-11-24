@@ -8934,6 +8934,314 @@ static void test_v19_recharge(void) {
     printf("v19 recharge: the move end after the recharge, four formats, strict, items off, status, Double, KO\n");
 }
 
+// ABL-G05 (docs/ability-mechanics/gc-compatibility.md): a contact status and
+// a contact damage hook in one ability. The core runs one contact reaction per
+// hit, so the codec refuses the pair instead of running half of it.
+#define CS(status, num, den) hk(BABIL_CONTACT_STATUS, status, 0, 0, num, den, 0, 0)
+#define CD(divisor) hk(BABIL_CONTACT_DAMAGE, 0, 0, divisor, 0, 0, 0, 0)
+
+// The GC's start path: the request as the GBA writes it, decoded, then the battle.
+static bool abl_start(const BattleRequest *r, Battle *b, uint32_t seed) {
+    static BattleRequest d;
+    static uint8_t bytes[8192];
+    const uint32_t n = battle_request_encode(r, bytes, sizeof bytes);
+    assert(n);
+    if (!battle_request_decode(bytes, n, &d)) return false;
+    assert(battle_init(b, &d, seed) == BI_OK);
+    return true;
+}
+
+// The core's xorshift steps from `from` to `to`: the draws a turn made.
+static unsigned rng_draws(uint32_t from, uint32_t to) {
+    for (unsigned n = 0; n < 4096; ++n) {
+        if (from == to) return n;
+        from ^= from << 13;
+        from ^= from >> 17;
+        from ^= from << 5;
+    }
+    assert(!"rng_draws");
+    return 0;
+}
+
+typedef struct {
+    bool started;
+    unsigned draws, statuses, notices, hits;
+    uint8_t status;
+    uint16_t hp;
+} AblHit;
+
+static BattleMove abl_contact(void) {
+    BattleMove m = v19_hit(40);
+    m.move_flags |= BMF_CONTACT;
+    return m;
+}
+
+// V19 Single: the player's lead (160 HP, Speed 100, `own` ability, `status`)
+// hits the foe's lead (999 HP, Speed 50, `holder`) once with a contact move.
+// `direct`: the core is given the request without the codec.
+static AblHit abl_hit(BattleAbility holder, BattleAbility own, uint32_t status, uint16_t rules, uint32_t seed,
+                      bool direct) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    AblHit h = {0};
+    make_consumable(&r, BATTLE_FORMAT_SINGLE);
+    r.rules |= rules;
+    v19_mon(&r.player[0], 160, 160, 100, (BattleItem){0}, abl_contact());
+    give(&r.player[0], own);
+    r.player[0].record.status = status;
+    v19_mon(&r.opponent[0], 999, 999, 50, (BattleItem){0}, wait_move());
+    give(&r.opponent[0], holder);
+    if (direct) assert(battle_init(&b, &r, seed) == BI_OK);
+    else if (!abl_start(&r, &b, seed)) return h;
+    h.started = true;
+    battle_begin(&b, &log);
+    const uint32_t before = b.rng;
+    battle_run_turn(&b, (Action[]){move(0, 0, 0), v19_wait(1, 0)}, 2, &log);
+    h.draws = rng_draws(before, b.rng);
+    h.statuses = event_count(&log, EV_STATUS);
+    h.notices = event_count(&log, EV_ABILITY);
+    h.hits = event_count(&log, EV_ABILITY_DAMAGE);
+    h.status = (uint8_t)BATTLE_CONDITION_KIND(battle_active(&b, 0)->status);
+    h.hp = battle_active(&b, 0)->hp;
+    return h;
+}
+
+static void test_abl_g05(void) {
+    const BattleAbility none = R_NO_ABILITY;
+    const BattleAbility limber = HOOKS(7, hk(BABIL_STATUS_IMMUNE, 1u << BST_PARALYSIS, 0, 0, 0, 0, 0, 0));
+    const BattleAbility status = HOOKS(9, CS(BST_PARALYSIS, 1, 1)), damage = HOOKS(24, CD(8));
+    const BattleAbility pair = HOOKS(9, CS(BST_PARALYSIS, 1, 1), CD(8));
+    const BattleAbility pair_rev = HOOKS(9, CD(8), CS(BST_PARALYSIS, 1, 1));
+    const BattleAbility pair_eighth = HOOKS(9, CS(BST_PARALYSIS, 1, 8), CD(8));
+    const BattleAbility two_status = HOOKS(9, CS(BST_PARALYSIS, 1, 1), CS(BST_BURN, 1, 1));
+    const BattleAbility two_damage = HOOKS(24, CD(8), CD(4));
+    const uint32_t burned = BATTLE_CONDITION(BST_BURN, 0);
+    const BattleAbility guts = GUTS, flash_fire = FLASH_FIRE, scrappy = SCRAPPY, stat = STATIC, rough = ROUGH_SKIN;
+    const AblHit base = abl_hit(none, none, 0, 0, 1, false);
+    assert(base.started && !base.statuses && !base.notices && !base.hits && base.hp == 160);
+
+    // The codec: every version that has the pair (V12 and later) refuses it, in either order;
+    // each hook alone and the sets the exporter writes stay valid.
+    for (uint8_t v = BATTLE_REQUEST_VERSION_ABILITY_HOOKS; v <= BATTLE_REQUEST_VERSION_LATEST; ++v) {
+        assert(battle_ability_valid(&status, R_COUNT, v) && battle_ability_valid(&damage, R_COUNT, v));
+        assert(!battle_ability_valid(&pair, R_COUNT, v) && !battle_ability_valid(&pair_rev, R_COUNT, v));
+        assert(!battle_ability_valid(&pair_eighth, R_COUNT, v));
+        assert(battle_ability_valid(&two_status, R_COUNT, v) && battle_ability_valid(&two_damage, R_COUNT, v));
+        assert(battle_ability_valid(&guts, R_COUNT, v) && battle_ability_valid(&flash_fire, R_COUNT, v) &&
+               battle_ability_valid(&scrappy, R_COUNT, v));
+    }
+    assert(battle_ability_valid(&stat, R_COUNT, BATTLE_REQUEST_VERSION_ABILITIES) &&
+           battle_ability_valid(&rough, R_COUNT, BATTLE_REQUEST_VERSION_ABILITIES) &&
+           !battle_ability_valid(&pair, R_COUNT, BATTLE_REQUEST_VERSION_ABILITIES));  // V11: one hook, as before
+
+    // One contact status, certain: the status, one draw for the chance.
+    AblHit h = abl_hit(status, none, 0, 0, 1, false);
+    assert(h.started && h.statuses == 1 && h.notices == 1 && !h.hits && h.status == BST_PARALYSIS);
+    assert(h.draws == base.draws + 1);
+    // One contact damage: max HP / 8, no draw.
+    h = abl_hit(damage, none, 0, 0, 1, false);
+    assert(h.started && !h.statuses && h.notices == 1 && h.hits == 1 && h.hp == 140 && h.draws == base.draws);
+    // An attacker that cannot take the status (burned, or Limber): no notice, no draw.
+    h = abl_hit(status, none, burned, 0, 1, false);
+    assert(h.started && !h.statuses && !h.notices && h.status == BST_BURN && h.draws == base.draws);
+    h = abl_hit(status, limber, 0, 0, 1, false);
+    assert(h.started && !h.statuses && !h.notices && h.draws == base.draws);
+    // A chance of 1/2: one draw either way, the status only when it succeeds.
+    unsigned took = 0, missed = 0;
+    for (uint32_t seed = 1; seed <= 24; ++seed) {
+        const AblHit base_s = abl_hit(none, none, 0, 0, seed, false);
+        h = abl_hit(HOOKS(9, CS(BST_PARALYSIS, 1, 2)), none, 0, 0, seed, false);
+        assert(h.started && h.draws == base_s.draws + 1 && h.statuses == h.notices && !h.hits);
+        took += h.statuses, missed += !h.statuses;
+    }
+    assert(took && missed);
+
+    // The pair: refused at the start, in either order, with or without the strict rule.
+    assert(!abl_hit(pair, none, 0, 0, 1, false).started && !abl_hit(pair_rev, none, 0, 0, 1, false).started);
+    assert(!abl_hit(pair, none, 0, RULE_STRICT_ABILITIES, 1, false).started);
+    assert(!abl_hit(pair_eighth, none, 0, 0, 1, false).started);
+    assert(abl_hit(status, none, 0, RULE_STRICT_ABILITIES, 1, false).started);
+    // Why: given the pair directly, the core runs only the status (one reaction per hit),
+    // also when the status cannot be set (no damage either).
+    h = abl_hit(pair, none, 0, RULE_STRICT_ABILITIES, 1, true);
+    assert(h.statuses == 1 && !h.hits && h.hp == 160);
+    h = abl_hit(pair, none, burned, 0, 1, true);
+    assert(!h.statuses && !h.notices && !h.hits && h.hp == abl_hit(none, none, burned, 0, 1, false).hp);  // the burn only
+
+    // Two hooks of one kind keep the V12 rule (the first hook of the kind): accepted,
+    // the first runs. Paralysis only, one draw; a Limber attacker gets neither status.
+    h = abl_hit(two_status, none, 0, 0, 1, false);
+    assert(h.started && h.statuses == 1 && h.status == BST_PARALYSIS && h.draws == base.draws + 1);
+    h = abl_hit(two_status, limber, 0, 0, 1, false);
+    assert(h.started && !h.statuses && h.draws == base.draws);
+    h = abl_hit(two_damage, none, 0, 0, 1, false);
+    assert(h.started && h.hits == 1 && h.hp == 140);
+
+    // The type reactions (absorb, absorb with a state, immunity) are tried in that order and
+    // the first that applies to a move decides it: one that can never be reached is refused.
+    const BattleAbilityHook absorb_w = hk(BABIL_TYPE_ABSORB, R_WATER, 0, 0, 0, 0, 25, 0);
+    const BattleAbilityHook state_w = hk(BABIL_ABSORB_STATE, R_WATER, 0, 0, 0, 0, 0, 0);
+    const BattleAbilityHook state_w_frozen = hk(BABIL_ABSORB_STATE, R_WATER, 0, 0, 0, 0, 0, BAHF_NOT_FROZEN);
+    const BattleAbilityHook immune_w = hk(BABIL_TYPE_IMMUNE, R_WATER, 0, 0, 0, 0, 0, 0);
+    const BattleAbilityHook immune_g = hk(BABIL_TYPE_IMMUNE, R_GROUND, 0, 0, 0, 0, 0, 0);
+    const uint8_t v19 = BATTLE_REQUEST_VERSION_CONSUMABLE_ITEMS;
+    const BattleAbility t1 = HOOKS(1, absorb_w, immune_w), t2 = HOOKS(1, immune_w, absorb_w);
+    const BattleAbility t3 = HOOKS(1, absorb_w, state_w), t4 = HOOKS(1, absorb_w, state_w_frozen);
+    const BattleAbility t5 = HOOKS(1, state_w, immune_w), t6 = HOOKS(1, state_w_frozen, immune_w);
+    const BattleAbility t7 = HOOKS(1, absorb_w, immune_g), t8 = HOOKS(1, immune_g, immune_w, absorb_w);
+    assert(!battle_ability_valid(&t1, R_COUNT, v19) && !battle_ability_valid(&t2, R_COUNT, v19));
+    assert(!battle_ability_valid(&t3, R_COUNT, v19) && !battle_ability_valid(&t4, R_COUNT, v19));
+    assert(!battle_ability_valid(&t5, R_COUNT, v19));
+    assert(battle_ability_valid(&t6, R_COUNT, v19));  // the immunity is reached while frozen
+    assert(battle_ability_valid(&t7, R_COUNT, v19));
+    assert(battle_ability_valid(&t8, R_COUNT, v19));  // the second immunity is first-only, not a reaction
+    const BattleAbility dry_skin = W_DRY_SKIN, sand_force = W_SAND_FORCE;
+    assert(battle_ability_valid(&dry_skin, R_COUNT, v19) && battle_ability_valid(&sand_force, R_COUNT, v19));
+    printf("abl-g05: contact status + damage refused (V12-V19), single hooks, first-only kinds, type reactions\n");
+}
+
+// ABL-G04: the order of a contact ability and the faints on a knock-out hit,
+// against test/battle/gc_contact_faint_reference.c (frontier-gc-m4b1b-ability-fixes).
+// The logical results match the reference (HP, who fainted, the replacements,
+// the outcome); the GC's events differ only in where the target's EV_FAINT
+// is: the core emits it as the hit takes the last HP (bc_apply_damage), the
+// reference prints the faint at MOVEEND_FAINT_BLOCK, after the contact
+// ability. V1-V19 keep their order (docs/ability-mechanics/gc-compatibility.md).
+typedef struct { EventKind kind; uint8_t side, slot; } AblEv;
+
+static bool abl_kind(EventKind k) {
+    return k == EV_MOVE_USED || k == EV_DAMAGE || k == EV_FAINT || k == EV_ABILITY || k == EV_ABILITY_DAMAGE ||
+           k == EV_MULTI_HIT || k == EV_SUBSTITUTE_HIT || k == EV_MISS || k == EV_SEND_OUT || k == EV_END;
+}
+
+static void abl_expect(const char *name, const EventLog *log, const AblEv *exp, unsigned n) {
+    unsigned j = 0;
+    bool same = true;
+    for (unsigned i = 0; i < log->count; ++i) {
+        const BattleEvent *e = &log->events[i];
+        if (!abl_kind(e->kind)) continue;
+        const Position p = e->kind == EV_ABILITY || e->kind == EV_MOVE_USED ? e->user : e->target;
+        if (j >= n || e->kind != exp[j].kind || (e->kind != EV_END && (p.side != exp[j].side || p.slot != exp[j].slot)))
+            same = false;
+        ++j;
+    }
+    if (!same || j != n) {
+        printf("abl-g04 case \"%s\": got", name);
+        for (unsigned i = 0; i < log->count; ++i) {
+            const BattleEvent *e = &log->events[i];
+            if (!abl_kind(e->kind)) continue;
+            const Position p = e->kind == EV_ABILITY || e->kind == EV_MOVE_USED ? e->user : e->target;
+            printf(" [%u %u:%u]", e->kind, p.side, p.slot);
+        }
+        printf("\n");
+        fflush(stdout);
+    }
+    assert(same && j == n);
+}
+#define ABL_EXPECT(name, log, ...) \
+    abl_expect(name, log, (AblEv[]){__VA_ARGS__}, sizeof((AblEv[]){__VA_ARGS__}) / sizeof(AblEv))
+#define AE(kind, side, slot) {kind, side, slot}
+
+// Single V19: the player's lead (96 HP, Speed 100) hits Rough Skin (max HP / 8)
+// on the foe's lead (Speed 50); a reserve on a side when `reserve` has its bit.
+static void abl_ko_setup(BattleRequest *r, uint16_t attacker_hp, uint16_t target_hp, BattleMove m, unsigned reserve) {
+    make_consumable(r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r->player[0], 96, attacker_hp, 100, (BattleItem){0}, m);
+    v19_mon(&r->opponent[0], 100, target_hp, 50, (BattleItem){0}, wait_move());
+    give(&r->opponent[0], HOOKS(24, CD(8)));
+    for (unsigned side = 0; side < 2; ++side)
+        if (reserve & (1u << side)) {
+            add_reserve(r, side);
+            BattleEntry *e = side ? &r->opponent[1] : &r->player[1];
+            v19_mon(e, 100, 100, 10, (BattleItem){0}, wait_move());
+            give(e, R_NO_ABILITY);
+        }
+}
+
+static void test_abl_g04(void) {
+    static BattleRequest r;
+    static Battle b;
+    static EventLog log;
+    Position vacant;
+    const Action turn[] = {move(0, 0, 0), v19_wait(1, 0)};
+
+    // The target at 0 HP. Reference: hit, Rough Skin, the attacker's HP, the target faints.
+    abl_ko_setup(&r, 96, 1, abl_contact(), 2);
+    assert(abl_start(&r, &b, 1));
+    battle_run_turn(&b, turn, 2, &log);
+    ABL_EXPECT("target KO", &log, AE(EV_MOVE_USED, 0, 0), AE(EV_DAMAGE, 1, 0), AE(EV_FAINT, 1, 0),
+               AE(EV_ABILITY, 1, 0), AE(EV_ABILITY_DAMAGE, 0, 0));
+    assert(battle_active(&b, 0)->hp == 84 && b.sides[1].battlers[0].fainted && b.outcome == OUTCOME_NONE);
+    assert(battle_pending_replacement(&b, &vacant) && vacant.side == 1 && battle_replace(&b, vacant, 1, &log));
+    assert(log.count == 1 && log.events[0].kind == EV_SEND_OUT);  // the replacement after the turn, as the reference
+
+    // Rough Skin knocks the attacker out, the target stands: the same order as the reference,
+    // and the foe still moves after the faint.
+    abl_ko_setup(&r, 5, 100, abl_contact(), 1);
+    assert(abl_start(&r, &b, 1));
+    battle_run_turn(&b, turn, 2, &log);
+    ABL_EXPECT("attacker KO", &log, AE(EV_MOVE_USED, 0, 0), AE(EV_DAMAGE, 1, 0), AE(EV_ABILITY, 1, 0),
+               AE(EV_ABILITY_DAMAGE, 0, 0), AE(EV_FAINT, 0, 0), AE(EV_MOVE_USED, 1, 0));
+    assert(battle_pending_replacement(&b, &vacant) && vacant.side == 0);
+
+    // Both at 0 HP. Reference: the attacker faints first (inside Rough Skin), then the target.
+    abl_ko_setup(&r, 5, 1, abl_contact(), 3);
+    assert(abl_start(&r, &b, 1));
+    battle_run_turn(&b, turn, 2, &log);
+    ABL_EXPECT("both KO", &log, AE(EV_MOVE_USED, 0, 0), AE(EV_DAMAGE, 1, 0), AE(EV_FAINT, 1, 0),
+               AE(EV_ABILITY, 1, 0), AE(EV_ABILITY_DAMAGE, 0, 0), AE(EV_FAINT, 0, 0));
+    assert(b.sides[0].battlers[0].fainted && b.sides[1].battlers[0].fainted && b.outcome == OUTCOME_NONE);
+    assert(battle_pending_replacement(&b, NULL));
+    // The last Pokemon of both sides: a draw, as the reference (LOST | WON = DREW), in either order.
+    abl_ko_setup(&r, 5, 1, abl_contact(), 0);
+    assert(abl_start(&r, &b, 1));
+    battle_run_turn(&b, turn, 2, &log);
+    assert(b.outcome == OUTCOME_DRAW && find(&log, EV_END) && find(&log, EV_END)->outcome == OUTCOME_DRAW);
+
+    // A two-hit move: it stops at the knock-out, one Rough Skin, then the hit count.
+    // Reference: hit, Rough Skin, the attacker's HP, the faint, "1 hit".
+    BattleMove two = v19_multi(40, 2);
+    two.move_flags |= BMF_CONTACT;
+    abl_ko_setup(&r, 96, 1, two, 2);
+    assert(abl_start(&r, &b, 1));
+    battle_run_turn(&b, turn, 2, &log);
+    ABL_EXPECT("multi-hit KO", &log, AE(EV_MOVE_USED, 0, 0), AE(EV_DAMAGE, 1, 0), AE(EV_FAINT, 1, 0),
+               AE(EV_ABILITY, 1, 0), AE(EV_ABILITY_DAMAGE, 0, 0), AE(EV_MULTI_HIT, 1, 0));
+    assert(find(&log, EV_MULTI_HIT)->amount == 1 && battle_active(&b, 0)->hp == 84);
+
+    // A substitute takes the hit, or the move misses: no Rough Skin (the same as the reference).
+    abl_ko_setup(&r, 96, 100, abl_contact(), 0);
+    assert(abl_start(&r, &b, 1));
+    battle_active(&b, 1)->vol.substitute_hp = 25;
+    battle_run_turn(&b, turn, 2, &log);
+    ABL_EXPECT("substitute", &log, AE(EV_MOVE_USED, 0, 0), AE(EV_SUBSTITUTE_HIT, 1, 0), AE(EV_MOVE_USED, 1, 0));
+    assert(battle_active(&b, 0)->hp == 96);
+    BattleMove wild = abl_contact();
+    wild.accuracy = 1;
+    abl_ko_setup(&r, 96, 1, wild, 0);
+    assert(abl_start(&r, &b, 1));
+    battle_run_turn(&b, turn, 2, &log);
+    ABL_EXPECT("miss", &log, AE(EV_MOVE_USED, 0, 0), AE(EV_MISS, 1, 0), AE(EV_MOVE_USED, 1, 0));
+    assert(battle_active(&b, 0)->hp == 96 && battle_active(&b, 1)->hp == 1);
+
+    // Double: the target faints before the next action (the reference's order is
+    // hit, Rough Skin, HP, faint, then the next actions; the GC's faint comes first).
+    make_consumable(&r, BATTLE_FORMAT_DOUBLE);
+    v19_mon(&r.player[0], 96, 96, 100, (BattleItem){0}, abl_contact());
+    v19_mon(&r.player[1], 100, 100, 30, (BattleItem){0}, wait_move());
+    v19_mon(&r.opponent[0], 100, 1, 50, (BattleItem){0}, wait_move());
+    v19_mon(&r.opponent[1], 100, 100, 40, (BattleItem){0}, wait_move());
+    give(&r.opponent[0], HOOKS(24, CD(8)));
+    assert(abl_start(&r, &b, 1));
+    battle_run_turn(&b, (Action[]){move(0, 0, 0), v19_wait(0, 1), v19_wait(1, 0), v19_wait(1, 1)}, 4, &log);
+    ABL_EXPECT("double", &log, AE(EV_MOVE_USED, 0, 0), AE(EV_DAMAGE, 1, 0), AE(EV_FAINT, 1, 0), AE(EV_ABILITY, 1, 0),
+               AE(EV_ABILITY_DAMAGE, 0, 0), AE(EV_MOVE_USED, 1, 1), AE(EV_MOVE_USED, 0, 1));
+    assert(at_pos(&b, 0, 0)->hp == 84 && b.sides[1].battlers[0].fainted);
+    printf("abl-g04: contact KO order (target faint before Rough Skin: kept), attacker KO, both, draw, multi-hit, "
+           "substitute, miss, Double\n");
+}
+
 static void test_v19_wire(void) {
     static BattleRequest r, d;
     static Battle b;
@@ -9289,6 +9597,8 @@ int main(void) {
     test_v19_more();
     test_v19_gaps();
     test_v19_recharge();
+    test_abl_g05();
+    test_abl_g04();
     test_v19_wire();
     test_v19_formats();
     puts("battle tests passed");
