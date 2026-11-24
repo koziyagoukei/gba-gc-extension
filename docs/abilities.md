@@ -253,6 +253,34 @@ Mold Breaker and has no effect yet. The decoder refuses a block that claims
 more than four hooks before reading any of them (a safety bound: the later
 validity check also refuses it, so no test can tell the two apart).
 
+## Hook sets (ABL-G05, release 13)
+
+A V12 ability lists up to four hooks. The core reads each kind at its own
+point, and the hooks of one kind follow the V12 rule: the modifier kinds
+`ATTACK_MULT`, `DEFENSE_MULT` and `MODIFIER` and the kinds that hold a list
+(`TYPE_PASS`, `VOLATILE_IMMUNE`, `WEATHER_IMMUNE`, `WEATHER_RESIDUAL` by
+weather, and every entry hook) run every hook; `PINCH`, `LOW_POWER` and
+`RESIST` use the first hook of their kind (the documented V12 order, kept in
+the V12-V19 traces), and every other kind is looked up as its first hook.
+
+Two places read different kinds as alternatives for one event. A hook that
+an earlier alternative always pre-empts would be accepted and never run, so
+`battle_ability_valid` refuses the list (request V12 and later; a V11 entry
+has one hook):
+
+| List | Why it is refused |
+|---|---|
+| `CONTACT_STATUS` and `CONTACT_DAMAGE` | one contact reaction per hit: the status, also when it cannot be set or its chance fails; the damage never runs |
+| `TYPE_ABSORB` and `ABSORB_STATE` or `TYPE_IMMUNE` of the same type | the absorb decides every move of that type |
+| `ABSORB_STATE` and `TYPE_IMMUNE` of the same type | the absorb decides the move; accepted when `ABSORB_STATE` has `NOT_FROZEN` (the immunity runs while the holder is frozen) |
+
+The Frontier exporter writes none of these lists (every ability, rosters
+V11-V19, `test/battle/gc_ability_hooks_export.c`), so no request it sends
+changes; a request with one is malformed for the GC as a bad hook argument
+is. Running both contact reactions in order would need a defined order, RNG
+use and status/damage priority that no Expansion ability has; it is left for
+a later request version if an ability needs it. Native: `test_abl_g05`.
+
 ## Designed, not implemented (needs a review before it is built)
 
 | Topic | Design |

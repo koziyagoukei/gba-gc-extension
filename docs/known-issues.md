@@ -252,3 +252,21 @@
   target's pending status; Expansion checks the target first. No supported
   effect leaves a status pending, so no battle shows the difference.
 - The GBA shows no item activation; the GC shows it with the item's name.
+
+## Ability audit fixes (release 13 kept, development only)
+
+- ABL-G05: an ability with a contact status and a contact damage hook, or
+  with a type reaction another of the same type always pre-empts, is now a
+  malformed request (V12-V19; [abilities](abilities.md) "Hook sets"). The
+  exporter never wrote one. Two hooks of one kind keep the V12 first-hook
+  rule; a later request version could make that one hook per kind.
+- ABL-G04: when a contact hit knocks the target out, the GC's events put
+  the target's faint before the contact ability (Rough Skin); Expansion
+  shows the ability, the attacker's damage (and its faint) and then the
+  target's faint. HP, who faints, the replacements and the outcome (a draw
+  when both last Pokemon faint) are the same. The order is kept for V1-V19;
+  moving the faint after the hit's reactions needs a new request version
+  ([ability mechanics](ability-mechanics/gc-compatibility.md)).
+- Expansion draws a contact status's chance before its other conditions; the
+  GC draws only when the status could be set. The chance is the same and the
+  RNG streams are not shared, so no result differs.

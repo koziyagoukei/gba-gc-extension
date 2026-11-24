@@ -26,8 +26,12 @@
 | [RULE-001](build-rules.md#rule-001) | 急所・メガ／Z／ゲンシ等 → 現行GCルールでは発動しない | NOT_APPLICABLE / SOURCE_CONFIRMED | V19。解禁時に寿命・順序を照合 |
 | [FIELD-001](build-rules.md#field-001) | ゲンシ天候・未表現の場効果 → V15/V16の対応レコードのみ | UNSUPPORTED / SOURCE_CONFIRMED | ゲンシ天候等。追加時に持ち物連携を照合 |
 | [FIELD-002](build-rules.md#field-002) | 通常天候とフィールドの比較済み補正 → V15/V16 | SUPPORTED / TEST_CONFIRMED | 既存の固定ダメージ値とV19残留の参照範囲 |
+| [ABL-G04](../ability-mechanics/gc-compatibility.md) | 致死接触のさめはだとひんし通知 → bc_apply_damage の `EV_FAINT`、bc_ability_contact | MISMATCH / TEST_CONFIRMED | Single／Doubleを両側実行。結果は一致、対象の `EV_FAINT` だけが接触反応より前。V1〜V19では保留、V20以降の契約で段階化 |
+| [ABL-G05](../ability-mechanics/gc-compatibility.md) | 接触状態異常＋接触ダメージ等の複合Hook → battle_ability_valid で拒否（V12〜V19） | UNSUPPORTED / TEST_CONFIRMED | Exporterは生成しない（全特性×V11〜V19で確認）。複合の実行は根拠となる特性がなく新版で検討 |
 
-件数は SUPPORTED 9、PARTIAL 7、UNSUPPORTED 3、MISMATCH 0、UNVERIFIED 1、NOT_APPLICABLE 2、計22件。分岐の全件試験率とは区別する。
+件数は SUPPORTED 9、PARTIAL 7、UNSUPPORTED 4、MISMATCH 1、UNVERIFIED 1、NOT_APPLICABLE 2、計24件（ABL-G04／G05を追加）。分岐の全件試験率とは区別する。
+
+特性監査ABL-G04／G05。[拒否条件](https://github.com/koziyagoukei/gba-gc-extension/blob/1664fb45a7aee928c32c90430073c7bea0711ee5/protocol/battle_protocol.c#L445) · [GC試験](https://github.com/koziyagoukei/gba-gc-extension/blob/1664fb45a7aee928c32c90430073c7bea0711ee5/gamecube/battle/battle_test.c#L9010) · [致死接触のGC試験](https://github.com/koziyagoukei/gba-gc-extension/blob/1664fb45a7aee928c32c90430073c7bea0711ee5/gamecube/battle/battle_test.c#L9162) · [Expansion参照試験](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/b091548d05e39450e6c5619244af8ea3c7ee88eb/test/battle/gc_contact_faint_reference.c#L12) · [Exporter試験](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/b091548d05e39450e6c5619244af8ea3c7ee88eb/test/battle/gc_ability_hooks_export.c#L10)
 
 ACT-002の補修。[GCの修正](https://github.com/koziyagoukei/gba-gc-extension/blob/78b3125be6efc57d710f51c730e564111bcb4b3e/gamecube/battle/battle_core.c#L973) · [GCの試験](https://github.com/koziyagoukei/gba-gc-extension/blob/78b3125be6efc57d710f51c730e564111bcb4b3e/gamecube/battle/battle_test.c#L8867) · [Expansion参照試験](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/329ceb28ad48f52c60803e6beb4686260bca1f3f/test/battle/gc_recharge_item_reference.c#L24)
 

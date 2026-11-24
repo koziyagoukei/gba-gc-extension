@@ -10,6 +10,7 @@
 | Frontier `frontier-gc-m4b1b` | `20debd3e44fb3da4c5a6834f73883fc95a8a1747` |
 | 実行契約 | Request/APP V19、release 13。旧版の意味は版ごとに照合する |
 | ACT-002補修 | GC `milestone4b1b-act002`（`78b3125be6` ほか）、Frontier `frontier-gc-m4b1b-act002`（`329ceb28ad`、`2d1e107ad8`） |
+| 特性監査補修（ABL-G04／G05） | GC `milestone4b1b-ability-fixes`（`1664fb45a7`）、Frontier `frontier-gc-m4b1b-ability-fixes`（`b091548d05`） |
 
 ## 索引
 
@@ -37,6 +38,14 @@
 - Frontier worktreeにあったビルド済みheadless ELFを一時コピーし、`gTestRunnerArgv` を `GC V19 reference` に設定して既存ランナーで実行。対象41件がPASS。ELFは今回再リンクしていない。対象外の `secret_power.c` のASSUME通知が1件出たが、対象41件の失敗は0。[Expansion参照試験](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/20debd3e44fb3da4c5a6834f73883fc95a8a1747/test/battle/gc_consumable_item_reference.c#L1)
 - 同じ一時ELF上の `GC V14 reference` 11/11、V15 11/11、V16 13/13、V17 13/13、V18 22/22。一般の反動テストは2/3件がPASS。残り1件は英語の反動メッセージを照合できず失敗した。持ち物と反動を組み合わせた試験とは別。[失敗したメッセージのアサーション](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/20debd3e44fb3da4c5a6834f73883fc95a8a1747/test/battle/move_effect_secondary/recharge.c#L20)
 - 反動中の持ち物チェックは既存41件の対象外。今回の差分判定はコード照合。Dolphin・GC/GBA実機での新規確認なし。
+
+## ABL-G04／G05の試験
+
+- **Expansion：** `test/battle/gc_contact_faint_reference.c`（8件）と `test/battle/gc_ability_hooks_export.c`（2件）がPASS。固定コミットの木から `make check` が生成したheadless ELF。ひんし文は日本語で照合し、メッセージなしの順序試験も併設。GCの順序に変えた一時試験3件はFAIL。
+- **GCネイティブ：** `test_abl_g05`（修正前に失敗、修正後PASS）と `test_abl_g04`（順序差を固定）。-O2・-Werror・ASan/UBSan・presentationがPASS。固定seedトレースV12〜V19はACT-002と同一（V19 `65a3b885`）。
+- **ミューテーション：** 13件すべて検出（拒否条件10、コアの接触反応1、致死接触の順序2）。
+- **Dolphin：** L01〜L72がACT-002のログと全行一致（67戦とGBA側拒否5件）。新規Labなし。nonceの結果契約、JoyBus（CRC 0、オーバーフロー0）、Frontierセーブ（AFF1EB7B）は不変。
+- **Frontier `make check`：** 全6,961件。PASS 4,45、FAILED 2,455。追加はABL試験10件で、ACT-002からの状態変化はない。
 
 ## ACT-002補修の試験
 

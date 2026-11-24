@@ -343,3 +343,17 @@ the same prefix (`GC V19 reference`, 47 tests). Lab L72 (`V19 recharge
 Sitrus`): Charizard (Solar Power, Sitrus Berry) uses Hyper Beam in sun; on
 the recharge turn the GC shows the recharge, then the berry, then the foe's
 move.
+
+Ability audit fixes (branches `milestone4b1b-ability-fixes`,
+`frontier-gc-m4b1b-ability-fixes`): `battle_test.c` adds `test_abl_g05`
+(hook lists the codec refuses or keeps, per version; single contact hooks
+with their RNG draws; the strict rule) and `test_abl_g04` (the contact
+knock-out order). The Frontier files `test/battle/gc_contact_faint_reference.c`
+(8 tests: Rough Skin with a target, an attacker or both knocked out, a
+multi-hit move, a substitute, a miss, a Double) and
+`test/battle/gc_ability_hooks_export.c` (2 tests: every exported ability for
+V11-V19 passes the vendored validity check) use the same prefix (`GC V19
+reference`, 57 tests). The faint messages are matched in Japanese (this
+build's text): the name codes give `{JPN}{JPN}相手の {JPN}キバニアは 倒れた！`.
+No new Lab fixture: the refused lists cannot be exported and the knock-out
+order is unchanged.
