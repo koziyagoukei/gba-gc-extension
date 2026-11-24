@@ -852,3 +852,177 @@ Still open: Expansion checks the chosen target's pending status
 (`MOVEEND_ITEM_EFFECTS_TARGET`) before the user on every lost turn; the GC
 checks the user first. No supported effect leaves a status pending, so no
 battle shows it (battle-reference open questions).
+
+## 13. M4-B1c-0a: Life Orb, specification and reference (no implementation)
+
+M4-B1c-0 brings Life Orb to the GC core in request V20. This first step fixes
+its behaviour from this build's code and runs, adds the reference tests and
+designs V20; the core, the exporter and the protocol are unchanged (V19 still
+sends Life Orb as UNSUPPORTED: every item off, strict refused). Branches
+`milestone4b1c0a` and `frontier-gc-m4b1c0a`.
+
+### 13.1 Expansion (frontier-gc-m4b1b-ability-fixes b091548d05, Gen 9 defaults)
+
+Damage. `GetAttackerItemsModifier` returns `UQ_4_12_FLOORED(1.3)` = 5324
+(truncated, not 5325). It is one factor of `GetOtherModifiers`, the final
+chain: the move's factors (Minimize, underground, dive, airborne, screens,
+Collision Course), then, when the attacker's unmodified speed is at least
+the defender's, the attacker's ability, the defender's ability, the
+defender's partner (Friend Guard), the attacker's item, the defender's item;
+otherwise the defender's ability, its partner, the attacker's ability, the
+defender's item, the attacker's item. Each factor joins the chain with
+`uq4_12_multiply_half_down`; the chain is applied once to the damage with
+`uq4_12_multiply_by_int_half_down` after STAB, type, burn and the
+protection factor, then the damage minimum of 1
+(`ApplyModifiersAfterDmgRoll`). The factor does not depend on type
+effectiveness or a critical hit (both come earlier). Fixed-damage moves
+(`DoFixedDamageMoveCalc`) never enter the chain. Drain and recoil are
+computed from the HP the boosted hit took; each hit of a multi-hit move and
+each target of a spread move (after the spread factor) is boosted.
+
+HP loss. `TryLifeOrb` at `MOVEEND_LIFE_ORB_SHELL_BELL`, once per move:
+the holder is alive (`ItemBattleEffects`), it used the move
+(`!unableToUseMove`), it is still the battler that started the move
+(`originalBattlerPartyId == PARTY_SIZE`; only a mid-move switch-out of the
+attacker sets it), a target was damaged this turn including substitutes or
+`savedDmg > 0`, and it has no active Magic Guard. The loss is
+`GetNonDynamaxMaxHP / 10`, at least 1 (`SetPassiveDamageAmount`), shown
+with the item pop-up; `tryfaintmon` faints the holder at once. The item is
+not used up. The stage comes after the drain (`MOVEEND_ABSORB`), the contact
+abilities, the target's faint (`MOVEEND_FAINT_BLOCK`), the multi-hit count,
+the recoil, the attacker's own item check and Moxie
+(`MOVEEND_ABILITY_EFFECT_FOES_FAINTED`), and before Emergency Exit, the
+pivot's switch (`MOVEEND_HIT_ESCAPE`) and the all-battler item check.
+
+Abilities. Magic Guard keeps the damage factor and stops the loss. Sheer
+Force: when `MoveIsAffectedBySheerForce`, `MOVEEND_SHEER_FORCE` jumps to
+`MOVEEND_ITEMS_EFFECTS_ALL`, so the loss (and the stages between) is
+skipped while both boosts apply; a move without such an effect loses HP.
+Klutz (and Embargo, Magic Room) make `GetBattlerHoldEffect` return none:
+neither the factor nor the loss. A suppressed ability (Gastro Acid,
+Neutralizing Gas) no longer stops anything. Mold Breaker does not touch the
+holder's own Magic Guard (it ignores the target's breakable abilities).
+
+### 13.2 Reference tests (`test/battle/gc_life_orb_reference.c`, 22 tests)
+
+Built by `make check` from `frontier-gc-m4b1c0a` (b091548d05 plus this
+file; the test ELF is generated from the tree). No MESSAGE checks except two
+faint texts in Japanese; the order is carried by HP bars, damage captures,
+`ITEM_POPUP` and animations. Damage rolls 100/93/85% (`WITH_RNG(RNG_DAMAGE_MODIFIER, 0/7/15)`),
+no critical hit unless stated. Two runs gave the same values. Ten
+deliberately wrong expectations (the loss before the recoil, rounded up,
+with Magic Guard, with Sheer Force, Klutz boosting, a second loss on the
+recharge turn, a loss between two hits, a loss per spread target, the
+holder fainting first, the loss after the pivot's switch) all failed.
+
+| Case | Expected | Measured |
+|---|---|---|
+| Physical: Strength, Snorlax L50 Atk 100 vs Def 100 | Life Orb = hd(d x 5324) | 55→71, 51→66, 46→60 |
+| Special: Hyper Voice, SpA 100 vs SpD 100 | the same | 61→79, 57→74, 51→66 |
+| Truncation: L100 Atk 400 vs Def 60 | 5324, not 5325 | 675→877 (5325: 878), 627→815, 573→745 |
+| Water Gun x4, x2, critical | the same factor | 112→146, 56→73, 42→55 |
+| Multiscale (x0.5), attacker faster and slower | one chain hd(5324, 2048) = 2662 | 108→70 both |
+| Seismic Toss | no boost, the loss | 50 damage, loss 20 of 200 |
+| Giga Drain | heal = half of the boosted damage, then the loss | 51→66, heal 33, loss 30 |
+| Double-Edge | recoil 33% of the boosted damage, then the loss | recoil, then loss 30 |
+| Substitute | boosted, the loss | 24→31, loss 30 |
+| Hyper Voice, Double, both foes | each boosted, one loss | 69→90 on each, HP 300→270 |
+| Double Kick | both hits boosted, one loss after the last | 42→55 per hit, HP 300→270 |
+| Loss size | max HP / 10, at least 1 | 105→10, 109→10, 9→1, 1→1 (faints) |
+| HP 1 | the holder faints after its hit, the foe still moves | yes |
+| Knock-out, then own faint | target faints first, then the loss and the holder's faint | yes |
+| Miss, Ghost immunity, Volt Absorb, Protect, Growl | no loss | HP 200 |
+| Hyper Beam | loss on the attack turn only | 300→270, then 270 |
+| Rough Skin knocks the holder out | no Life Orb | no pop-up |
+| U-turn | loss before the switch | party HP 180 of 200 |
+| Magic Guard | boost kept, no loss | 37→48, HP 300 |
+| Gastro Acid on Magic Guard | the loss | 30 |
+| Sheer Force | Rock Slide boosted, no loss; Strength boosted, loss | 45→58 no loss; 37→48, loss 30 |
+| Klutz; Klutz suppressed | nothing; boost and loss | 55→55; 55→71, loss 30 |
+
+### 13.3 The GC now (V19)
+
+| Point | V19 | V20 needs |
+|---|---|---|
+| The damage arithmetic | already the reference's: a 130% `BMOD_FLOORED` record at `BMOD_FINAL` held by an ability gives every number above (`test_c0a_life_orb_arithmetic`: 55/51/46 → 71/66/60, 61/57/51 → 79/74/66, 675 → 877 and 878 with the nearest factor, 108 → 70) | the record from the item (`BMSRC_ITEM` is power-only in V17-V19; the codec refuses a final item record, the test pins it) |
+| Its place in the chain | the final passes are move, attacker's ability, defender's ability (slower: the defender's first) | an item pass after the defender's ability (faster) or last (slower); the defender's item has no record yet |
+| The loss | no record kind; BITEM_HP has end-of-turn, HP-threshold timings | a timing after the move (BITIME 5 refused by V19) |
+| Fixed damage, Struggle | no fixed-damage move is exported; Struggle has its own path | Struggle: boosted and the loss in Expansion (no exception; not run) |
+| Life Orb in a request | UNSUPPORTED (every item off, strict refused) | RECORDS |
+
+### 13.4 Request V20 design (minimal, not implemented)
+
+- **Wire:** the V19 layout; V20 only widens what an item block may hold.
+  `BITEM_MODIFIER` may use `BMOD_FINAL` (with `BMOD_FLOORED`; predicates as
+  for the power stage). `BITEM_HP` gains timing `BITIME_AFTER_MOVE` (5):
+  operation `BIHP_DAMAGE`, divisor 2..255, predicate none, no
+  `BIREC_CONSUMED`. Life Orb = these two records. A V19 request means what
+  it meant; a V20 record in V19 is malformed (as now).
+- **Damage:** `fx_final_passes` / `fx_final_slower_passes` get an item pass
+  for V20 only: `MOVE, ATTACKER, DEFENDER, ITEM` and `MOVE, DEFENDER,
+  ATTACKER, ITEM`. The chain is already one product applied once (V14); no
+  other stage moves, so V14-V19 damage stays byte for byte.
+- **One move's state:** `MoveContext` already has `landed` (a hit landed,
+  a substitute included) and `lost`; V20 adds nothing on the wire. The
+  after-move point is in `execute_move` after `bc_ability_after_move`
+  (Moxie) and before it returns the pivot: the reference's order (recoil,
+  the user's own item check, Moxie, Life Orb, then the pivot and the
+  all-battler check in `bc_execute_move`). Conditions: the move reached its
+  hits (lost turns, charge turns, the recharge turn, Protect and Substitute
+  moves never get there), `c.landed`, the holder is not fainted. Struggle
+  calls the same point. Each hit's factor needs nothing per hit; the loss
+  runs once for multi-hit and spread moves.
+- **Unsupported, kept safe:** the definition stays the item's. Magic Guard
+  already turns every item off (strict: refuses) through `HpItemAbility`,
+  since the after-move record is HP damage (as for Black Sludge); V20 adds
+  Sheer Force for a holder of an after-move record, and Klutz is already an
+  `ItemAbility`. Neutralizing Gas (it would lift Klutz and Magic Guard) is an
+  ability the core does not run: strict refuses it, non-strict keeps the
+  items as declared, as for every item now. No Gastro Acid move is exported.
+  A Magic Guard or Sheer Force hook can replace these rules later.
+- **Old versions:** V1-V19 requests, traces and Lab L01-L72 unchanged by
+  construction (the new pass and timing are V20-gated; the exporter writes
+  V20 only for a V20 roster).
+- **Faint order (ABL-G04):** with Life Orb the target's faint comes before
+  the loss on both sides (the reference faints the target at
+  `MOVEEND_FAINT_BLOCK`, before the Life Orb stage), so V20 does not need
+  the ABL-G04 change. Moving the GC's target `EV_FAINT` after the contact
+  abilities would change every knock-out's event order (the GC battle
+  view's text, `PH3 EVENT` lines of the Lab fixtures that knock a Pokemon
+  out, the replay and trace hashes); keep it a separate stage with its own
+  version gate.
+
+### 13.5 V20 cases saved for later (`tools/v20-tests.sh`)
+
+`battle_test.c` holds `test_v20_life_orb` under `#ifdef GC_TEST_V20`; the
+default build leaves it out and the V19 suite passes. The script builds it
+with `-Werror` and runs only those cases (the identifiers
+`BATTLE_REQUEST_VERSION_MOVE_ITEMS` and `BITIME_AFTER_MOVE` are the
+design's, defined locally until the protocol has them). Now: 14 of 14
+checks fail at the start (the request is refused), exit 1, as expected.
+The checks: the request starts; the reference's 71/66/60; the loss of
+max HP / 10 at least 1 after the hit (105, 109, 9, 1 with the faint); no
+loss on a miss, an immunity, Protect or a status move; the loss behind a
+substitute; one loss after a two-hit move's count; recoil before the loss;
+the target's faint before the holder's; no loss on the recharge turn.
+
+### 13.6 Related known differences (unchanged)
+
+- ABL-G04 (contact knock-out faint order): kept for V1-V19; independent of
+  Life Orb (13.4).
+- ABL-G05 (hook lists run in part): refused since the ability fixes; Life
+  Orb adds no hook.
+- ITM-TIME-003 (a pivot's switch and pending berries): the GC switches after
+  the all-battler check; Expansion has Life Orb before the switch, which the
+  V20 point keeps (the loss before the pivot), so ITM-TIME-003 neither blocks
+  nor changes it.
+- ACT-002 (recharge turn's move end): the recharge turn never reaches the
+  after-move point; the reference has no loss there either.
+
+### 13.7 Not verified
+
+Struggle with Life Orb (no PP left; source only), Dynamax HP, the holder
+switched out mid-move (Eject Button, Red Card, Emergency Exit are not
+supported), the defender's item and screens in the same chain, Shell Bell
+at the same stage, Neutralizing Gas, Triple and Rotation (the reference has
+Single and Double; the GC's V20 cases are Single).

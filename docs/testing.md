@@ -357,3 +357,16 @@ reference`, 57 tests). The faint messages are matched in Japanese (this
 build's text): the name codes give `{JPN}{JPN}相手の {JPN}キバニアは 倒れた！`.
 No new Lab fixture: the refused lists cannot be exported and the knock-out
 order is unchanged.
+
+M4-B1c-0a (branches `milestone4b1c0a`, `frontier-gc-m4b1c0a`, [items](items.md)
+section 13): the Frontier file `test/battle/gc_life_orb_reference.c` adds 22
+tests under `GC V20 reference: Life Orb` (no MESSAGE checks; the measured
+damage is printed as `LO_*` lines). `battle_test.c` adds
+`test_c0a_life_orb_arithmetic` to the V19 suite and keeps the request V20
+cases in `test_v20_life_orb`, built only by `tools/v20-tests.sh`
+(`-DGC_TEST_V20`); until the core implements V20 that script reports 14 of
+14 checks failed and exits 1. No core, codec or exporter change. Frontier
+`make check`: 6,983 tests, 4,067 PASS, 2,455 FAILED (no test changed status
+against the ability fixes; the 22 additions pass). Native -O2/-Werror,
+ASan/UBSan and presentation pass; traces V12-V19 and the release-13 DOL
+(362,624 B) are byte for byte those of the ability fixes.

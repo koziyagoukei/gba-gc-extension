@@ -11,6 +11,7 @@
 | 実行契約 | Request/APP V19、release 13。旧版の意味は版ごとに照合する |
 | ACT-002補修 | GC `milestone4b1b-act002`（`78b3125be6` ほか）、Frontier `frontier-gc-m4b1b-act002`（`329ceb28ad`、`2d1e107ad8`） |
 | 特性監査補修（ABL-G04／G05） | GC `milestone4b1b-ability-fixes`（`1664fb45a7`）、Frontier `frontier-gc-m4b1b-ability-fixes`（`b091548d05`） |
+| M4-B1c-0a（いのちのたまの仕様確定） | GC `milestone4b1c0a`（`c6c340450b` ほか）、Frontier `frontier-gc-m4b1c0a`（`9601bc98af`）。実装なし |
 
 ## 索引
 
