@@ -191,7 +191,8 @@ static bool poll_multi_action(BattleMultiAction *a) {
     if (!host_app_to(b.link, b.mode.app_id, opcode, NULL, 0, &d, &n, &status)) return false;
     if (status == APP_OK) {
         switch (b.mode.app_version) {
-        case BATTLE_APP_VERSION_CONSUMABLE_ITEMS:  // V19 to V9 keep the V6 action layout
+        case BATTLE_APP_VERSION_MOVE_ITEMS:  // V20 to V9 keep the V6 action layout
+        case BATTLE_APP_VERSION_CONSUMABLE_ITEMS:
         case BATTLE_APP_VERSION_END_TURN_ITEMS:
         case BATTLE_APP_VERSION_ITEMS:
         case BATTLE_APP_VERSION_TERRAIN:

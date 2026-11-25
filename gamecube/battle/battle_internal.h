@@ -155,6 +155,11 @@ void bc_item_on_entry(Battle *battle, Position position, EventLog *log);  // sta
 // every other Pokemon's HP check, then every Pokemon's checks, in battler order.
 void bc_items_actor_check(Battle *battle, Position actor, EventLog *log);
 void bc_items_after_action(Battle *battle, Position actor, bool actor_checked, EventLog *log);
+// V20 (docs/items.md 14): once after a move `origin` used from `user`, after
+// Moxie and before a pivot's switch: its BITIME_AFTER_MOVE record (Life Orb)
+// if the move landed on a target (a substitute counts) and `origin` still
+// stands there.
+void bc_item_after_move(Battle *battle, Position user, const Battler *origin, bool landed, EventLog *log);
 
 // Ability hooks (battle_abilities.c, docs/abilities.md). All are inert unless
 // the request is V11+ without RULE_IGNORE_ABILITIES. An ability is a list of

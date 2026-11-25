@@ -148,6 +148,16 @@ void bc_item_hp(Battle *b, Position p, uint8_t timing, EventLog *log) {
     }
 }
 
+// V20 TryLifeOrb (MOVEEND_LIFE_ORB_SHELL_BELL): the move was used and landed
+// (IsAnyTargetTurnDamaged including substitutes), the holder is the battler
+// that started it (originalBattlerPartyId) and stands (ItemBattleEffects), its
+// item has the record (bc_item: items simulated, still held). Magic Guard and
+// Sheer Force are the exporter's to refuse or normalise (docs/items.md 14.5).
+void bc_item_after_move(Battle *b, Position user, const Battler *origin, bool landed, EventLog *log) {
+    if (!landed || b->request->version < BATTLE_REQUEST_VERSION_MOVE_ITEMS || battle_at(b, user) != origin) return;
+    bc_item_hp(b, user, BITIME_AFTER_MOVE, log);  // max HP / divisor, at least 1; not used up
+}
+
 // ------------------------------------------------------------- V19 consumable items
 // (docs/items.md 12). The check points are the reference's (ItemBattleEffects
 // with IsOnHpThresholdActivation / IsOnStatusChangeActivation / on switch-in,

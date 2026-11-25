@@ -223,6 +223,13 @@ static const Pass v15_power_passes[] = {MOVE_PASS, FIELD_PASS, {SRC_ATTACKER, BA
 static const Pass v17_power_passes[] = {MOVE_PASS, FIELD_PASS, {SRC_ATTACKER, BABIL_LOW_POWER, true}, ATTACKER_PASS,
                                         DEFENDER_PASS, ITEM_PASS};
 static const PassList v17_power = LIST(v17_power_passes);
+// V20: the attacker's item joins the final chain (GetOtherModifiers: after both
+// abilities and the defender's partner when the attacker is at least as fast,
+// last otherwise). The defender's item has no final record yet.
+static const Pass v20_final_passes[] = {MOVE_PASS, ATTACKER_PASS, DEFENDER_PASS, ITEM_PASS};
+static const Pass v20_final_slower_passes[] = {MOVE_PASS, DEFENDER_PASS, ATTACKER_PASS, ITEM_PASS};
+static const PassList v20_final = LIST(v20_final_passes);
+static const PassList v20_final_slower = LIST(v20_final_slower_passes);
 static const PassList v15_stages[BMOD_COUNT] = {
     [BMOD_POWER] = LIST(v15_power_passes), [BMOD_ATTACK] = LIST(fx_attack_passes),
     [BMOD_DEFENSE] = LIST(v15_defense_passes), [BMOD_FINAL] = LIST(fx_final_passes),
@@ -285,6 +292,8 @@ static const PassList *passes(const ModContext *c, uint8_t stage, bool fixed) {
     const bool v15 = bc_weather_rules(c->b);
     if (v15 && (stage == BMOD_SPEED || stage == BMOD_ACCURACY)) return &v15_stages[stage];
     if (!fixed) return &v13_stages[stage];
+    if (stage == BMOD_FINAL && c->b->request->version >= BATTLE_REQUEST_VERSION_MOVE_ITEMS)
+        return c->attacker->speed < c->defender->speed ? &v20_final_slower : &v20_final;
     if (stage == BMOD_FINAL && c->attacker->speed < c->defender->speed) return &fx_final_slower;
     if (stage == BMOD_POWER && c->b->request->version >= BATTLE_REQUEST_VERSION_ITEMS) return &v17_power;
     return v15 ? &v15_stages[stage] : &fx_stages[stage];

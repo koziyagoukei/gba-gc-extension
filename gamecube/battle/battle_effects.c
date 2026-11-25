@@ -835,6 +835,7 @@ static bool execute_move(Battle *b, Position user, uint8_t slot, Position select
         *checked = true;
     }
     if (damage) bc_ability_after_move(b, user, knocked_out(&c), log);  // Moxie, after recoil
+    bc_item_after_move(b, user, a, c.landed, log);  // V20 Life Orb: after Moxie, before the pivot's switch
     if (c.landed && find_effect(m, BEFF_RECHARGE) && !battle_at(b, user)->fainted &&
         !(all_fainted && (b->request->volatiles.flags & BVR_RECHARGE_SKIP_ON_KO)))
         bc_mutable_at(b, user)->vol.recharge = 2;  // blocks the next turn, ticks down at turn ends

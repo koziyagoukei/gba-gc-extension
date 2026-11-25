@@ -777,6 +777,7 @@ void bc_apply_damage(Battle *b, BattleEvent ev, uint16_t damage, EventLog *log) 
 
 static void execute_struggle(Battle *b, Position user, EventLog *log) {
     const BattleRequest *rules = b->request;
+    const Battler *origin = battle_at(b, user);
     const uint8_t foe = 1 - user.side;
     const uint8_t mask = battle_target_mask(b, user, &struggle_target, foe);
     uint8_t targets[BC_MAX_ACTIVE];
@@ -806,6 +807,7 @@ static void execute_struggle(Battle *b, Position user, EventLog *log) {
     bc_apply_damage(b, (BattleEvent){.kind = EV_RECOIL, .user = user, .target = user}, recoil ? recoil : 1, log);
     bc_items_actor_check(b, user, log);  // V19: after the recoil, before Moxie
     bc_ability_after_move(b, user, kos, log);  // Moxie, after recoil
+    bc_item_after_move(b, user, origin, true, log);  // V20 Life Orb, after Struggle's own recoil
     bc_items_after_action(b, user, true, log);
 }
 
