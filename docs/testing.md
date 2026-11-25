@@ -370,3 +370,15 @@ cases in `test_v20_life_orb`, built only by `tools/v20-tests.sh`
 against the ability fixes; the 22 additions pass). Native -O2/-Werror,
 ASan/UBSan and presentation pass; traces V12-V19 and the release-13 DOL
 (362,624 B) are byte for byte those of the ability fixes.
+
+M4-B1c-0b (branches `milestone4b1c0b`, `frontier-gc-m4b1c0b`, [items](items.md)
+section 14): request V20 and Life Orb. `battle_test.c` runs the saved V20
+cases in the default suite (`test_v20_life_orb`: 14 cases, 14 started, 26
+effect checks) and adds `test_v20_damage`, `test_v20_wire`, `test_v20_rules`
+and `test_v20_paths`; `tools/v20-tests.sh` still runs the saved cases alone
+(exit 0). Frontier: `test/battle/gc_life_orb_reference.c` (27 tests: Struggle,
+the last foe and Moxie added) and `test/battle/gc_life_orb_export.c` (4 tests
+under `GC V20 export`, with the Battle Frontier tally `TALLY20`). Frontier
+`make check`: 6,992 tests, 4,076 PASS, 2,455 FAILED (no test changed status
+against M4-B1c-0a; the ability-hook export test now covers V11-V20). GC
+mutations 20 of 22 killed (2 equivalent), exporter mutations 3 of 3.

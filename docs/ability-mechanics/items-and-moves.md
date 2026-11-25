@@ -26,3 +26,7 @@
 - 相性・無効、みがわり、1打ごとのひんし、技途中での持ち物の変更を区別する。複数対象・連続技で「命中した」と「HPが減った」と「接触副作用が成立した」を再利用する場合は、状態の寿命を先に定める。
 
 [UnmodelledMoveFlags](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/2d1e107ad820a3b0a601af968b49856f74151ee1/src/frontier_gc_battle.c#L628) · [ResolveEffects](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/2d1e107ad820a3b0a601af968b49856f74151ee1/src/frontier_gc_battle.c#L639) · [粉技の例](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/2d1e107ad820a3b0a601af968b49856f74151ee1/src/frontier_gc_battle.c#L760) · [持ち物側の発動順](../item-mechanics/activation-timing.md)
+
+## いのちのたまとの組み合わせ（M4-B1c-0b、V20）
+
+`TEST_CONFIRMED`（Expansion参照とExporter試験）。Expansionでは、マジックガードは最終補正を残してHP減少だけを止め、ちからずくは追加効果が対象になる技だけ減少を止め（補正は両方掛かる）、ぶきようは補正も減少も止める。いえきで抑制すると通常どおり。GC V20はこれらの特性を実行しないため、所持者がいる戦闘では全持ち物をオフにする（strictは拒否）：マジックガードは既存 `HpItemAbility`（ダメージのHPレコード）、ちからずくは技終了HPレコードの所持者に追加、ぶきようは既存 `ItemAbility`。ちからずくをすべての技で減少なしと扱う実装はしない。かがくへんかガスは未対応特性（strictで拒否）。[Exporter](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/8219d703a08acc659a919709ba94ce0832da52ca/src/frontier_gc_battle.c#L1800) · [Exporter試験](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/8219d703a08acc659a919709ba94ce0832da52ca/test/battle/gc_life_orb_export.c#L92) · [仕様](../items.md#14-m4-b1c-0b-life-orb-in-request-v20)

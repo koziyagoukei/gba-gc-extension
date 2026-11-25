@@ -270,3 +270,17 @@
 - Expansion draws a contact status's chance before its other conditions; the
   GC draws only when the status could be set. The chance is the same and the
   RNG streams are not shared, so no result differs.
+
+## M4-B1c-0b (release 13 kept, development only)
+
+- Life Orb is the only after-move item (request V20, [items](items.md)
+  section 14). Shell Bell, Rocky Helmet, Weakness Policy, the Choice items
+  and every other item of B1c stay UNSUPPORTED.
+- Magic Guard, Sheer Force or Klutz on a Life Orb holder turns every item
+  off (strict: refused); the GC runs neither of those abilities.
+- The defender's item has no final-damage record yet.
+- Only Lab-style fixtures and the exporter tests use APP V20: the debug and
+  Cube Tester battles keep their APP versions, and the Lab list is full.
+  Dolphin was not run for V20.
+- When the hit knocks out the last foe and Life Orb then knocks out its
+  holder, the GC calls it a draw; the reference was not run for that case.

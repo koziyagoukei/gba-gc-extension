@@ -1026,3 +1026,129 @@ switched out mid-move (Eject Button, Red Card, Emergency Exit are not
 supported), the defender's item and screens in the same chain, Shell Bell
 at the same stage, Neutralizing Gas, Triple and Rotation (the reference has
 Single and Double; the GC's V20 cases are Single).
+
+## 14. M4-B1c-0b: Life Orb in request V20
+
+Branches `milestone4b1c0b` (GC) and `frontier-gc-m4b1c0b` (Frontier), still
+release 13 (development). The design of 13.4, built on the existing item
+records, modifiers and HP handling (Codex's plan B, `docs/item-dispatcher-design.md`;
+no separate item dispatcher).
+
+### 14.1 Request / APP V20
+
+| Part | V20 |
+|---|---|
+| Layout | V19's; Action, Result, state, EventLog unchanged |
+| `BITEM_MODIFIER` | may use `BMOD_FINAL` (with `BMOD_FLOORED`; no defender flag, as every item record); other stages but power stay refused |
+| `BITEM_HP` | timing `BITIME_AFTER_MOVE` (5): operation `BIHP_DAMAGE`, divisor 2..255, predicate none (argument 0), reserved 0, no `BIREC_CONSUMED`, at most one per item |
+| Life Orb | `MODIFIER(BMOD_FINAL \| BMOD_FLOORED, 130)` + `HP(AFTER_MOVE, DAMAGE, 10)`, in that order (either order is valid) |
+| Older versions | V19 and older refuse both (the encoder writes nothing, the decoder and `battle_init` refuse): a V20 record never reaches an older peer |
+| Negotiation | the GC companion accepts APP V20 (mode check, action layout as V6-V19); the request version must equal the APP version (as before); a V19 GC refuses a V20 GBA at the mode check, so the effect is never dropped silently |
+| Size | a Life Orb block is 20 bytes against the 4-byte UNSUPPORTED block: +16 per holder, +192 at most (12 holders); `BATTLE_REQUEST_MAX_BYTES(6, 21)` = 3,165 unchanged |
+
+`battle_item_valid` holds every rule, so the encoder, the decoder and the
+in-memory start (`bc_items_check`) apply the same ones.
+
+### 14.2 The final factor
+
+`battle_modifiers.c`: for V20 only, the final stage uses `MOVE, ATTACKER,
+DEFENDER, ITEM` when the attacker is at least as fast and `MOVE, DEFENDER,
+ATTACKER, ITEM` when it is slower (`GetOtherModifiers`: the attacker's item
+after both abilities and the partner; the defender's item, which has no
+record yet, would follow). The item pass is the existing `run_items`; the
+130% truncated record becomes 5324 and joins the one 4.12 product the chain
+already applies once to the damage. V14-V19 keep their passes.
+
+| Case (the reference's stats) | None → Life Orb (GC = Expansion) |
+|---|---|
+| Strength, Atk 100 vs Def 100 | 55 → 71, 51 → 66, 46 → 60 |
+| Hyper Voice, SpA 100 vs SpD 100 | 61 → 79, 57 → 74, 51 → 66 |
+| Strength, L100 Atk 400 vs Def 60 | 675 → 877 (5325 would give 878), 627 → 815, 573 → 745 |
+| A substitute's hit | 24 → 31 |
+| Each target of a spread move | 69 → 90 |
+| Each hit of Double Kick | 42 → 55 |
+| Struggle (typeless 50) | 24 → 31, 22 → 29, 20 → 26 |
+| With a defender's x0.5, faster and slower | 108 → 70 |
+
+The chain order is also pinned with factors no game ability has (50% and
+95% on 64: 39, where the item before the second ability gives 40; a slower
+attacker's two 55% factors and a defender's 75% on 100: 30, the faster order
+29). No fixed-damage move is exported (the exporter refuses them), so the
+reference's "no boost for fixed damage" has no GC path.
+
+### 14.3 The loss after the move
+
+`bc_item_after_move` (`battle_items.c`), called once per move:
+
+| Where | Order around it |
+|---|---|
+| `execute_move` | per-target secondaries and drain, contact abilities, faints, the hit count, the after-move secondaries, recoil, the user's V19 item check, Moxie → **Life Orb** → (recharge flag) → `bc_items_after_action` and the pivot's switch |
+| `execute_struggle` | the hit, Struggle's recoil (max HP / 4), the user's item check, Moxie → **Life Orb** → `bc_items_after_action` |
+
+It acts when the move landed on a target (`MoveContext.landed`: a damaging
+hit, a substitute's included; a miss, an immunity, an absorbing ability and
+Protect leave it false), the battler at the user's position is the one that
+started the move, and its item has the record (`bc_item`: items simulated,
+still held). The loss is `bc_item_hp` with the new timing: max HP / 10, at
+least 1, `EV_ITEM_DAMAGE` with the item id, not used up; at 0 HP the holder
+faints through `bc_apply_damage` and the normal replacement and outcome
+follow. Lost turns, charge turns and the recharge turn never reach the
+point; status moves have no landed hit. One synchronous call per move: no
+per-move flag was needed (multi-hit and spread moves call it once).
+
+### 14.4 Abilities and the exporter
+
+`ResolveItem` writes Life Orb's two records from roster V20; before it Life
+Orb stays UNSUPPORTED (every item off, strict refused), as before. The GC
+runs no Magic Guard, Sheer Force or Klutz, so beside Life Orb every item is
+turned off (strict: refused):
+
+| Ability of the holder | Reference | V20 export |
+|---|---|---|
+| Magic Guard | factor kept, no loss | off: `HpItemAbility` (a damage record), as for Black Sludge |
+| Sheer Force | no loss only for the moves it affects | off: `HpItemAbility`, new for an after-move record (Sheer Force with Leftovers stays simulated) |
+| Klutz | neither | off: `ItemAbility` (any holder, as from M4-B0) |
+| Trace, Receiver, Power of Alchemy, Wandering Spirit | could gain the above | off (a damage record) |
+| Neutralizing Gas, Gastro Acid | lift them | an ability the core does not run (strict refuses); Gastro Acid is not exported |
+
+The item ids stay in the records (`held_item`, block source); a Pokemon
+without an item is class NONE with id 0, never mixed with an item that has
+no effect. The save is not written.
+
+Battle Frontier sets against a plain Snorlax (V20, Single): 1,996 built, 141
+hold Life Orb, 126 of them simulated and 15 off by an ability; 1,118 sets
+simulated in V20 against 992 in V19 (strict accepts the same 1,118); every
+other set has the same item state as in V19.
+
+### 14.5 Verification
+
+| Check | Result |
+|---|---|
+| Expansion reference (`gc_life_orb_reference.c`) | 27/27 PASS (the 22 of 13.2 and Struggle boosted; Struggle's recoil, then the loss; none after that recoil knocked the holder out; the loss after knocking out the last foe; Moxie, then the loss) |
+| Saved V20 cases (`test_v20_life_orb`) | 14 cases, 14 started, 26 effect checks reached, 0 failed (`tools/v20-tests.sh` exit 0) |
+| Native V20 tests | damage table, codec edges (divisor 1/2/255, reserved, predicate, operation, used-up flag, two records, other stages, the defender flag, V19 relabelling, encoder and `battle_init`), items off and strict, V19 unsupported, a spread move, a pivot (the loss before the prompt; at 1 HP a replacement instead), Struggle, Moxie, the last foe (at 1 HP both faint: a draw), Single / Double / Triple / Rotation |
+| Native suites | -O2 -Wall -Wextra -Werror, ASan + UBSan, presentation: pass |
+| Traces V12-V19 (1,200 battles each) | identical to M4-B1c-0a; a V20 trace (no Life Orb in the generator) equals V19 (65a3b885) |
+| Mutations (GC) | 20 of 22 killed; the 2 survivors are equivalent (the version gate: a V19 request cannot hold the records; the holder identity check: no supported effect switches the user out mid-move) |
+| Mutations (exporter) | 3 of 3 killed (no Sheer Force gate, Life Orb from V19, the divisor) |
+| Frontier `make check` | see testing.md (2,455 FAILED, the same as before) |
+| Sizes | Battle 4,472, BattleRequest 6,344, EventLog 47,812, max request 3,165 unchanged; companion text 291,046 (+424), data 71,828 (+88), DOL 363,168 (+544); ROM used +264 B |
+| Time (host, -O2) | one damage calculation 412 ns (V19), 422 ns (V20 without Life Orb), 444-453 ns with it; one Single turn 1.5-1.8 us in every case (noise) |
+
+Not run: Dolphin (no new Lab fixture: the Lab list is full and the GBA's
+normal battles use APP V1-V12; V20 is reached through the exporter tests),
+long JoyBus runs.
+
+### 14.6 Known limits
+
+- Magic Guard, Sheer Force and Klutz with Life Orb turn every item off
+  instead of running their effect.
+- The defender's item has no final record yet (Expert Belt and the resist
+  berries are later stages).
+- The holder switched out mid-move (Eject Button, Red Card, Emergency Exit),
+  Dynamax HP and False Swipe's 0-damage case have no GC path; the
+  reference's rules for them are recorded in 13.1.
+- Both last Pokemon fainting (the target to the hit, the holder to Life Orb)
+  is a draw in the GC; the reference's outcome there was not run (its rule
+  for both sides empty is LOST | WON = DREW).
+- ABL-G04, ITM-TIME-003 and ACT-002 are unchanged (13.6).

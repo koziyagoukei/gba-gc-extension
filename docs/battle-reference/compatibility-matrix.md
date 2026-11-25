@@ -18,6 +18,7 @@
 | [ITEM-001](items.md#item-001) | 回復・治療・消費 → V19 bc_item_*_check | SUPPORTED / TEST_CONFIRMED | 基本きのみ、治療、交代の既存参照例 |
 | [ITEM-002](items.md#item-002) | 個体別残留と日照特性の保留 → V19の残留処理・MoveEnd | SUPPORTED / TEST_CONFIRMED | 既存のどく・砂嵐・日照ダメージの範囲。反動待機は ACT-002（補修済み） |
 | [ITEM-003](items.md#item-003) | 持ち物抑制・交換・復活 → 開始時の拒否／正規化 | UNSUPPORTED / SOURCE_CONFIRMED | ぶきよう、きんちょうかん等と譲渡・復活は後段 |
+| [ITEM-004](../items.md#14-m4-b1c-0b-life-orb-in-request-v20) | いのちのたま → V20 品の最終補正（5324）と `BITIME_AFTER_MOVE`（最大HP÷10、最低1） | PARTIAL / TEST_CONFIRMED | Expansion 27件とGC Native（4形式、わるあがき、交代技、じしんかじょう）。マジックガード・ちからずく・ぶきよう所持者は全持ち物オフ。Dolphin未確認 |
 | [ACT-001a](status-and-volatiles.md#act-001) | 完全まひ・混乱自傷後のMoveEnd → V19行動後チェック | SUPPORTED / TEST_CONFIRMED | 既存のまひ・自傷の固定ケース |
 | [ACT-001b](status-and-volatiles.md#act-001) | 睡眠・凍結・ひるみ・失敗・実行時PP不足 → V19個別経路 | UNVERIFIED / SOURCE_CONFIRMED | 睡眠は保留きのみを両側で比較し一致（ACT-002の比較ケース）。こおり・ひるみ・失敗・実行時PP不足は比較待ち |
 | [ACT-001c](status-and-volatiles.md#act-001) | 行動前のひんしでスキップ → TA_SKIPPED | PARTIAL / SOURCE_CONFIRMED | 入口は両側のコードで確認。全員の持ち物順は未試験 |
@@ -29,7 +30,7 @@
 | [ABL-G04](../ability-mechanics/gc-compatibility.md) | 致死接触のさめはだとひんし通知 → bc_apply_damage の `EV_FAINT`、bc_ability_contact | MISMATCH / TEST_CONFIRMED | Single／Doubleを両側実行。結果は一致、対象の `EV_FAINT` だけが接触反応より前。V1〜V19では保留、V20以降の契約で段階化 |
 | [ABL-G05](../ability-mechanics/gc-compatibility.md) | 接触状態異常＋接触ダメージ等の複合Hook → battle_ability_valid で拒否（V12〜V19） | UNSUPPORTED / TEST_CONFIRMED | Exporterは生成しない（全特性×V11〜V19で確認）。複合の実行は根拠となる特性がなく新版で検討 |
 
-件数は SUPPORTED 9、PARTIAL 7、UNSUPPORTED 4、MISMATCH 1、UNVERIFIED 1、NOT_APPLICABLE 2、計24件（ABL-G04／G05を追加）。分岐の全件試験率とは区別する。
+件数は SUPPORTED 9、PARTIAL 8、UNSUPPORTED 4、MISMATCH 1、UNVERIFIED 1、NOT_APPLICABLE 2、計25件（ABL-G04／G05、ITEM-004を追加）。分岐の全件試験率とは区別する。
 
 特性監査ABL-G04／G05。[拒否条件](https://github.com/koziyagoukei/gba-gc-extension/blob/1664fb45a7aee928c32c90430073c7bea0711ee5/protocol/battle_protocol.c#L445) · [GC試験](https://github.com/koziyagoukei/gba-gc-extension/blob/1664fb45a7aee928c32c90430073c7bea0711ee5/gamecube/battle/battle_test.c#L9010) · [致死接触のGC試験](https://github.com/koziyagoukei/gba-gc-extension/blob/1664fb45a7aee928c32c90430073c7bea0711ee5/gamecube/battle/battle_test.c#L9162) · [Expansion参照試験](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/b091548d05e39450e6c5619244af8ea3c7ee88eb/test/battle/gc_contact_faint_reference.c#L12) · [Exporter試験](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/b091548d05e39450e6c5619244af8ea3c7ee88eb/test/battle/gc_ability_hooks_export.c#L10)
 

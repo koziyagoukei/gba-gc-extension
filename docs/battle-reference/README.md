@@ -12,6 +12,7 @@
 | ACT-002補修 | GC `milestone4b1b-act002`（`78b3125be6` ほか）、Frontier `frontier-gc-m4b1b-act002`（`329ceb28ad`、`2d1e107ad8`） |
 | 特性監査補修（ABL-G04／G05） | GC `milestone4b1b-ability-fixes`（`1664fb45a7`）、Frontier `frontier-gc-m4b1b-ability-fixes`（`b091548d05`） |
 | M4-B1c-0a（いのちのたまの仕様確定） | GC `milestone4b1c0a`（`c6c340450b` ほか）、Frontier `frontier-gc-m4b1c0a`（`9601bc98af`）。実装なし |
+| M4-B1c-0b（Request V20・いのちのたま） | GC `milestone4b1c0b`（`0c6a37e463` ほか）、Frontier `frontier-gc-m4b1c0b`（`8219d703a0`） |
 
 ## 索引
 

@@ -11,7 +11,7 @@
 | ITM-GC-05 | SUPPORTED / TEST_CONFIRMED | `BITEM_ENDURE`、満タンタスキ、がんじょう優先、対応する直接・自傷の例と消費 | ハチマキの確率・RNGと消費しない指定。別の耐久経路を個別に検証 |
 | ITM-GC-06 | PARTIAL / SOURCE_CONFIRMED | `BIREC_CONSUMED`、`item_from`、`item_used`。V19の発動したレコードだけが所持を空にする | 品の移動、無効化、復活、由来・理由と永続ポリシー |
 | ITM-GC-07 | MISMATCH / SOURCE_CONFIRMED | 日照後の保留きのみとピボットで全員判定と交代の順が異なるコード経路 | 条件を満たすSingle/Doubleの参照試験。発動前後の場と履歴を比較 |
-| ITM-GC-08 | UNSUPPORTED / SOURCE_CONFIRMED | いのちのたま、かいがらのすず、メット、じゃくてんほけん、カード類、こだわり・命中品等の効果は未出力 | 技全体／被弾／選択等の入口。現在の品を毎段階解決する |
+| ITM-GC-08 | UNSUPPORTED / SOURCE_CONFIRMED（いのちのたまを除く） | かいがらのすず、メット、じゃくてんほけん、カード類、こだわり・命中品等の効果は未出力 | 技全体／被弾／選択等の入口。現在の品を毎段階解決する。**いのちのたまはV20で PARTIAL / TEST_CONFIRMED**：最終補正5324と技終了の最大HP÷10（最低1）をExpansion 27件とGC Nativeで一致確認。マジックガード・ちからずく・ぶきようの所持者では全持ち物オフ（strictは拒否）、Dolphin未確認。[仕様](../items.md#14-m4-b1c-0b-life-orb-in-request-v20) |
 | ITM-GC-09 | NOT_APPLICABLE / SOURCE_CONFIRMED | 表示専用戦の報酬・経験値等。ギミック禁止下の監査済みZ／メガ品は条件付きで所持を保持 | 必要なルールを追加した時点で再監査。NONEは所持なしとは別 |
 | ITM-GC-10 | UNVERIFIED / UNKNOWN | 既存対象外の複合失敗・連続技と強制交代の競合、抑止解除と同じ技内の再評価 | マトリクスを小さな順序試験に分割。Expansionにない形式はGC側の仕様も固定する |
 
