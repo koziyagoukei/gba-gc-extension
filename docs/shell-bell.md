@@ -305,9 +305,9 @@ The design of section 6 (option C), unchanged:
   record is not used up and the item stays held after the battle (no save
   is written).
 
-Order in one action (`TEST_CONFIRMED`): the hits on every target (drain,
-contact abilities and faints per target, the target's status check) → the
-move's own recoil → the actor's item checks → Moxie → every other Pokemon's
+Order in one action (`TEST_CONFIRMED`): the hits on every target (per strike
+since M4-B1c-1b-fix: the damage, the drain, the contact abilities and faints;
+then the target's status check) → the move's own recoil → the actor's item checks → Moxie → every other Pokemon's
 HP berry → **Shell Bell** → every Pokemon's checks → the pivot's switch.
 
 ### 11.3 Exporter
@@ -364,3 +364,103 @@ HP berry → **Shell Bell** → every Pokemon's checks → the pivot's switch.
 
 The two that M4-B1c-1b's first tests missed (Shell Bell on `landed`, Life
 Orb on `lost`) are killed by the hit that takes no HP (11.4).
+
+## 12. M4-B1c-1b-fix: the independent review
+
+Codex's review of M4-B1c-1b (NO-GO) reported three findings; all three are
+fixed on branches `milestone4b1c1b-fix` (GC) and `frontier-gc-m4b1c1b-fix`
+(Frontier), based on M4-B1c-1b (`c60fd6d` / `0acd7f71b3`). Request/APP V21,
+release 13 and every layout are kept. Not run in Dolphin (M4-B1c-1c).
+
+### 12.1 MAJOR: a contact drain move drained after the contact abilities
+
+| | Order | Result |
+|---|---|---|
+| Expansion (review) | 322 dealt → drain 161 → Rough Skin 50 → Shell Bell 40 | 152 HP, stands |
+| GC V21 before the fix (`TEST_CONFIRMED`, reproduced: Attack 457 deals 322) | 322 dealt → Rough Skin 50 → the holder faints; no drain, no heal | 0 HP |
+| GC V21 after the fix (`TEST_CONFIRMED`) | 322 → drain 161 → Rough Skin 50 → Shell Bell 40 | 152 HP |
+| Expansion in this build (`TEST_CONFIRMED`, `gc_contact_drain_reference.c`: Machamp level 72, damage roll 13; 322 is not reachable with this build's species) | 324 → drain 162 → Rough Skin 50 → Shell Bell 40 | 153 HP |
+| GC V21 after the fix, the same 324 (Attack 460) | 324 → 162 → 50 → 40 | 153 HP |
+
+Cause (`SOURCE_CONFIRMED`): the reference's drain is the move's additional
+effect (`MOVE_EFFECT_ABSORB`, `HandleSetEffectAbsorb`), run in the hit script
+for each strike: this strike's `moveDamage` (cut at the target's or the
+substitute's HP) × percent / 100, at least 1 (`SetHealAmount`), the attacker
+alive, nothing at max HP. Rough Skin, Iron Barbs and the contact statuses run
+later, at `MOVEEND_ABILITIES`. The GC ran the contact abilities inside
+`strike` (`hit_aftermath`) and the drain afterwards in `damaging_results`,
+from the target's summed loss. Shell Bell's own condition was right (a
+fainted holder never heals).
+
+Fix (V21 only, `battle_effects.c`): `strike_drain` runs each strike's drain
+in `hit_aftermath`, after Sturdy / Focus Sash and the per-hit effects and
+before `bc_ability_contact`; a substitute's strike drains what the
+substitute took (no contact ability follows); a deferred single-hit spread
+target (V19+) drains in its results pass, before its own contact abilities;
+the old drain in `damaging_results` is skipped in V21, so each strike drains
+once. `MoveContext.lost`, the recoil, Life Orb and Shell Bell are untouched.
+V20 and older keep the old order (fixed-seed traces V11-V20 unchanged).
+
+Covered (`TEST_CONFIRMED`; Expansion for Drain Punch against Rough Skin,
+Iron Barbs, Static, Life Orb, too little drain from 1 HP, and Giga Drain
+without contact; GC natively for those and for the rest):
+
+| Case | V21 |
+|---|---|
+| Rough Skin, Iron Barbs | damage → drain → contact damage → Shell Bell |
+| Static (contact status) | the drain before the paralysis |
+| Life Orb | damage → drain → Rough Skin → the loss (same HP as V20; V20 has Rough Skin first) |
+| Too little drain from 1 HP | the drain, then Rough Skin knocks the holder out; no Shell Bell |
+| No contact (Giga Drain), no contact ability | the same events as V20 |
+| Multi-hit contact drain (GC only: Expansion has no such move) | each strike: damage → its own drain (rounded per strike) → its Rough Skin; one drain per strike |
+| Substitute | the drain from what it took; no Rough Skin |
+| The target knocked out | the drain from the HP it had (its `EV_FAINT` stays where ABL-G04 has it, before the drain) |
+| HP cap | 10 below the max drains 10; none at full HP |
+| Recoil on the same move | the drain per strike, the recoil after the hits |
+| Double, single-hit spread (deferred) | each target's drain before its own Rough Skin |
+| Single, Double, Triple, Rotation | the lead's contact drain into a Rough Skin lead: the drain first, the holder stands |
+
+### 12.2 MAJOR: Imposter could give a Shell Bell holder Sheer Force
+
+Imposter copies its target's ability on entry, Sheer Force included, and
+Sheer Force skips Shell Bell after the moves it boosts (section 3). The GC
+runs neither, but the exporter accepted such a holder (`ITEMS_SIMULATED`).
+Fix (`HpItemAbility`): Imposter turns every item off (strict items:
+refused) beside a heal-dealt record (`BIHP_HEAL_DEALT`, which only V21 has).
+Its V20 rule (a type changer beside a typed record) is kept, so Imposter with
+no item, Leftovers or Life Orb keeps its verdict in V20 and V21; Magic Guard
+still keeps the bell; Sheer Force and Trace are still gated. Transform, Skill
+Swap, Role Play, Entrainment and Doodle are not run by the GC
+(`TEST_CONFIRMED`, `gc_v21_fix_export.c`).
+
+### 12.3 MINOR: battle_init did not check V17 item blocks
+
+`bc_items_check` ran `battle_item_valid` from V18 only, so a V21 record in a
+request built in memory as V17 started (the encoder and the decoder refused
+it). It now runs from V17 (the first version with item blocks); V1-V16 are
+untouched. One V17 test that ran a decoder-refused record through
+`battle_init` (an attack-stage item record) now expects `BI_CONDITIONS`.
+`test_fix_item_init`: for V17 to V21 the encoder, the decoder (V21 bytes
+relabelled) and `battle_init` agree on the V21 record (15 checks); V17
+items start in V17, the V19-V21 records do not.
+
+### 12.4 Verification
+
+| Check | Result |
+|---|---|
+| GC native | -O2 -Werror, ASan/UBSan, presentation, `tools/shell-bell-tests.sh` (17 cases, 20 effect checks, 12 refusals), `tools/v20-tests.sh` (14), `test_fix_contact_drain`, `test_fix_item_init`, every earlier test (ACT-002, ABL-G05, ABL-G04, the four formats): pass |
+| Fixed-seed traces | V11-V20 identical to M4-B1c-1b; V21 identical too (the trace corpus has contact moves and contact abilities but no drain move) |
+| Expansion | Shell Bell 34/34, V21 references 2/2, Life Orb (`GC V20 reference`) 27/27, the new contact drain references 6/6, all `GC V21` exporter and reference tests 13/13 |
+| Frontier `make check` | 7,053 tests: PASS 4,137 (+10, the new ones), FAILED 2,455, KNOWN_FAILING 19, TO_DO 419, EXPECT_FAILING 9, ASSUMPTION_FAIL 14; against M4-B1c-1b no test changed status |
+| Mutations | GC: the 9 of the fix killed (the drain back after the contact abilities, a double drain, no per-strike drain, the new order from V20, no drain from a substitute, the target's whole loss per strike, no early drain for a deferred target, battle_init from V18 again, no item check); B1c-1b's 26 rerun: 23 killed, the same 3 equivalent (11.6). Exporter: 4 killed (no Imposter gate, the gate on every after-move record, the gate on any item, heal-dealt read from the timing) |
+| Sizes | Battle, BattleRequest, EventLog and the max request unchanged; DOL (release 13) 364,384 B (+672 over M4-B1c-1b: text +608, data +96); ROM text + data 26,374,637 B (+32 over M4-B1c-1b); Labs and debug menu unchanged; the busiest V21 turn measured with 10-hit contact drain spread moves into Rough Skin: 58 events (V20 49) of 1,992 |
+
+### 12.5 Not covered
+
+- Life Orb with Imposter (V20 and V21): Imposter could copy Sheer Force,
+  which skips Life Orb's loss; the V20 verdict (simulated) is kept, as the
+  review asked V20 to stay; recorded for a later stage.
+- The target's faint is announced before the drain when a contact drain
+  knocks it out (the ABL-G04 order of `EV_FAINT`); HP and outcome are the
+  reference's.
+- Liquid Ooze, Big Root, Strength Sap and Dream Eater have no GC path.

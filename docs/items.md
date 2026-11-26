@@ -1457,3 +1457,16 @@ section 11; in short (`TEST_CONFIRMED` natively, Dolphin is M4-B1c-1c):
 - Battle Frontier: 0 of 2,040 sets hold Shell Bell, so V21 adds no set; the
   1,996 requests built, 1,118 with items simulated and 1,118 strict ones are
   V20's, item block for item block.
+
+## 18. M4-B1c-1b-fix: the independent review of V21
+
+Branches `milestone4b1c1b-fix` / `frontier-gc-m4b1c1b-fix`; V21 and release 13
+kept ([Shell Bell](shell-bell.md) section 12):
+
+- V21: a contact drain move drains each strike before the contact abilities
+  (the reference's hit-script drain, then `MOVEEND_ABILITIES`): a Shell Bell
+  holder at 1 HP now survives Rough Skin as in the reference (322 → 152 HP).
+  V20 and older keep their order.
+- Exporter: Imposter beside a V21 Shell Bell turns every item off (strict
+  items: refused).
+- `battle_init` checks item blocks from V17, as the encoder and the decoder.

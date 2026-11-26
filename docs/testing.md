@@ -431,3 +431,13 @@ those of M4-B1c-1a and the corpus relabelled V21 is V20's. Frontier adds
 `test/battle/gc_v21_reference.c` (2, `GC V21 reference`); the 34 `GC Shell
 Bell reference` tests: 34/34 PASS twice, the 75 measured `SB_*` values the same in both runs and the same as M4-B1c-1a's. Frontier `make check`: 7,043 tests, PASS 4,127 (+9), FAILED 2,455, KNOWN_FAILING 19, TO_DO 419, EXPECT_FAILING 9, ASSUMPTION_FAIL 14, no status changed against M4-B1c-1a. Not run in
 Dolphin (M4-B1c-1c).
+
+M4-B1c-1b-fix (branches `milestone4b1c1b-fix`, `frontier-gc-m4b1c1b-fix`,
+[Shell Bell](shell-bell.md) section 12): `battle_test.c` adds
+`test_fix_contact_drain` (the review's 322 and the reference's 324 from 1 HP,
+Iron Barbs, Static, Life Orb, multi-hit, substitute, knock-out, cap, recoil,
+Double spread, four formats; V20 order kept) and `test_fix_item_init`; one
+V17 expectation now refuses a decoder-refused record. Frontier adds
+`gc_contact_drain_reference.c` (6, `GC contact drain reference`) and
+`gc_v21_fix_export.c` (4, `GC V21 fix export`). Expansion: Shell Bell 34/34, V21 references 2/2, Life Orb (`GC V20 reference`) 27/27, the new contact drain references 6/6, all `GC V21` exporter and reference tests 13/13. `make
+check`: 7,053 tests: PASS 4,137 (+10, the new ones), FAILED 2,455, KNOWN_FAILING 19, TO_DO 419, EXPECT_FAILING 9, ASSUMPTION_FAIL 14; against M4-B1c-1b no test changed status. Traces V11-V21 unchanged.

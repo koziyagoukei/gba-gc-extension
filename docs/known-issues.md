@@ -316,3 +316,15 @@
   recorded only (B2).
 - Only the test hooks build APP V21 requests: the normal, Cube Tester and Lab
   battles (L01-L83) keep their APP versions. Not run in Dolphin (M4-B1c-1c).
+
+## M4-B1c-1b-fix (release 13 kept, development only)
+
+- Fixed in V21: a contact drain move drained after Rough Skin / Iron Barbs /
+  the contact statuses, so a holder at low HP could faint before draining
+  (and before Shell Bell). V20 and older keep that order.
+- Fixed: Imposter beside a V21 Shell Bell was simulated; it now turns every
+  item off (strict items: refused). Imposter beside Life Orb keeps its V20
+  verdict (simulated), although Imposter could copy Sheer Force.
+- Fixed: `battle_init` now checks item blocks from V17 (V18 before).
+- When a contact drain knocks the target out, its faint is announced before
+  the drain (the ABL-G04 order); HP and outcome are the reference's.

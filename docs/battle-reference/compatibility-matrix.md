@@ -30,7 +30,10 @@
 | [ABL-G04](../ability-mechanics/gc-compatibility.md) | 致死接触のさめはだとひんし通知 → bc_apply_damage の `EV_FAINT`、bc_ability_contact | MISMATCH / TEST_CONFIRMED | Single／Doubleを両側実行。結果は一致、対象の `EV_FAINT` だけが接触反応より前。V1〜V19では保留、V20以降の契約で段階化 |
 | [ABL-G05](../ability-mechanics/gc-compatibility.md) | 接触状態異常＋接触ダメージ等の複合Hook → battle_ability_valid で拒否（V12〜V19） | UNSUPPORTED / TEST_CONFIRMED | Exporterは生成しない（全特性×V11〜V19で確認）。複合の実行は根拠となる特性がなく新版で検討 |
 
-件数は SUPPORTED 9、PARTIAL 8、UNSUPPORTED 4、MISMATCH 1、UNVERIFIED 1、NOT_APPLICABLE 2、計25件（ABL-G04／G05、ITEM-004を追加）。分岐の全件試験率とは区別する。
+| [ITEM-005](../shell-bell.md#11-m4-b1c-1b-implementation-and-verification) | かいがらのすず → V21 `BIHP_HEAL_DEALT`（技全体の実HP損失÷8、最低1、最大HPまで） | PARTIAL / TEST_CONFIRMED | Native・Expansion参照・Exporter。ちからずく・ぶきよう・持ち物特性・特性コピー系・かわりもの（B1c-1b-fix）の所持者では全持ち物オフ。Dolphinは B1c-1c |
+| [DMG-004](../shell-bell.md#121-major-a-contact-drain-move-drained-after-the-contact-abilities) | 接触ドレイン技と接触特性の順序 → V21 `strike_drain`（打撃ごとのドレインを接触特性より前） | PARTIAL / TEST_CONFIRMED | V21で一致（ドレインパンチ×さめはだ／てつのトゲ／せいでんき、いのちのたま、かいがらのすず、4形式）。V20以下は旧順序のまま。ひんし通知の位置はABL-G04のまま |
+
+件数は SUPPORTED 9、PARTIAL 10、UNSUPPORTED 4、MISMATCH 1、UNVERIFIED 1、NOT_APPLICABLE 2、計27件（ABL-G04／G05、ITEM-004、B1c-1b-fixでITEM-005とDMG-004を追加）。分岐の全件試験率とは区別する。
 
 特性監査ABL-G04／G05。[拒否条件](https://github.com/koziyagoukei/gba-gc-extension/blob/1664fb45a7aee928c32c90430073c7bea0711ee5/protocol/battle_protocol.c#L445) · [GC試験](https://github.com/koziyagoukei/gba-gc-extension/blob/1664fb45a7aee928c32c90430073c7bea0711ee5/gamecube/battle/battle_test.c#L9010) · [致死接触のGC試験](https://github.com/koziyagoukei/gba-gc-extension/blob/1664fb45a7aee928c32c90430073c7bea0711ee5/gamecube/battle/battle_test.c#L9162) · [Expansion参照試験](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/b091548d05e39450e6c5619244af8ea3c7ee88eb/test/battle/gc_contact_faint_reference.c#L12) · [Exporter試験](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/b091548d05e39450e6c5619244af8ea3c7ee88eb/test/battle/gc_ability_hooks_export.c#L10)
 
