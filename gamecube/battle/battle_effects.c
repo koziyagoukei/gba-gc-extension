@@ -475,13 +475,30 @@ static void run_secondaries(MoveContext *c, unsigned timing, Position target, bo
     }
 }
 
+// V21 (M4-B1c-1b-fix, docs/shell-bell.md 12): the drain is the strike's own
+// effect, before the contact abilities. The reference drains in the hit script
+// (MOVE_EFFECT_ABSORB, HandleSetEffectAbsorb: this strike's moveDamage *
+// percent / 100, at least 1, the attacker alive) and runs Rough Skin, Iron
+// Barbs and the contact statuses later, at MOVEEND_ABILITIES. V20 and older
+// keep the drain in the target's results, after the contact abilities.
+static bool drain_per_strike(const MoveContext *c) {
+    return c->b->request->version >= BATTLE_REQUEST_VERSION_AFTER_MOVE_HEAL;
+}
+static void strike_drain(MoveContext *c, unsigned taken) {
+    if (!taken) return;
+    for (unsigned i = 0; i < c->move->effect_count; ++i)
+        if (c->move->effects[i].kind == BEFF_DRAIN) restore(c, c->user, taken * c->move->effects[i].arg0 / 100u, EV_DRAIN);
+}
+
 // What follows a hit on the Pokemon itself: Sturdy or Focus Sash (V19), the
-// per-hit effects, then contact abilities.
-static void hit_aftermath(MoveContext *c, Position target, bool sturdy, bool sash) {
+// per-hit effects, V21 the strike's drain (`taken`, 0 before V21), then
+// contact abilities.
+static void hit_aftermath(MoveContext *c, Position target, bool sturdy, bool sash, unsigned taken) {
     Battle *b = c->b;
     if (sturdy) bc_ability_event(b, c->log, target, target, bc_ability(b, battle_at(b, target), BABIL_STURDY));
     if (sash) bc_item_endured(b, target, c->log);
     run_secondaries(c, BETIME_PER_HIT, target, true);
+    strike_drain(c, taken);
     bc_ability_contact(b, c->user, target, c->move, c->id, c->log);
 }
 
@@ -544,9 +561,11 @@ static unsigned strike(MoveContext *c, const BattleEffect *damage, Position targ
             bc_emit(c->log, (BattleEvent){.kind = EV_SUBSTITUTE_HIT, .user = c->user, .target = target,
                                           .move_id = c->id, .amount = taken, .hp_after = mon->vol.substitute_hp,
                                           .effectiveness = ev.effectiveness});
-            if (!mon->vol.substitute_hp) {
+            if (!mon->vol.substitute_hp)
                 bc_emit(c->log, (BattleEvent){.kind = EV_SUBSTITUTE_BREAK, .user = c->user, .target = target,
                                               .move_id = c->id});
+            if (drain_per_strike(c) && !c->deferred) strike_drain(c, taken);  // V21: what the substitute took
+            if (!mon->vol.substitute_hp) {
                 if (!(b->request->volatiles.flags & BVR_SUBSTITUTE_MULTI_HIT_CONTINUES)) {
                     if (damage->arg2 > 1) per_hit_items(c, target);
                     break;
@@ -559,13 +578,14 @@ static unsigned strike(MoveContext *c, const BattleEffect *damage, Position targ
             if (!endured) amount = bc_item_endure(b, target, amount, &sash);  // V19 Focus Sash, after Sturdy
             ev.kind = EV_DAMAGE;
             bc_apply_damage(b, ev, amount, c->log);
-            lost += before - battle_at(b, target)->hp;
+            const unsigned taken = before - battle_at(b, target)->hp;
+            lost += taken;
             *struck = true;
             if (c->deferred) {
                 c->hit[target.side][target.slot].sturdy = endured;
                 c->hit[target.side][target.slot].sash = sash;
             } else {
-                hit_aftermath(c, target, endured, sash);
+                hit_aftermath(c, target, endured, sash, drain_per_strike(c) ? taken : 0);
             }
         }
         if (damage->arg2 > 1) per_hit_items(c, target);
@@ -613,8 +633,12 @@ static bool damaging_hit(MoveContext *c, const BattleEffect *damage, Position ta
 static void damaging_results(MoveContext *c, const BattleEffect *damage, Position target) {
     const bool landed = c->hit[target.side][target.slot].landed, struck = c->hit[target.side][target.slot].struck;
     const unsigned lost = c->hit[target.side][target.slot].lost;
+    // V21: a deferred (single-hit spread) target's drain before its contact abilities.
+    const bool early_drain = c->deferred && landed && drain_per_strike(c);
+    if (early_drain && !struck) strike_drain(c, lost);  // a substitute took it: no contact ability
     if (c->deferred && struck) {
-        hit_aftermath(c, target, c->hit[target.side][target.slot].sturdy, c->hit[target.side][target.slot].sash);
+        hit_aftermath(c, target, c->hit[target.side][target.slot].sturdy, c->hit[target.side][target.slot].sash,
+                      early_drain ? lost : 0);
         thaw(c, target, struck, (BattleEvent){.kind = EV_DAMAGE, .user = c->user, .target = target, .move_id = c->id,
                                               .effectiveness = c->hit[target.side][target.slot].effectiveness});
     }
@@ -626,8 +650,8 @@ static void damaging_results(MoveContext *c, const BattleEffect *damage, Positio
     for (unsigned i = 0; i < c->move->effect_count; ++i) {
         const BattleEffect *e = &c->move->effects[i];
         switch (e->kind) {
-        case BEFF_DRAIN:  // from the HP the target or its substitute lost
-            if (lost) restore(c, c->user, lost * e->arg0 / 100u, EV_DRAIN);
+        case BEFF_DRAIN:  // from the HP the target or its substitute lost (V21: per strike, done already)
+            if (lost && !drain_per_strike(c)) restore(c, c->user, lost * e->arg0 / 100u, EV_DRAIN);
             break;
         case BEFF_PIVOT:
             apply(c, e, target);

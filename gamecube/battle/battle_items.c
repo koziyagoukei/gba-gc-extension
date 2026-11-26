@@ -53,10 +53,10 @@ int bc_items_check(const Battle *b) {
         for (uint8_t i = 0; i < b->sides[side].count; ++i) {
             const BattleEntry *e = b->sides[side].battlers[i].entry;
             const uint8_t cls = e->mon.item.cls;
-            // V18: a request built in memory (not decoded) gets the decoder's
-            // check too, so no HP record with a zero divisor reaches the core.
-            if (r->version >= BATTLE_REQUEST_VERSION_END_TURN_ITEMS &&
-                !battle_item_valid(&e->mon.item, e->record.held_item, r->type_count, r->version))
+            // A request built in memory (not decoded) gets the decoder's check
+            // too, from the first version with item blocks (V17; M4-B1c-1b-fix:
+            // V18 before), so no record of a later version reaches the core.
+            if (!battle_item_valid(&e->mon.item, e->record.held_item, r->type_count, r->version))
                 return BI_CONDITIONS;
             if (cls == BICLASS_UNSUPPORTED && !ignore) return BI_UNSUPPORTED_ITEM;
             // Strict: normalising would drop an item effect, so the result would not be exact.

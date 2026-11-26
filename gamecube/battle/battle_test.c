@@ -6990,11 +6990,12 @@ static void test_v17_power(void) {
         assert(battle_init(&b, &r, 1) == BI_OK && i_power(&b, 45) == 49);
         r.rules |= RULE_IGNORE_ITEMS;  // normalised: no item takes part
         assert(battle_init(&b, &r, 1) == BI_OK && i_power(&b, 45) == 45);
-        // A record acts only at its own stage (an attack record, which the decoder refuses
-        // for V17 items, does nothing to the power).
+        // An attack-stage record, which the decoder refuses for V17 items: until
+        // M4-B1c-1b-fix battle_init ran it (it did nothing to the power); now
+        // battle_init refuses it as the decoder does (docs/shell-bell.md 12.3).
         r.rules &= (uint16_t)~RULE_IGNORE_ITEMS;
         hold(&r.player[0], IMODS(9, modr(BMOD_ATTACK, 200, 0, 0, 0, 0)));
-        assert(battle_init(&b, &r, 1) == BI_OK && i_power(&b, 45) == 45);
+        assert(battle_init(&b, &r, 1) == BI_CONDITIONS);
     }
     // Order: the move's record x0.5, Grassy Terrain x1.3, the attacker's ability x1.2, then the item
     // (CalcMoveBasePowerAfterModifiers): 74 -> 63; the item first would give 64, as would a nearest factor.
@@ -10623,6 +10624,238 @@ static void test_v21_life_orb(void) {
     printf("v21 Life Orb: %u V20 paths give the same events, HP and RNG in V21\n", paths);
 }
 
+// ---------------------------------------------------------------- M4-B1c-1b-fix
+//
+// The independent review (docs/shell-bell.md 12). 1: a contact drain move
+// drains before the contact abilities in V21 (the reference drains in the hit
+// script, Rough Skin at MOVEEND_ABILITIES); V20 and older keep their order.
+// 3: battle_init checks item blocks from V17 as the decoder does.
+#define IRON_BARBS ab(BABIL_CONTACT_DAMAGE, 0, 0, 8, 0, 0, 160)
+static BattleMove fix_drain_punch(void) {
+    BattleMove m = v19_hit_with(75, fx(BEFF_DRAIN, BWHO_USER, 0, 50, 0, 0));
+    m.move_flags |= BMF_CONTACT;
+    return m;
+}
+// The holder (400 max HP at `hp`, Speed 100, `item`) uses `m` on a 999 HP foe with `ability`.
+static void fix_single(BattleRequest *r, uint8_t version, uint16_t hp, BattleItem item, BattleMove m, BattleAbility ability) {
+    make_consumable(r, BATTLE_FORMAT_SINGLE);
+    r->version = version;
+    v19_mon(&r->player[0], 400, hp, 100, item, m);
+    v19_mon(&r->opponent[0], 999, 999, 30, (BattleItem){0}, wait_move());
+    give(&r->opponent[0], ability);
+    add_reserve(r, 0);
+}
+static unsigned fix_index(const EventLog *log, EventKind kind, unsigned nth) {
+    for (unsigned i = 0; i < log->count; ++i)
+        if (log->events[i].kind == kind && nth-- == 0) return i;
+    return ~0u;
+}
+static unsigned fix_sum(const EventLog *log, EventKind kind) {
+    unsigned n = 0;
+    for (unsigned i = 0; i < log->count; ++i)
+        if (log->events[i].kind == kind) n += log->events[i].amount;
+    return n;
+}
+
+static void test_fix_contact_drain(void) {
+    static BattleRequest r;
+    static V20Run run;
+    const Action single[] = {move(0, 0, 0), move(1, 0, 0)};
+    const uint8_t v20 = BATTLE_REQUEST_VERSION_MOVE_ITEMS, v21 = BATTLE_REQUEST_VERSION_AFTER_MOVE_HEAL;
+    // The review's case (322 dealt: Attack 457) and the reference test's (324: Attack 460), from 1 HP.
+    static const struct { uint16_t attack, dealt, drain, bell, hp; } cases[] = {{457, 322, 161, 40, 152},
+                                                                                 {460, 324, 162, 40, 153}};
+    for (unsigned k = 0; k < 2; ++k) {
+        fix_single(&r, v21, 1, sb_shell_bell(), fix_drain_punch(), ROUGH_SKIN);
+        v21_go(&run, &r);
+        battle_active(&run.b, 0)->attack = cases[k].attack;
+        battle_run_turn(&run.b, single, 2, &run.log);
+        const BattleEvent *dmg = find(&run.log, EV_DAMAGE), *drain = find(&run.log, EV_DRAIN),
+                          *rough = find(&run.log, EV_ABILITY_DAMAGE), *bell = sb_heal(&run.log);
+        assert(dmg && dmg->amount == cases[k].dealt && drain && drain->amount == cases[k].drain && rough &&
+               rough->amount == 50 && bell && bell->amount == cases[k].bell);
+        assert(v20_index(&run.log, dmg) < v20_index(&run.log, drain) && v20_index(&run.log, drain) < v20_index(&run.log, rough) &&
+               v20_index(&run.log, rough) < v20_index(&run.log, bell));
+        assert(battle_active(&run.b, 0)->hp == cases[k].hp && !run.b.sides[0].battlers[0].fainted &&
+               event_count(&run.log, EV_DRAIN) == 1);
+        // V20 (no Shell Bell there): the old order, Rough Skin first, the holder down, no drain.
+        fix_single(&r, v20, 1, (BattleItem){0}, fix_drain_punch(), ROUGH_SKIN);
+        v21_go(&run, &r);
+        battle_active(&run.b, 0)->attack = cases[k].attack;
+        battle_run_turn(&run.b, single, 2, &run.log);
+        assert(find(&run.log, EV_ABILITY_DAMAGE) && !find(&run.log, EV_DRAIN) && run.b.sides[0].battlers[0].fainted);
+    }
+    // Iron Barbs is the same contact damage; Static's paralysis also comes after the drain.
+    for (unsigned k = 0; k < 2; ++k) {
+        fix_single(&r, v21, 100, (BattleItem){0}, fix_drain_punch(), k ? STATIC : IRON_BARBS);
+        v21_go(&run, &r);
+        battle_run_turn(&run.b, single, 2, &run.log);
+        const unsigned after = k ? fix_index(&run.log, EV_STATUS, 0) : fix_index(&run.log, EV_ABILITY_DAMAGE, 0);
+        assert(after != ~0u && fix_index(&run.log, EV_DRAIN, 0) < after &&
+               find(&run.log, EV_DRAIN)->amount == find(&run.log, EV_DAMAGE)->amount / 2);
+    }
+    // Life Orb: the drain, Rough Skin, then the loss at the move end (same HP as V20, new order).
+    for (uint8_t v = v20; v <= v21; ++v) {
+        fix_single(&r, v, 100, v20_life_orb(), fix_drain_punch(), ROUGH_SKIN);
+        v21_go(&run, &r);
+        battle_run_turn(&run.b, single, 2, &run.log);
+        const unsigned d = fix_index(&run.log, EV_DRAIN, 0), a = fix_index(&run.log, EV_ABILITY_DAMAGE, 0),
+                       o = fix_index(&run.log, EV_ITEM_DAMAGE, 0);
+        assert(d != ~0u && a != ~0u && o != ~0u && a < o && d < o && (v == v21 ? d < a : a < d));
+        assert(battle_active(&run.b, 0)->hp == 100 + find(&run.log, EV_DRAIN)->amount - 50 - 40);
+    }
+    // Too little drain from 1 HP: Rough Skin knocks the holder out after the drain; no heal.
+    fix_single(&r, v21, 1, sb_shell_bell(), fix_drain_punch(), ROUGH_SKIN);
+    v21_go(&run, &r);
+    battle_active(&run.b, 0)->attack = 20;
+    battle_run_turn(&run.b, single, 2, &run.log);
+    assert(find(&run.log, EV_DRAIN) && find(&run.log, EV_DRAIN)->amount < 50 && run.b.sides[0].battlers[0].fainted &&
+           fix_index(&run.log, EV_DRAIN, 0) < fix_index(&run.log, EV_ABILITY_DAMAGE, 0) && !sb_heal(&run.log));
+    // A drain move without contact, and a contact drain without a contact ability: V21 = V20.
+    {
+        static V20Run x;
+        for (unsigned k = 0; k < 2; ++k) {
+            BattleMove m = k ? fix_drain_punch() : v19_hit_with(75, fx(BEFF_DRAIN, BWHO_USER, 0, 50, 0, 0));
+            fix_single(&r, v20, 100, (BattleItem){0}, m, k ? R_NO_ABILITY : ROUGH_SKIN);
+            v21_go(&x, &r);
+            battle_run_turn(&x.b, single, 2, &x.log);
+            static BattleRequest r2;
+            fix_single(&r2, v21, 100, (BattleItem){0}, m, k ? R_NO_ABILITY : ROUGH_SKIN);
+            v21_go(&run, &r2);
+            battle_run_turn(&run.b, single, 2, &run.log);
+            assert(v21_same_log(&x, &run) && find(&run.log, EV_DRAIN) && !find(&run.log, EV_ABILITY_DAMAGE));
+        }
+    }
+    // Multi-hit: each strike drains its own HP (rounded per strike) before that strike's Rough Skin; one drain each.
+    {
+        BattleMove m = fix_drain_punch();
+        m.effects[0] = fx(BEFF_DAMAGE, BWHO_TARGET, 0, 3, 0, 3);
+        fix_single(&r, v21, 300, (BattleItem){0}, m, ROUGH_SKIN);
+        v21_go(&run, &r);
+        battle_run_turn(&run.b, single, 2, &run.log);
+        assert(event_count(&run.log, EV_DAMAGE) == 3 && event_count(&run.log, EV_DRAIN) == 3 &&
+               event_count(&run.log, EV_ABILITY_DAMAGE) == 3);
+        for (unsigned h = 0; h < 3; ++h) {
+            const unsigned dm = fix_index(&run.log, EV_DAMAGE, h), dr = fix_index(&run.log, EV_DRAIN, h),
+                           ab = fix_index(&run.log, EV_ABILITY_DAMAGE, h);
+            assert(dm < dr && dr < ab && run.log.events[dr].amount == run.log.events[dm].amount / 2);
+            if (h < 2) assert(ab < fix_index(&run.log, EV_DAMAGE, h + 1));
+        }
+    }
+    // A substitute: the drain from what it took, no contact ability; the foe knocked out: the HP it had.
+    fix_single(&r, v21, 100, (BattleItem){0}, fix_drain_punch(), ROUGH_SKIN);
+    v21_go(&run, &r);
+    battle_active(&run.b, 1)->vol.substitute_hp = 30;
+    battle_run_turn(&run.b, single, 2, &run.log);
+    assert(find(&run.log, EV_SUBSTITUTE_HIT) && find(&run.log, EV_DRAIN)->amount == 15 &&
+           !find(&run.log, EV_ABILITY_DAMAGE) && event_count(&run.log, EV_DRAIN) == 1);
+    fix_single(&r, v21, 100, (BattleItem){0}, fix_drain_punch(), ROUGH_SKIN);
+    r.opponent[0].record.hp = 40;
+    v21_go(&run, &r);
+    battle_run_turn(&run.b, single, 2, &run.log);
+    assert(run.b.sides[1].battlers[0].fainted && find(&run.log, EV_DRAIN)->amount == 20 && event_count(&run.log, EV_DRAIN) == 1);
+    // The HP cap: 10 below the max drains 10; at full HP no drain.
+    for (unsigned k = 0; k < 2; ++k) {
+        fix_single(&r, v21, k ? 400 : 390, (BattleItem){0}, fix_drain_punch(), R_NO_ABILITY);
+        v21_go(&run, &r);
+        battle_run_turn(&run.b, single, 2, &run.log);
+        if (k) assert(!find(&run.log, EV_DRAIN));
+        else assert(find(&run.log, EV_DRAIN)->amount == 10 && battle_active(&run.b, 0)->hp == 400);
+    }
+    // Recoil and drain on one move: the drain per strike, the recoil after the hits.
+    fix_single(&r, v21, 100, (BattleItem){0}, fix_drain_punch(), ROUGH_SKIN);
+    push(&r.player[0].mon.moves[0], fx(BEFF_RECOIL, BWHO_USER, 0, 25, 0, 0));
+    v21_go(&run, &r);
+    battle_run_turn(&run.b, single, 2, &run.log);
+    assert(fix_index(&run.log, EV_DRAIN, 0) < fix_index(&run.log, EV_ABILITY_DAMAGE, 0) &&
+           fix_index(&run.log, EV_ABILITY_DAMAGE, 0) < fix_index(&run.log, EV_RECOIL, 0));
+    // Double, a deferred single-hit spread contact drain over two Rough Skin foes: each target's drain before its Rough Skin.
+    {
+        BattleMove m = fix_drain_punch();
+        m.target = BTARGET_ALL_FOES;
+        make_consumable(&r, BATTLE_FORMAT_DOUBLE);
+        r.version = v21;
+        v19_mon(&r.player[0], 400, 100, 100, (BattleItem){0}, m);
+        v19_mon(&r.player[1], 400, 400, 20, (BattleItem){0}, wait_move());
+        v19_mon(&r.opponent[0], 999, 999, 30, (BattleItem){0}, wait_move());
+        v19_mon(&r.opponent[1], 999, 999, 25, (BattleItem){0}, wait_move());
+        give(&r.opponent[0], ROUGH_SKIN);
+        give(&r.opponent[1], ROUGH_SKIN);
+        v21_go(&run, &r);
+        battle_run_turn(&run.b, (Action[]){move(0, 0, 0), v19_wait(0, 1), v19_wait(1, 0), v19_wait(1, 1)}, 4, &run.log);
+        assert(event_count(&run.log, EV_DRAIN) == 2 && event_count(&run.log, EV_ABILITY_DAMAGE) == 2);
+        for (unsigned t = 0; t < 2; ++t)
+            assert(fix_index(&run.log, EV_DRAIN, t) < fix_index(&run.log, EV_ABILITY_DAMAGE, t));
+        assert(fix_sum(&run.log, EV_DRAIN) == (999u - run.b.sides[1].battlers[0].hp) / 2 + (999u - run.b.sides[1].battlers[1].hp) / 2);
+    }
+    // The four formats: the lead's contact drain on the foe's Rough Skin lead, the drain first.
+    for (uint8_t format = BATTLE_FORMAT_SINGLE; format <= BATTLE_FORMAT_ROTATION; ++format) {
+        const unsigned per = format == BATTLE_FORMAT_SINGLE ? 1 : format == BATTLE_FORMAT_DOUBLE ? 2 : 3;
+        const uint8_t lead = format == BATTLE_FORMAT_ROTATION ? BPOS_CENTER : 0;
+        make_consumable(&r, format);
+        r.version = v21;
+        for (unsigned i = 0; i < per; ++i) {
+            v19_mon(&r.player[i], 400, 400, 20, (BattleItem){0}, wait_move());
+            v19_mon(&r.opponent[i], 999, 999, 10, (BattleItem){0}, wait_move());
+            give(&r.opponent[i], ROUGH_SKIN);
+        }
+        v19_mon(&r.player[0], 400, 1, 100, sb_shell_bell(), fix_drain_punch());
+        v21_go(&run, &r);
+        bc_mutable_at(&run.b, (Position){0, lead})->attack = 457;
+        Action a[6];
+        unsigned n = 0;
+        for (uint8_t side = 0; side < 2; ++side)
+            for (uint8_t slot = 0; slot < (format == BATTLE_FORMAT_ROTATION ? 1 : per); ++slot)
+                a[n++] = v19_wait(side, format == BATTLE_FORMAT_ROTATION ? lead : slot);
+        a[0] = move(0, lead, lead);
+        battle_run_turn(&run.b, a, n, &run.log);
+        const Battler *user = battle_at(&run.b, (Position){0, lead});
+        assert(fix_index(&run.log, EV_DRAIN, 0) < fix_index(&run.log, EV_ABILITY_DAMAGE, 0) && !user->fainted &&
+               user->hp == 1 + find(&run.log, EV_DRAIN)->amount - 50 + sb_heal(&run.log)->amount);
+    }
+    printf("fix contact drain: 322 -> 161, 50, 40, 152 left; 324 -> 162, 50, 40, 153 (the reference); V20 order kept; "
+           "Iron Barbs, Static, Life Orb, too little drain, no contact, multi-hit per strike, substitute, a knock-out, "
+           "the cap, recoil, Double spread, four formats\n");
+}
+
+// Item blocks are checked by battle_init from V17, as by the encoder and the decoder.
+static void test_fix_item_init(void) {
+    static BattleRequest r, d;
+    static Battle b;
+    static uint8_t bytes[8192];
+    const BattleItem bell = sb_shell_bell();
+    unsigned held = 0;
+    for (uint8_t v = BATTLE_REQUEST_VERSION_ITEMS; v <= BATTLE_REQUEST_VERSION_AFTER_MOVE_HEAL; ++v) {
+        // The request without the item is valid in version v; with the V21 record the
+        // encoder, the decoder (V21 bytes relabelled v) and battle_init agree.
+        sb_single(&r, 400, 100, v19_hit(120), 999);
+        r.version = v;
+        hold(&r.player[0], (BattleItem){0});
+        assert(battle_init(&b, &r, 1) == BI_OK && battle_request_encode(&r, bytes, sizeof bytes));
+        hold(&r.player[0], bell);
+        const bool ok = v == BATTLE_REQUEST_VERSION_AFTER_MOVE_HEAL;
+        assert(!!battle_request_encode(&r, bytes, sizeof bytes) == ok);
+        assert(battle_init(&b, &r, 1) == (ok ? BI_OK : BI_CONDITIONS));
+        r.version = BATTLE_REQUEST_VERSION_AFTER_MOVE_HEAL;
+        const uint32_t n21 = battle_request_encode(&r, bytes, sizeof bytes);
+        bytes[0] = v;
+        assert(n21 && battle_request_decode(bytes, n21, &d) == ok);
+        held += 3;
+    }
+    // A V17 request built in memory with V17 items starts; with a later record it does not.
+    make_items(&r, BATTLE_FORMAT_SINGLE);
+    hold(&r.player[0], I_MUSCLE_BAND);
+    assert(r.version == BATTLE_REQUEST_VERSION_ITEMS && battle_init(&b, &r, 1) == BI_OK);
+    hold(&r.player[0], sb_shell_bell());
+    assert(battle_init(&b, &r, 1) == BI_CONDITIONS && !battle_request_encode(&r, bytes, sizeof bytes));
+    hold(&r.player[0], v20_life_orb());
+    assert(battle_init(&b, &r, 1) == BI_CONDITIONS);
+    hold(&r.player[0], I_SITRUS);
+    assert(battle_init(&b, &r, 1) == BI_CONDITIONS);
+    printf("fix item init: V17-V21 encoder, decoder and battle_init agree on the V21 record (%u checks); V17 items "
+           "start, V18-V21 records in V17 refused\n", held);
+}
+
 static void test_v19_wire(void) {
     static BattleRequest r, d;
     static Battle b;
@@ -11000,6 +11233,8 @@ int main(void) {
     test_v21_paths();
     test_v21_formats();
     test_v21_life_orb();
+    test_fix_contact_drain();
+    test_fix_item_init();
     test_v19_wire();
     test_v19_formats();
     puts("battle tests passed");
