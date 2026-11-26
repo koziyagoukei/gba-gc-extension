@@ -284,3 +284,19 @@
   Dolphin was not run for V20.
 - When the hit knocks out the last foe and Life Orb then knocks out its
   holder, the GC calls it a draw; the reference was not run for that case.
+
+## M4-B1c-0c (release 13 kept, development only)
+
+- Fixed in V20: a Pokemon's HP berry made due by a Life Orb holder's move
+  (the target's Sitrus Berry) came after the Life Orb loss; it now comes
+  before it, as in the reference ([items](items.md) section 15.4).
+- V20 reaches Dolphin only through the GC V20 Lab list (L73-L83): the normal
+  and Cube Tester battles keep their APP versions, and V20 results are shown,
+  not applied (as every roster battle's).
+- Triple: when a side's Pokemon has no foe in reach, the GBA offers only
+  Shift for it (L76 turn 2); this is the existing Triple rule, not V20.
+- Not run in Dolphin: Struggle with Life Orb, and a pivot that switches
+  after the loss (L78's U-turn knocked out the last foe, so the battle
+  ended); both are covered by the native and Expansion tests of section 14.
+- The draw when the last foe and then the holder faint is the GC's result;
+  the reference's was not run.

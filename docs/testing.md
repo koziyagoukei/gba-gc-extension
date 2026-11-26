@@ -382,3 +382,20 @@ under `GC V20 export`, with the Battle Frontier tally `TALLY20`). Frontier
 `make check`: 6,992 tests, 4,076 PASS, 2,455 FAILED (no test changed status
 against M4-B1c-0a; the ability-hook export test now covers V11-V20). GC
 mutations 20 of 22 killed (2 equivalent), exporter mutations 3 of 3.
+
+M4-B1c-0c (branches `milestone4b1c0c`, `frontier-gc-m4b1c0c`, [items](items.md)
+section 15): request V20 on the GBA → GC path. The Frontier debug menu has
+Utilities → GC V20 Lab... (L73-L83; the GC Ability Lab list L01-L72 is
+unchanged). Each V20 Lab battle logs the request bytes (`PH9 REQ`), and
+`battle_replay` replays them on the native core; `battle_replay
+-without-items` replays the same battle without the held items' modifier
+records (Life Orb's factor) for the counterfactual damage. Frontier tests:
+`test/battle/gc_v20_lab_export.c` (L73-L83 built through `Init`),
+`test/battle/gc_v20_lab_reference.c` (6 tests: the fixtures' damage at all
+16 rolls, the Sitrus-before-Life-Orb order) and
+`test/battle/gc_v20_coverage.c` (V19 and V20 coverage of the Battle
+Frontier sets by indicator, `COVER` lines). `test_v20_paths` adds the order
+of a foe's Sitrus Berry and the loss. Frontier `make check`: 7,000 tests: 4,084 PASS, 2,455 FAILED, 19 KNOWN_FAILING, 419 TO_DO, 9 EXPECT_FAILING, 14 ASSUMPTION_FAIL (no SKIP; -j8 as for M4-B1c-0b: 6,992 / 4,076 PASS / 2,455 FAILED); the 8 new tests pass and no other test changed status. A -j4 run gave 6,980 / 4,084 / 2,435: two Frontier music tests and one contest animation test change with the run order (they pass alone), not with this stage.
+Dolphin: the V20 Lab twice (before and after the fix), L01-L72 on the final
+DOL and ROM (the 67 fixtures that start a battle are line for line those of the ability fixes' run (requests, item and ability lines, events, states, actions and results; nonces and timings aside); the five GBA refusals (L42, L48, L56, L63, L71) refuse as before and send nothing to the GC), the result contract, a V19 DOL against a V20
+GBA. GC mutations 27: 22 killed, 5 equivalent (the version gate and the holder identity check, as in M4-B1c-0b; the loss after the all-items pass or after the whole move end: nothing that pass checks can become due from the holder's own loss; the loss only with consumable items: V20 implies them).

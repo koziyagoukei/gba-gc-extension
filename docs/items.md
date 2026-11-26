@@ -1082,8 +1082,8 @@ reference's "no boost for fixed damage" has no GC path.
 
 | Where | Order around it |
 |---|---|
-| `execute_move` | per-target secondaries and drain, contact abilities, faints, the hit count, the after-move secondaries, recoil, the user's V19 item check, Moxie → **Life Orb** → (recharge flag) → `bc_items_after_action` and the pivot's switch |
-| `execute_struggle` | the hit, Struggle's recoil (max HP / 4), the user's item check, Moxie → **Life Orb** → `bc_items_after_action` |
+| `execute_move` | per-target secondaries and drain, contact abilities, faints, the hit count, the after-move secondaries, recoil, the user's V19 item check, Moxie → **Life Orb** → (recharge flag) → `bc_items_after_action` and the pivot's switch (M4-B1c-0c: Life Orb moved into `bc_items_after_action`, after the other Pokemon's HP berries, 15.4) |
+| `execute_struggle` | the hit, Struggle's recoil (max HP / 4), the user's item check, Moxie → **Life Orb** → `bc_items_after_action` (M4-B1c-0c: inside it, as above) |
 
 It acts when the move landed on a target (`MoveContext.landed`: a damaging
 hit, a substitute's included; a miss, an immunity, an absorbing ability and
@@ -1152,3 +1152,263 @@ long JoyBus runs.
   is a draw in the GC; the reference's outcome there was not run (its rule
   for both sides empty is LOST | WON = DREW).
 - ABL-G04, ITM-TIME-003 and ACT-002 are unchanged (13.6).
+
+## 15. M4-B1c-0c: V20 on the GBA → GC path (Dolphin, JoyBus)
+
+Branches `milestone4b1c0c` (GC) and `frontier-gc-m4b1c0c` (Frontier), still
+release 13 (development). No new item, ability or move: request V20 and Life
+Orb of section 14 run on the real GBA → GC path, one order mismatch found
+there is fixed (15.4), and the checks of this stage are recorded.
+Status words: Dolphin = run in Dolphin on the release-13 DOL and the
+Frontier ROM (`TEST_CONFIRMED` on the real path); Native = the host core;
+Expansion = this build's battle engine (test runner); Source = read in code
+(`SOURCE_CONFIRMED`).
+
+### 15.1 The V20 entry: GC V20 Lab
+
+The normal battles and the debug/Cube Tester entries keep their APP versions
+(V1-V12), and the GC Ability Lab list holds L01-L72 (full at the menu
+limit). V20 gets its own list instead of renumbering or replacing anything:
+debug menu → Utilities → **GC V20 Lab...** (one entry above GC Extension
+Mode; the GC entries below it keep their places from the bottom). Its
+fixtures L73-L83 go through the same path as every Lab fixture
+(`DebugAction_GcAbilityLab` → `FrontierGcBattle_StartLab`, roster =
+`BATTLE_APP_VERSION_MOVE_ITEMS`, `RULE_FIXED_SEED`, battle id `0x4C4142nn`,
+results shown only). L01-L72 keep their numbers, contents and inputs.
+
+| Lab | Format | What it shows | Inputs (scratchpad runner `lab_v20.ps1`) |
+|---|---|---|---|
+| L73 | Single | Snorlax with Life Orb: a hit (knock-out), Double Hit, Swords Dance, Giga Drain | moves 1-4 on turns 1-4 |
+| L74 | Single | Machamp against a Ghost that uses Protect and Substitute: protected hits, a miss (Zap Cannon), Bulk Up | Body Slam, Shadow Ball, Zap Cannon x2, Bulk Up, Zap Cannon |
+| L75 | Double | Aerodactyl's Rock Slide (spread): a Sitrus Berry target, a foe that faints, Leftovers beside | Rock Slide x3 |
+| L76 | Triple | Rock Slide from the left, Earthquake from the centre (hits an ally; Aerodactyl immune), a foe's Life Orb | turn 2: the right Snorlax has no foe in reach (only Shift): B forfeits |
+| L77 | Rotation | two holders a side; only the one that acts loses HP; rotations by both sides | R (rotate) on turns 2-3 |
+| L78 | Single | Salamence (Moxie): Double-Edge knocks out (recoil, Moxie, loss), Hyper Beam, the recharge turn, U-turn on the last foe | moves 1, 2, (recharge), 3 |
+| L79 | Single | the holder at 11 HP faints to its own Life Orb, both sides replace | Body Slam x2 |
+| L80 | Single | the last foe faints, then the holder to Life Orb: a draw | Body Slam |
+| L81 | Single | Sheer Force and Magic Guard holders (non-strict): every item off | Body Slam x2 |
+| L82 | Single | Klutz with Life Orb under strict item rules: refused on the GBA | (refusal screen, B) |
+| L83 | Single | a Ghost behind Substitute only: Body Slam has no effect, Shadow Ball hits the substitute | Body Slam, Shadow Ball x2 |
+
+`test/battle/gc_v20_lab_export.c` builds L73-L83 through `Init` (as a
+Dolphin run does): V20, both Life Orb records on every holder, item ids
+kept, every move run, strict item rules accepted (L81 normalised, L82
+refused).
+
+### 15.2 GBA → GC transfer (Dolphin)
+
+Every V20 Lab battle started as `PH3 MODE ... app=4247 v20` (MODE app version
+20 = request version 20) and the GC accepted it (`PH3 CORE init=0`, items
+`simulated (strict)`; L81 `NORMALISED`). The bytes the GC received (its PH9
+REQ dump) have the length and CRC-32 that the GBA announced in MODE, for
+all 11 fixtures, in both runs. Against the exporter test's build of the same
+fixture (`Init`, no Dolphin) the L73 bytes differ only in the header's
+trainer class and in each record's OT id (the save's trainer, set by the
+running game): species, stats, moves, abilities and every item block,
+Life Orb's two records included, are the same bytes. The GC's PH12 lines
+show each holder as `item id=479 records=2`, `record0 modifier stage=45
+percent=130` (BMOD_FINAL | BMOD_FLOORED), `record1 hp timing=5 damage 1/10`.
+
+| Lab | Format | Holders | Request bytes | Wire bytes (RLE) | Chunks (224 B) | Request time |
+|---|---|---|---|---|---|---|
+| L73 | Single | 1 | 1,429 | 1,022 | 5 | 547 ms |
+| L74 | Single | 1 | 1,101 | 817 | 4 | 450 ms |
+| L75 | Double | 1 | 1,781 | 1,244 | 6 | 581 ms |
+| L76 | Triple | 3 | 1,805 | 1,269 | 6 | 616 ms |
+| L77 | Rotation | 4 | 1,829 | 1,301 | 6 | 538 ms |
+| L78 | Single | 1 | 1,437 | 1,028 | 5 | 514 ms |
+| L79 | Single | 1 | 1,397 | 964 | 5 | 508 ms |
+| L80 | Single | 1 | 1,029 | 714 | 4 | 454 ms |
+| L81 | Single | 2 | 1,037 | 739 | 4 | 508 ms |
+| L83 | Single | 1 | 1,061 | 751 | 4 | 492 ms |
+
+A Life Orb block is 20 bytes against 4 for an unsupported item (14.1): +16
+raw bytes per holder before the RLE; the largest V20 Lab request (L77,
+four holders) is 1,829 bytes, under the 3,165-byte maximum.
+
+### 15.3 Damage and the loss (Dolphin, Native, Expansion)
+
+Each Dolphin battle was replayed on the native core from its PH9 dump, seed
+and commands (`battle_replay`), with the core of the DOL that ran it: 0
+differing lines in all 21 V20 runs (11 on the M4-B1c-0b core before the fix
+of 15.4, 10 on the final one).
+`battle_replay -without-items` (new) replays the same battle with every held
+item's modifier record removed (Life Orb keeps its HP record); until the
+two battles part (a knock-out only one of them has), each Life Orb hit
+must be `(d * 5324 + 2047) >> 12` of the same hit without it:
+
+| Lab | Hit (Dolphin) | Without the factor → with |
+|---|---|---|
+| L73 / L79 | Body Slam into Blissey | 273 → 355 |
+| L75 | Rock Slide (Double, one target hit), turns 1 and 2 | 48 → 62, 48 → 62 |
+| L76 | Rock Slide (Triple, left); Earthquake (centre) on an ally and two foes; the foe's Cross Chop | 220 → 286; 81 → 105, 76 → 99, 84 → 109; 116 → 151 |
+| L77 | the foe's Rock Slide; Body Slam (turns 1, 2) | 84 → 109; 24 → 31, 81 → 105 |
+| L78 | Double-Edge, Hyper Beam, U-turn | 79 → 103, 56 → 73, 269 → 350 |
+| L80 | Body Slam | 79 → 103 |
+
+17 Life Orb hits, 0 mismatches; every other hit compared was unchanged.
+`test/battle/gc_v20_lab_reference.c` gives this build's damage for the
+fixtures' own stats at all 16 rolls, with and without Life Orb (Expansion):
+Body Slam 273 → 355 is its roll 5, Double-Edge 79 → 103 its roll 15, and the
+hits compared only after the battles part (L73's Double Hit 44 and 43, Giga
+Drain 31) are in its Life Orb column.
+
+The loss (Dolphin): max HP / 10 once per move, after the hit or the last hit
+(Double Hit: one loss for two hits), after the drain (L73), after the recoil
+and Moxie (L78), on the Hyper Beam turn and not on the recharge turn (L78),
+after the last foe faints (L78 U-turn: the loss, then the win), none for a
+status move (L73 Swords Dance, L74 Bulk Up), a protected hit (L74), a miss
+(L74, L75 turn 3), no effect (L83 Body Slam on a Ghost); a hit on a
+substitute counts (L83). The holder faints to it and is replaced (L79; L77
+Rotation); with the last foe already down it is a draw (L80, outcome 3).
+Spread moves: one loss per move (L76 Earthquake hits three, one loss). The
+item is never used up: 19 losses in the final runs, no `EV_ITEM_CONSUMED`
+for Life Orb in any run.
+
+Rotation (L77, identity): the foe's Rhydon loses 17 when it attacks (turn 1),
+nothing when the foe rotates and its Snorlax attacks (turn 2), 17 again when
+Rhydon is rotated back and attacks (turn 3); the loss names the battler that
+moved, not the front position.
+
+### 15.4 Fixed: the other Pokemon's HP berries before Life Orb
+
+Dolphin L75 showed the target's Sitrus Berry after the attacker's Life Orb
+loss. The reference runs every Pokemon but the attacker's HP-threshold item
+at `MOVEEND_KEE_MARANGA_HP_THRESHOLD_ITEM_TARGET`, before
+`MOVEEND_LIFE_ORB_SHELL_BELL`; a test of this build confirms the berry
+first (`GC V20 Lab reference: L75 ...`, and the opposite order fails).
+M4-B1c-0b called Life Orb before `bc_items_after_action`, whose second pass
+is that stage. Now `bc_items_after_action` takes the holder (`life_orb`, the
+Pokemon that started the move, when it landed) and runs it between the
+other Pokemon's HP pass and the all-items pass (`MOVEEND_ITEMS_EFFECTS_ALL`),
+still before the pivot's switch; `execute_struggle` passes it the same way.
+Only V20 has the record, so V1-V19 are unchanged (traces V11-V20 identical
+to M4-B1c-0b). Dolphin L75 now: hit, miss, Sitrus (+56, used up), the loss.
+The native test `test_v20_paths` pins the order. The Struggle, Moxie, pivot,
+recharge and last-foe orders of 14.3 are unchanged.
+
+| Move end (reference) | GC V20 |
+|---|---|
+| `MOVEEND_ITEM_EFFECTS_TARGET` (status berries of the target) | at the hit (V19) |
+| `MOVEEND_ITEM_EFFECTS_ATTACKER_2` (the user's berries after its recoil) | `bc_items_actor_check`, before Moxie |
+| `MOVEEND_ABILITY_EFFECT_FOES_FAINTED` (Moxie) | `bc_ability_after_move` |
+| `MOVEEND_KEE_MARANGA_HP_THRESHOLD_ITEM_TARGET` (others' HP berries) | `bc_items_after_action`, first pass |
+| `MOVEEND_LIFE_ORB_SHELL_BELL` | `bc_items_after_action` → `bc_item_after_move` |
+| `MOVEEND_HIT_ESCAPE` | the Core's pivot, after the move end (ITM-TIME-003, unchanged) |
+| `MOVEEND_ITEMS_EFFECTS_ALL` | `bc_items_after_action`, last pass |
+
+### 15.5 EventLog and the GC screen (Dolphin)
+
+Each loss is one `EV_ITEM_DAMAGE` (`user` = `target` = the holder's position,
+`amount` = max HP / 10, `hp_after`, item 479), after the move's own events
+and before the replacement or the end (`EV_END`). The GC screen (frames
+captured during L73) shows "Hurt by its held item!" with the holder's name
+and the item's name sent by the GBA (いのちのたま), the HP bar going 227 → 205,
+after the target's faint message and before the send-out; the header keeps
+"ITEMS ON". L81 shows "All held item effects are OFF." and the two abilities
+the GC does not run. Peaks over the V20 runs: 19 events in one turn
+(L76), core 199 us per turn, presentation 290 us (the session peak); EventLog full: never.
+
+### 15.6 JoyBus, disconnection and the result (Dolphin)
+
+Dolphin 2609b, the test profile, release-13 DOL, GBA polled every 160 us;
+the figures are per battle (one session each), Single to Rotation, one to
+four holders, request V20:
+
+| Figure | 10 V20 battles (final run) | 72 Lab battles of the ability fixes (V12-V19) |
+|---|---|---|
+| CRC errors (GC / GBA) | 0 / 0 | 0 / 0 |
+| Timeouts | 1 (L76) | 13 |
+| NACKs / retries | 14 / 15 (stale GBA frames: `stale_drops` 12) | 118 / 131 |
+| GBA queue overflows | 0 | 0 |
+| Link lost | 0 | 0 |
+| Largest poll gap during play | 66.7 ms (L81) | 66.7 ms |
+| SI transfer, longest | 413 us | 413 us |
+| Request transfer | 450-616 ms, 4-6 chunks | 406-670 ms |
+| Asset CRC mismatches | 0 | 0 |
+
+The NACK/retry pattern is the known stale-frame recovery (one retry, then
+the same exchange succeeds); V20 adds nothing to it.
+
+Result contract (L80, a battle that ends by itself):
+
+| Case | GC log | Outcome |
+|---|---|---|
+| 3 s host silence after `PH3 RESULT` (GC Z) | link lost, reconnect, the same MODE nonce: "result already final (nonce=…); not restarting the battle" | the GBA keeps its one result; nothing applied twice |
+| 3 s host silence on the final `EV_END`, before the result | link lost, reconnect, the same nonce: the battle restarts (same seed), plays to one `PH3 RESULT` (draw, the same Life Orb loss) | one result |
+| a new battle after the end | a new nonce (each Lab run) | — |
+
+Lab and V20 battles are "show" results (`RESULT_POLICY_DISPLAY_ONLY`): the
+GBA validates the result (`OnResult`: battle id, counts, HP and PP within
+the maximums) and shows it; only the legacy Single battle with "apply"
+writes HP and PP, to its lead, once. No path of a result writes a held item
+(the only `MON_DATA_HELD_ITEM` write is the Lab's own Pokemon), nothing
+saves: Life Orb stays held by construction. The save file of the test
+profile (`pokeemerald-2.sav`, a copy of the Frontier save) was hashed before
+and after all the Dolphin runs: the same bytes (SHA-256 AFF1EB7B295C7D76...); the profile's own save and Dolphin.ini were put back byte for byte afterwards.
+
+### 15.7 Older versions
+
+| Check | Result |
+|---|---|
+| GC Ability Lab L01-L72 (V12-V19) on the final DOL and ROM, Dolphin | the 67 fixtures that start a battle are line for line those of the ability fixes' run (requests, item and ability lines, events, states, actions and results; nonces and timings aside); the five GBA refusals (L42, L48, L56, L63, L71) refuse as before and send nothing to the GC |
+| A V19 GC (the M4-B1c-0a DOL, 362,624 B) and a V20 GBA (L73) | refused at the MODE check ("MODE 2 not supported by this host", "Unsupported mode"); the GBA shows "The GameCube ended the session."; no request decoded, no battle |
+| V18/V19 Life Orb (L62, L69) | unsupported, every item off, as before (in the regression) |
+| Traces V11-V20 (Native) | identical to M4-B1c-0b (V12-V20 1,200 battles each; V11 cannot run the generator) |
+| ACT-002, ABL-G05 | unchanged (L72 in the regression; the ability tests pass) |
+| ABL-G04, ITM-TIME-003 | not changed (still the known differences) |
+| CAPS, release, mode | release 13 on both sides; MODE v1 app 4247 |
+
+### 15.8 Battle Frontier coverage (V19 and V20)
+
+`test/battle/gc_v20_coverage.c` measures, for each of the 2,040
+`gBattleFrontierMons` sets as the player's lead (level 50, IVs 31,
+personality 0x12345678) in a Single against a plain Snorlax (Immunity,
+Tackle, no item), with the exporter's default rules; "strict" builds with
+strict items, abilities and moves. Not a facility success rate.
+
+| Indicator | V19 | V20 | Change |
+|---|---|---|---|
+| Request built | 1,996 | 1,996 | 0 |
+| Items run as held (not normalised) | 992 | 1,118 | +126 |
+| Every item off: an item not simulated | 956 | 815 | −141 |
+| Every item off: an item ability | 48 | 63 | +15 |
+| The lead's ability run (not normalised) | 818 | 818 | 0 |
+| Every move of the lead run | 447 | 447 | 0 |
+| Strict (items, abilities, moves) | 109 | 130 | +21 |
+| Holds Life Orb (sets / built) | 142 / 141 | 142 / 141 | — |
+| Life Orb's factor and loss run | 0 | 126 | +126 |
+
+No set holds nothing. The static bound of V20's gain is the 141 built Life
+Orb holders; 126 of them run it, 15 turn every item off by an ability
+(Magic Guard, Sheer Force, Klutz and the copiers). The strict figure is the
+kind of figure the earlier audit counted (108 sets with moves, abilities and
+items all strict); this measure gives 109 for V19 under its own foe and
+rules, not reconciled set by set (INFERRED: the conditions differ). The
+other figures are not comparable with it: "items" counts sets whose items
+are not normalised, whatever their moves and abilities.
+
+### 15.9 Verification
+
+| Check | Result |
+|---|---|
+| Native | -O2 -Wall -Wextra -Werror, ASan + UBSan, presentation: pass; the 14 saved V20 cases (14 started, 26 effect checks, 0 failed); the V20 damage, wire, rules and paths tests (the Sitrus order added) |
+| Traces (1,200 battles per version) | V11-V20 identical to M4-B1c-0b |
+| Expansion | Life Orb reference 27/27 (14.5), V20 Lab reference 6/6, V20 export (Life Orb 4, Lab 1, coverage 1) pass |
+| Frontier `make check` | 7,000 tests: 4,084 PASS, 2,455 FAILED, 19 KNOWN_FAILING, 419 TO_DO, 9 EXPECT_FAILING, 14 ASSUMPTION_FAIL (no SKIP; -j8 as for M4-B1c-0b: 6,992 / 4,076 PASS / 2,455 FAILED); the 8 new tests pass and no other test changed status. A -j4 run gave 6,980 / 4,084 / 2,435: two Frontier music tests and one contest animation test change with the run order (they pass alone), not with this stage |
+| Mutations (GC) | 27: 22 killed, 5 equivalent (the version gate and the holder identity check, as in M4-B1c-0b; the loss after the all-items pass or after the whole move end: nothing that pass checks can become due from the holder's own loss; the loss only with consumable items: V20 implies them) |
+| Dolphin | V20 Lab L73-L83 twice (11 + 10 battles, L82 refused on the GBA both times), result contract (2 cases), L01-L72 regression, V19 DOL against V20 |
+| Sizes | Battle 4,472, BattleRequest 6,344, EventLog 47,812, max request 3,165 unchanged; DOL 363,328 B (+160: text +152, data +36, bss unchanged); the DOL built from the final sources is byte for byte the one Dolphin ran; ROM text + data 26,374,413 B (+2,238: the V20 Lab fixtures and list, debug only); the final ROM is byte for byte the one Dolphin ran |
+| Time | host -O2, three runs each: one damage calculation 424-446 ns without Life Orb (V19 and V20), 444-470 ns with it; one Single turn 1.6-1.9 us; the M4-B1c-0b core and this one give the same figures |
+
+### 15.10 Not done, still open
+
+- Dolphin did not run Struggle with Life Orb or a pivot's switch after the
+  loss (native and Expansion tests cover both, 14.5).
+- The draw when the last foe and then the holder faint (L80) is the GC's
+  rule; the reference's result for it was not run (INFERRED from its rule).
+- V20 results are shown only, as every roster battle's; the "apply HP/PP"
+  path is the legacy Single battle (APP V1) and was not re-run (unchanged
+  code). No held item is written by any result (SOURCE_CONFIRMED).
+- Long JoyBus runs (hours) were not done; the figures are per Lab battle.
+- ABL-G04 and ITM-TIME-003 stay as recorded (13.6).

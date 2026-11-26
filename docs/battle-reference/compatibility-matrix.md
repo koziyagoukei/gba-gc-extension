@@ -18,7 +18,7 @@
 | [ITEM-001](items.md#item-001) | 回復・治療・消費 → V19 bc_item_*_check | SUPPORTED / TEST_CONFIRMED | 基本きのみ、治療、交代の既存参照例 |
 | [ITEM-002](items.md#item-002) | 個体別残留と日照特性の保留 → V19の残留処理・MoveEnd | SUPPORTED / TEST_CONFIRMED | 既存のどく・砂嵐・日照ダメージの範囲。反動待機は ACT-002（補修済み） |
 | [ITEM-003](items.md#item-003) | 持ち物抑制・交換・復活 → 開始時の拒否／正規化 | UNSUPPORTED / SOURCE_CONFIRMED | ぶきよう、きんちょうかん等と譲渡・復活は後段 |
-| [ITEM-004](../items.md#14-m4-b1c-0b-life-orb-in-request-v20) | いのちのたま → V20 品の最終補正（5324）と `BITIME_AFTER_MOVE`（最大HP÷10、最低1） | PARTIAL / TEST_CONFIRMED | Expansion 27件とGC Native（4形式、わるあがき、交代技、じしんかじょう）。マジックガード・ちからずく・ぶきよう所持者は全持ち物オフ。Dolphin未確認 |
+| [ITEM-004](../items.md#14-m4-b1c-0b-life-orb-in-request-v20) | いのちのたま → V20 品の最終補正（5324）と `BITIME_AFTER_MOVE`（最大HP÷10、最低1） | PARTIAL / TEST_CONFIRMED | Expansion 27件とGC Native（4形式、わるあがき、交代技、じしんかじょう）。マジックガード・ちからずく・ぶきよう所持者は全持ち物オフ。Dolphin未確認（B1c-0b時点）。B1c-0c：Dolphin実機（L73-L83、4形式）とJoyBusで確認、相手のHPきのみとの順序を補修。[実機](../items.md#15-m4-b1c-0c-v20-on-the-gba--gc-path-dolphin-joybus) |
 | [ACT-001a](status-and-volatiles.md#act-001) | 完全まひ・混乱自傷後のMoveEnd → V19行動後チェック | SUPPORTED / TEST_CONFIRMED | 既存のまひ・自傷の固定ケース |
 | [ACT-001b](status-and-volatiles.md#act-001) | 睡眠・凍結・ひるみ・失敗・実行時PP不足 → V19個別経路 | UNVERIFIED / SOURCE_CONFIRMED | 睡眠は保留きのみを両側で比較し一致（ACT-002の比較ケース）。こおり・ひるみ・失敗・実行時PP不足は比較待ち |
 | [ACT-001c](status-and-volatiles.md#act-001) | 行動前のひんしでスキップ → TA_SKIPPED | PARTIAL / SOURCE_CONFIRMED | 入口は両側のコードで確認。全員の持ち物順は未試験 |
