@@ -66,3 +66,17 @@ wire、5324、技終了窓、既知差分の扱いは§13と同じ。本計画�
 | §4 Dolphin・JoyBus | 未実施 | V20に届くLabがなく（一覧は満杯）、今回の範囲外。Native・Exporter・Expansion参照で確認 |
 
 結果は [items.md §14](items.md#14-m4-b1c-0b-life-orb-in-request-v20)。
+
+## B1c-1（かいがらのすず）への適用（INFERRED、B1c-1a）
+
+B1c-0bの「既存 `bc_item_*` の拡張のみ」（B案）を維持する。技全体のダメージ値源は新設せず、既存の `MoveContext.lost` を使う（`test_c1a_lost` でExpansionの `savedDmg` と同じ合計と確認）。
+
+| 計画 | 内容 |
+| --- | --- |
+| 版 | Request/APP V21。V20のレイアウトのまま `BIHP_HEAL_DEALT` を追加。V20以下は codec・`battle_init` とも拒否 |
+| 値の受け渡し | B1c-0cのいのちのたまのポインタを `{元の使用者, 命中, lost}` に広げ、`bc_items_after_action` の他個体HPきのみと全員判定の間から `bc_item_after_move` → `bc_item_hp` へ渡す。わるあがきは `bc_struggle_strike` から `strike` の損失を返す |
+| 永続状態 | 追加しない（`MoveContext` は技ごとのローカル） |
+| Exporter | `HOLD_EFFECT_SHELL_BELL` をroster V21から `HP(AFTER_MOVE, HEAL_DEALT, 8)`。ちからずく・ぶきようは既存の全持ち物オフ、マジックガードは回復なので対象外 |
+| 失敗先行 | `tools/shell-bell-tests.sh`（17件、現状は開始時に拒否） |
+
+詳細は [Shell Bell](shell-bell.md)。

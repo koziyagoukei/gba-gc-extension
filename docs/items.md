@@ -1412,3 +1412,25 @@ are not normalised, whatever their moves and abilities.
   code). No held item is written by any result (SOURCE_CONFIRMED).
 - Long JoyBus runs (hours) were not done; the figures are per Lab battle.
 - ABL-G04 and ITM-TIME-003 stay as recorded (13.6).
+
+## 16. M4-B1c-1a: Shell Bell, specification and reference (no implementation)
+
+Branches `milestone4b1c1a` (GC) and `frontier-gc-m4b1c1a` (Frontier), based
+on M4-B1c-0c; no battle logic, exporter or request change. The full record
+is [Shell Bell](shell-bell.md); in short:
+
+- Expansion (`TEST_CONFIRMED`, 34 reference tests): the heal is the HP the
+  move took (every strike and target, the ally included, cut at a fainting
+  target's HP and a breaking substitute's HP) / 8, rounded down after the
+  sum, at least 1, up to max HP; once, at `MOVEEND_LIFE_ORB_SHELL_BELL`,
+  after the drain, the contact abilities, the recoil, Moxie and the other
+  Pokemon's HP berries, before U-turn's switch. No heal at max HP, under
+  Heal Block, Embargo or Klutz, for Sheer Force's boosted moves, Future
+  Sight, after the holder fainted or a Red Card forced it out.
+- GC today (`TEST_CONFIRMED`, `test_c1a_lost`): `MoveContext.lost` is the
+  same sum per move (Struggle's path discards it).
+- Design (`INFERRED`): request/APP V21 with `BIHP_HEAL_DEALT` at
+  `BITIME_AFTER_MOVE` (divisor 8), the value passed with the M4-B1c-0c Life
+  Orb pointer into `bc_items_after_action`; no new persistent state.
+- Failing-first: `tools/shell-bell-tests.sh` (17 cases, all refused at the
+  start today). Battle Frontier sets holding Shell Bell: 0.

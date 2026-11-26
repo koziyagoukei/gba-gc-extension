@@ -399,3 +399,21 @@ of a foe's Sitrus Berry and the loss. Frontier `make check`: 7,000 tests: 4,084 
 Dolphin: the V20 Lab twice (before and after the fix), L01-L72 on the final
 DOL and ROM (the 67 fixtures that start a battle are line for line those of the ability fixes' run (requests, item and ability lines, events, states, actions and results; nonces and timings aside); the five GBA refusals (L42, L48, L56, L63, L71) refuse as before and send nothing to the GC), the result contract, a V19 DOL against a V20
 GBA. GC mutations 27: 22 killed, 5 equivalent (the version gate and the holder identity check, as in M4-B1c-0b; the loss after the all-items pass or after the whole move end: nothing that pass checks can become due from the holder's own loss; the loss only with consumable items: V20 implies them).
+
+M4-B1c-1a (branches `milestone4b1c1a`, `frontier-gc-m4b1c1a`, [Shell
+Bell](shell-bell.md)): investigation only. Frontier
+`test/battle/gc_shell_bell_reference.c` adds 34 tests under `GC Shell Bell
+reference:` (no MESSAGE checks; the measured values are printed as `SB_*`
+lines): 34/34 PASS, twice with identical values; each of nine wrong
+expectations (divisor 4, no minimum, overkill counted, per-hit or
+per-target rounding, the ally left out, the substitute uncapped, the berry
+or the drain after the heal) makes its test fail. The existing
+`hold_effect/shell_bell.c` gives 9 PASS and 6 English MESSAGE failures.
+`battle_test.c` adds `test_c1a_lost` (default build, read-only: the move's
+HP sum through a 100% recoil) and the Shell Bell cases under
+`-DGC_TEST_SHELL_BELL` (`tools/shell-bell-tests.sh`: 17 cases, 0 started,
+18 checks failed, 12 refusals hold, exit 18 until V21). No core change:
+traces V11-V20 are those of M4-B1c-0c. Frontier `make check` (-j8): 7,034 tests, 4,118
+PASS, 2,455 FAILED, 19 KNOWN_FAILING, 419 TO_DO, 9 EXPECT_FAILING, 14
+ASSUMPTION_FAIL; the 34 new tests pass and no other test changed status
+against M4-B1c-0c.
