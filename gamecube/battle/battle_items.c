@@ -123,13 +123,18 @@ static void use_up(Battle *b, Position p, Battler *mon, const BattleItemRecord *
     bc_emit(log, (BattleEvent){.kind = EV_ITEM_CONSUMED, .user = p, .target = p, .condition = timing, .item = item});
 }
 
-void bc_item_hp(Battle *b, Position p, uint8_t timing, EventLog *log) {
+// `end` (BITIME_AFTER_MOVE only) is the move the holder just used: V20 damage
+// acts if it landed, V21 BIHP_HEAL_DEALT heals the HP it took / divisor (at
+// least 1) if it took any (TryShellBell: savedDmg > 0).
+static void item_hp(Battle *b, Position p, uint8_t timing, const BcMoveEnd *end, EventLog *log) {
     Battler *mon = bc_mutable_at(b, p);
     if (!mon || mon->fainted) return;
     const BattleItemRecord *x = NULL;
     while ((x = bc_item_next(b, mon, BITEM_HP, x))) {
         if (x->hp.timing != timing || !holder_predicate(mon, x->hp.pred)) continue;
-        unsigned amount = mon->max_hp / x->hp.divisor;
+        const bool dealt = x->hp.op == BIHP_HEAL_DEALT;
+        if (dealt ? !end || !end->lost : end && !end->landed) return;  // only a move's end knows the HP it took
+        unsigned amount = (dealt ? end->lost : mon->max_hp) / x->hp.divisor;
         if (!amount) amount = 1;
         const uint16_t item = battle_held_item(mon);
         if (x->hp.op == BIHP_DAMAGE) {
@@ -148,14 +153,22 @@ void bc_item_hp(Battle *b, Position p, uint8_t timing, EventLog *log) {
     }
 }
 
-// V20 TryLifeOrb (MOVEEND_LIFE_ORB_SHELL_BELL): the move was used and landed
-// (IsAnyTargetTurnDamaged including substitutes), the holder is the battler
-// that started it (originalBattlerPartyId) and stands (ItemBattleEffects), its
-// item has the record (bc_item: items simulated, still held). Magic Guard and
-// Sheer Force are the exporter's to refuse or normalise (docs/items.md 14.5).
-void bc_item_after_move(Battle *b, Position user, const Battler *origin, bool landed, EventLog *log) {
-    if (!landed || b->request->version < BATTLE_REQUEST_VERSION_MOVE_ITEMS || battle_at(b, user) != origin) return;
-    bc_item_hp(b, user, BITIME_AFTER_MOVE, log);  // max HP / divisor, at least 1; not used up
+void bc_item_hp(Battle *b, Position p, uint8_t timing, EventLog *log) { item_hp(b, p, timing, NULL, log); }
+
+// MOVEEND_LIFE_ORB_SHELL_BELL. V20 TryLifeOrb: the move was used and landed
+// (IsAnyTargetTurnDamaged including substitutes). V21 TryShellBell: the move
+// took HP (savedDmg: every target's moveDamage, capped at its HP or its
+// substitute's, summed over the hits), healed by 1/divisor of the sum. Both:
+// the holder is the battler that started the move (originalBattlerPartyId)
+// and stands (ItemBattleEffects), its item has the record (bc_item: items
+// simulated, still held); a heal does nothing at full HP. Magic Guard and
+// Sheer Force are the exporter's to refuse or normalise (docs/items.md 14.5,
+// docs/shell-bell.md). An item has one after-move record (battle_item_valid).
+void bc_item_after_move(Battle *b, Position user, const BcMoveEnd *end, EventLog *log) {
+    if (!end || !end->origin || b->request->version < BATTLE_REQUEST_VERSION_MOVE_ITEMS ||
+        battle_at(b, user) != end->origin)
+        return;
+    item_hp(b, user, BITIME_AFTER_MOVE, end, log);  // not used up
 }
 
 // ------------------------------------------------------------- V19 consumable items
@@ -270,11 +283,11 @@ void bc_items_actor_check(Battle *b, Position actor, EventLog *log) {
 
 // The end of an action: the actor (MOVEEND_ITEM_EFFECTS_ATTACKER_2, unless
 // done already), every other Pokemon's HP (MOVEEND_KEE_MARANGA_HP_THRESHOLD_
-// ITEM_TARGET), V20 Life Orb of the move's user when it hit (`life_orb`, the
-// Pokemon that started the move; MOVEEND_LIFE_ORB_SHELL_BELL), then every
-// Pokemon's status and HP (MOVEEND_ITEMS_EFFECTS_ALL). Life Orb comes after
-// the other Pokemon's HP berries (M4-B1c-0c, docs/items.md 15.4).
-void bc_items_after_action(Battle *b, Position actor, bool actor_checked, const Battler *life_orb, EventLog *log) {
+// ITEM_TARGET), the after-move record of the move's user (`end`: V20 Life Orb,
+// V21 Shell Bell; MOVEEND_LIFE_ORB_SHELL_BELL), then every Pokemon's status
+// and HP (MOVEEND_ITEMS_EFFECTS_ALL). The after-move record comes after the
+// other Pokemon's HP berries (M4-B1c-0c, docs/items.md 15.4).
+void bc_items_after_action(Battle *b, Position actor, bool actor_checked, const BcMoveEnd *end, EventLog *log) {
     const bool items = bc_items_consumable(b);
     Position order[BC_MAX_ACTIONS];
     unsigned count = 0;
@@ -284,7 +297,7 @@ void bc_items_after_action(Battle *b, Position actor, bool actor_checked, const 
         for (unsigned i = 0; i < count; ++i)
             if (order[i].side != actor.side || order[i].slot != actor.slot) bc_item_hp_check(b, order[i], log);
     }
-    if (life_orb) bc_item_after_move(b, actor, life_orb, true, log);
+    bc_item_after_move(b, actor, end, log);
     for (unsigned i = 0; i < count; ++i)
         if (!bc_item_status_check(b, order[i], log)) bc_item_hp_check(b, order[i], log);
 }

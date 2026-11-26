@@ -720,13 +720,13 @@ static unsigned knocked_out(const MoveContext *c) {
 }
 
 bool bc_struggle_strike(Battle *b, Position user, Position target, const BattleMove *move, EventLog *log,
-                        unsigned *kos) {
+                        unsigned *kos, unsigned *lost) {
     MoveContext c = {.b = b, .log = log, .user = user, .move = move, .id = BATTLE_MOVE_STRUGGLE, .typeless = true};
-    *kos = 0;
+    *kos = *lost = 0;
     const BattleEffect damage = {.kind = BEFF_DAMAGE, .who = BWHO_TARGET, .arg0 = 1, .arg2 = 1};
     if (blocked_by_protect(&c, target) || evaded(&c, target)) return false;
     bool landed, struck;
-    strike(&c, &damage, target, &landed, &struck);
+    *lost = strike(&c, &damage, target, &landed, &struck);  // V21: what Shell Bell heals from
     if (struck && battle_at(b, target)->fainted) *kos = 1;
     if (landed && bc_items_consumable(b)) {  // V19, the target's move end
         bc_item_status_check(b, target, log);
@@ -736,7 +736,7 @@ bool bc_struggle_strike(Battle *b, Position user, Position target, const BattleM
 }
 
 static bool execute_move(Battle *b, Position user, uint8_t slot, Position selected, EventLog *log, bool *checked,
-                         const Battler **life_orb) {
+                         BcMoveEnd *end) {
     Battler *a = bc_mutable_at(b, user);
     const BattleMove *m = &a->moves[slot];
     // V15: a move whose type follows the weather (Weather Ball) is that type for
@@ -836,7 +836,8 @@ static bool execute_move(Battle *b, Position user, uint8_t slot, Position select
         *checked = true;
     }
     if (damage) bc_ability_after_move(b, user, knocked_out(&c), log);  // Moxie, after recoil
-    if (c.landed) *life_orb = a;  // V20 Life Orb: in the move end, after the other Pokemon's HP berries
+    // V20 Life Orb (landed), V21 Shell Bell (lost): in the move end, after the other Pokemon's HP berries.
+    *end = (BcMoveEnd){.origin = a, .landed = c.landed, .lost = c.lost};
     if (c.landed && find_effect(m, BEFF_RECHARGE) && !battle_at(b, user)->fainted &&
         !(all_fainted && (b->request->volatiles.flags & BVR_RECHARGE_SKIP_ON_KO)))
         bc_mutable_at(b, user)->vol.recharge = 2;  // blocks the next turn, ticks down at turn ends
@@ -847,8 +848,8 @@ static bool execute_move(Battle *b, Position user, uint8_t slot, Position select
 // nothing earlier).
 bool bc_execute_move(Battle *b, Position user, uint8_t slot, Position selected, EventLog *log) {
     bool checked = false;
-    const Battler *life_orb = NULL;
-    const bool pivot = execute_move(b, user, slot, selected, log, &checked, &life_orb);
-    bc_items_after_action(b, user, checked, life_orb, log);  // before the pivot's switch
+    BcMoveEnd end = {0};  // no origin: the move ended early (charge, Protect, no target ...)
+    const bool pivot = execute_move(b, user, slot, selected, log, &checked, &end);
+    bc_items_after_action(b, user, checked, &end, log);  // before the pivot's switch
     return pivot;
 }

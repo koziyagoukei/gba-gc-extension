@@ -796,8 +796,8 @@ static void execute_struggle(Battle *b, Position user, EventLog *log) {
                              .move_flags = BMF_CONTACT};
     // Protect, semi-invulnerable states and substitutes apply as to any hit;
     // the recoil follows only a hit that landed (a substitute hit counts).
-    unsigned kos;
-    if (!bc_struggle_strike(b, user, target, &move, log, &kos)) {
+    unsigned kos, lost;
+    if (!bc_struggle_strike(b, user, target, &move, log, &kos, &lost)) {
         bc_items_after_action(b, user, false, NULL, log);  // V19: the move end
         return;
     }
@@ -807,7 +807,8 @@ static void execute_struggle(Battle *b, Position user, EventLog *log) {
     bc_apply_damage(b, (BattleEvent){.kind = EV_RECOIL, .user = user, .target = user}, recoil ? recoil : 1, log);
     bc_items_actor_check(b, user, log);  // V19: after the recoil, before Moxie
     bc_ability_after_move(b, user, kos, log);  // Moxie, after recoil
-    bc_items_after_action(b, user, true, origin, log);  // V20 Life Orb, after Struggle's own recoil
+    // V20 Life Orb, V21 Shell Bell (the HP the hit took / 8): after Struggle's own recoil.
+    bc_items_after_action(b, user, true, &(BcMoveEnd){.origin = origin, .landed = true, .lost = lost}, log);
 }
 
 BattleActionState battle_action_state(const Battle *b, Position p) {

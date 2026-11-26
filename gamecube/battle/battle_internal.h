@@ -48,9 +48,10 @@ bool bc_effects_supported(const BattleRequest *request, const BattleMove *move);
 // Executes one move (PP, targets, effects); returns true if a pivot switch is due.
 bool bc_execute_move(Battle *battle, Position user, uint8_t move_slot, Position selected, EventLog *log);
 // Struggle's hit through the shared target checks (Protect, semi-invulnerable,
-// accuracy, substitute); typeless. True if it landed (recoil is then due).
+// accuracy, substitute); typeless. True if it landed (recoil is then due);
+// *lost is the HP the target or its substitute lost (V21 Shell Bell).
 bool bc_struggle_strike(Battle *battle, Position user, Position target, const BattleMove *move, EventLog *log,
-                        unsigned *knocked_out);
+                        unsigned *knocked_out, unsigned *lost);
 // Volatile lifetimes (table in battle_core.h).
 typedef enum { VOL_TURN_START, VOL_TURN_END, VOL_SWITCH_OUT, VOL_SHIFT, VOL_ROTATE, VOL_FAINT } VolatileEvent;
 void bc_volatiles_on(Battler *mon, VolatileEvent event);
@@ -151,18 +152,28 @@ bool bc_item_status_check(Battle *battle, Position position, EventLog *log);  //
 uint16_t bc_item_endure(const Battle *battle, Position target, uint16_t amount, bool *endured);
 void bc_item_endured(Battle *battle, Position target, EventLog *log);  // EV_ITEM_ENDURE, then the use
 void bc_item_on_entry(Battle *battle, Position position, EventLog *log);  // status, then HP check
+// What a move's end gives the user's after-move item record (V20, V21): the
+// Pokemon that started the move (NULL: no move reached its end, nothing acts),
+// whether the move landed on a target, a substitute included (Life Orb), and
+// the HP the move took from every target and substitute (MoveContext.lost:
+// every hit, the ally's included, at most the HP each had; Shell Bell).
+typedef struct {
+    const Battler *origin;
+    bool landed;
+    unsigned lost;
+} BcMoveEnd;
 // The end of an action (the reference's move end): the actor's checks (once),
-// every other Pokemon's HP check, V20 the user's Life Orb (`life_orb`: the
-// Pokemon that started a move that landed, else NULL), then every Pokemon's
-// checks, in battler order.
+// every other Pokemon's HP check, the user's after-move record (`end`: NULL,
+// or no origin, when no move reached its end), then every Pokemon's checks,
+// in battler order.
 void bc_items_actor_check(Battle *battle, Position actor, EventLog *log);
-void bc_items_after_action(Battle *battle, Position actor, bool actor_checked, const Battler *life_orb, EventLog *log);
-// V20 (docs/items.md 14, 15.4): once after a move `origin` used from `user`,
-// called by bc_items_after_action after Moxie and the other Pokemon's HP
-// berries, before a pivot's switch: its BITIME_AFTER_MOVE record (Life Orb)
-// if the move landed on a target (a substitute counts) and `origin` still
-// stands there.
-void bc_item_after_move(Battle *battle, Position user, const Battler *origin, bool landed, EventLog *log);
+void bc_items_after_action(Battle *battle, Position actor, bool actor_checked, const BcMoveEnd *end, EventLog *log);
+// V20 (docs/items.md 14, 15.4) and V21 (docs/shell-bell.md): once after a move
+// end->origin used from `user`, called by bc_items_after_action after Moxie
+// and the other Pokemon's HP berries, before a pivot's switch, if the origin
+// still stands there: its BITIME_AFTER_MOVE record, Life Orb's loss if the
+// move landed, Shell Bell's heal if the move took HP.
+void bc_item_after_move(Battle *battle, Position user, const BcMoveEnd *end, EventLog *log);
 
 // Ability hooks (battle_abilities.c, docs/abilities.md). All are inert unless
 // the request is V11+ without RULE_IGNORE_ABILITIES. An ability is a list of

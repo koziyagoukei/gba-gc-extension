@@ -183,7 +183,7 @@ static void step_session(void) {
     ModeInfo mode;
     if (!host_mode(&v.link, &mode)) { lost("MODE"); return; }
     if (mode.mode_id == GC_MODE_BATTLE && mode.mode_version == BATTLE_MODE_VERSION && mode.app_id == APP_GC_BATTLE &&
-        mode.app_version >= BATTLE_APP_VERSION && mode.app_version <= BATTLE_APP_VERSION_MOVE_ITEMS) {
+        mode.app_version >= BATTLE_APP_VERSION && mode.app_version <= BATTLE_APP_VERSION_AFTER_MOVE_HEAL) {
         if (mode.flags & MODE_FLAG_RESULT_FINAL) {
             // This battle already ended and the GBA accepted its result (e.g.
             // the link dropped after RESULT): never run it a second time.

@@ -191,7 +191,8 @@ static bool poll_multi_action(BattleMultiAction *a) {
     if (!host_app_to(b.link, b.mode.app_id, opcode, NULL, 0, &d, &n, &status)) return false;
     if (status == APP_OK) {
         switch (b.mode.app_version) {
-        case BATTLE_APP_VERSION_MOVE_ITEMS:  // V20 to V9 keep the V6 action layout
+        case BATTLE_APP_VERSION_AFTER_MOVE_HEAL:  // V21 to V9 keep the V6 action layout
+        case BATTLE_APP_VERSION_MOVE_ITEMS:
         case BATTLE_APP_VERSION_CONSUMABLE_ITEMS:
         case BATTLE_APP_VERSION_END_TURN_ITEMS:
         case BATTLE_APP_VERSION_ITEMS:
@@ -353,6 +354,9 @@ static void log_entry(const char *side, const BattleEntry *e) {
                 SYS_Report("PH12   item id=%u record%u modifier stage=%02x percent=%u pred=%02x:%02x,%02x:%02x\n",
                            it->source, i, x->mod.stage, x->mod.percent, x->mod.pred[0].kind, x->mod.pred[0].arg,
                            x->mod.pred[1].kind, x->mod.pred[1].arg);
+            else if (x->kind == BITEM_HP && x->hp.op == BIHP_HEAL_DEALT)  // V21: Shell Bell
+                SYS_Report("PH12   item id=%u record%u hp timing=%u heal dealt 1/%u\n", it->source, i, x->hp.timing,
+                           x->hp.divisor);
             else if (x->kind == BITEM_HP && x->hp.op == BIHP_HEAL_FIXED)  // V19
                 SYS_Report("PH12   item id=%u record%u hp timing=%u heal %u HP pred=%02x:%02x flags=%02x\n", it->source,
                            i, x->hp.timing, x->hp.divisor, x->hp.pred.kind, x->hp.pred.arg, x->flags);

@@ -9896,22 +9896,20 @@ static void test_c1a_lost(void) {
            one, five, sub, three);
 }
 
-// ---------------------------------------------------------------- M4-B1c-1a: Shell Bell (failing first)
+// ---------------------------------------------------------------- M4-B1c-1a/1b: Shell Bell
 //
-// The cases of docs/shell-bell.md 8 for the proposed request V21 (Shell Bell:
-// BITEM_HP at BITIME_AFTER_MOVE with the operation BIHP_HEAL_DEALT: the HP the
-// move took / divisor, at least 1). Built only by tools/shell-bell-tests.sh
-// (-DGC_TEST_SHELL_BELL). Until the core implements V21 every V21 case is
-// refused at its start; the old-version refusals already hold.
-#ifdef GC_TEST_SHELL_BELL
-#ifdef BATTLE_REQUEST_VERSION_AFTER_MOVE_HEAL
+// The cases of docs/shell-bell.md 8 for request V21 (Shell Bell: BITEM_HP at
+// BITIME_AFTER_MOVE with the operation BIHP_HEAL_DEALT: the HP the move took /
+// divisor, at least 1), written failing first in M4-B1c-1a and kept as they
+// were. Since M4-B1c-1b they run in the default suite; tools/shell-bell-tests.sh
+// (-DGC_TEST_SHELL_BELL) runs only these. A case refused at its start is
+// counted apart from the effect checks, and a case that starts must reach at
+// least one effect check.
 #define SB_V21 BATTLE_REQUEST_VERSION_AFTER_MOVE_HEAL
 #define SB_HEAL_DEALT BIHP_HEAL_DEALT
-#else
-#define SB_V21 21          // proposed request/APP V21 (docs/shell-bell.md 7)
-#define SB_HEAL_DEALT 4    // proposed BIHP_HEAL_DEALT (BIHP_COUNT today)
-#endif
-static unsigned sb_cases, sb_started, sb_checks, sb_failed, sb_refusals, sb_refusals_held;
+static unsigned sb_cases, sb_started, sb_start_failed, sb_checks, sb_failed, sb_refusals, sb_refusals_held;
+static unsigned sb_unchecked, sb_mark;
+static bool sb_open;
 #define SB_CHECK(name, cond)                                                    \
     do {                                                                        \
         ++sb_checks;                                                            \
@@ -9931,18 +9929,30 @@ static BattleItem sb_shell_bell(void) {
 }
 static unsigned sb_heal_for(unsigned lost) { return lost / 8 ? lost / 8 : 1; }
 
+// The previous case is closed: one that started and reached no effect check counts as a failure.
+static void sb_close(void) {
+    if (sb_open && sb_checks == sb_mark) {
+        ++sb_unchecked;
+        printf("  sb FAIL case %u started but reached no effect check\n", sb_cases);
+    }
+    sb_open = false;
+}
 static bool sb_start(V20Run *run, const BattleRequest *r) {
     static BattleRequest d;
     static uint8_t bytes[8192];
+    sb_close();
     ++sb_cases;
     run->started = false;
     const uint32_t n = battle_request_encode(r, bytes, sizeof bytes);
     if (!n || !battle_request_decode(bytes, n, &d) || battle_init(&run->b, &d, 1) != BI_OK) {
-        SB_CHECK("the request starts", false);
+        ++sb_start_failed;
+        printf("  sb FAIL case %u: the request does not start\n", sb_cases);
         return false;
     }
     battle_begin(&run->b, &run->log);
     ++sb_started;
+    sb_open = true;
+    sb_mark = sb_checks;
     return run->started = true;
 }
 // Single V21: the holder (Speed 100) uses `m` on a foe with `foe_hp` of 999 (Speed 30).
@@ -10139,11 +10149,479 @@ static int test_v21_shell_bell(void) {
         if (!battle_request_encode(&r, bytes, sizeof bytes)) ++sb_refusals_held;
         if (battle_init(&b, &r, 1) != BI_OK) ++sb_refusals_held;
     }
-    printf("shell bell (V%u proposed): %u cases, %u started, %u checks reached, %u failed; refusals %u of %u hold\n",
-           (unsigned)SB_V21, sb_cases, sb_started, sb_checks, sb_failed, sb_refusals_held, sb_refusals);
-    return (int)sb_failed + (int)(sb_refusals - sb_refusals_held);
+    sb_close();
+    printf("shell bell (V%u): %u cases, %u started (%u refused at the start), %u effect checks, %u failed, "
+           "%u started without a check; refusals %u of %u hold\n",
+           (unsigned)SB_V21, sb_cases, sb_started, sb_start_failed, sb_checks, sb_failed, sb_unchecked,
+           sb_refusals_held, sb_refusals);
+    return (int)(sb_failed + sb_start_failed + sb_unchecked) + (int)(sb_refusals - sb_refusals_held);
 }
-#endif
+
+// ---------------------------------------------------------------- M4-B1c-1b: V21 beyond the first cases
+//
+// The wire and the rules, every amount from 1 to 100 HP taken, the HP cap,
+// the moves that take nothing, the move paths and the four formats, and V20's
+// Life Orb unchanged in a V21 request (docs/shell-bell.md 11).
+static void v21_go(V20Run *run, const BattleRequest *r) {
+    static BattleRequest d;
+    static uint8_t bytes[8192];
+    const uint32_t n = battle_request_encode(r, bytes, sizeof bytes);
+    assert(n && battle_request_decode(bytes, n, &d) && d.version == r->version);
+    assert(battle_init(&run->b, &d, 1) == BI_OK);
+    battle_begin(&run->b, &run->log);
+}
+static unsigned v21_count(const EventLog *log, EventKind kind, uint8_t side, uint8_t slot) {
+    unsigned n = 0;
+    for (unsigned i = 0; i < log->count; ++i)
+        n += log->events[i].kind == kind && log->events[i].target.side == side && log->events[i].target.slot == slot;
+    return n;
+}
+static const BattleEvent *v21_heal_at(const EventLog *log, uint8_t side, uint8_t slot) {
+    for (unsigned i = 0; i < log->count; ++i)
+        if (log->events[i].kind == EV_ITEM_HEAL && log->events[i].target.side == side &&
+            log->events[i].target.slot == slot)
+            return &log->events[i];
+    return NULL;
+}
+static unsigned v21_side_lost(const Battle *b, uint8_t side, uint16_t before) {
+    unsigned lost = 0;
+    for (uint8_t i = 0; i < b->sides[side].count; ++i) lost += before - b->sides[side].battlers[i].hp;
+    return lost;
+}
+static bool v21_same_event(const BattleEvent *a, const BattleEvent *b) {
+    return a->kind == b->kind && a->user.side == b->user.side && a->user.slot == b->user.slot &&
+           a->target.side == b->target.side && a->target.slot == b->target.slot && a->move_id == b->move_id &&
+           a->amount == b->amount && a->hp_after == b->hp_after && a->effectiveness == b->effectiveness &&
+           a->outcome == b->outcome && a->rotation == b->rotation && a->battler == b->battler &&
+           a->condition == b->condition && a->stat == b->stat && a->stage == b->stage && a->item == b->item;
+}
+
+static void test_v21_wire(void) {
+    static BattleRequest r, d;
+    static Battle b;
+    static uint8_t bytes[8192], v20_bytes[8192];
+    const uint8_t v20 = BATTLE_REQUEST_VERSION_MOVE_ITEMS, v21 = BATTLE_REQUEST_VERSION_AFTER_MOVE_HEAL;
+    const BattleItem bell = sb_shell_bell(), orb = v20_life_orb();
+    assert(v21 == 21 && BATTLE_APP_VERSION_AFTER_MOVE_HEAL == 21 && BATTLE_REQUEST_VERSION_LATEST == v21);
+    assert(BIHP_HEAL_DEALT == 4 && BIHP_COUNT == 5);
+    for (uint8_t v = BATTLE_REQUEST_VERSION_ITEMS; v <= v21; ++v) {
+        assert(battle_item_valid(&bell, 253, R_COUNT, v) == (v == v21));   // V21 only
+        assert(battle_item_valid(&orb, 270, R_COUNT, v) == (v >= v20));    // Life Orb from V20, still in V21
+    }
+#define V21_ITEM(edit, ok)                                                                     \
+    do {                                                                                       \
+        BattleItem x = bell;                                                                   \
+        edit;                                                                                  \
+        assert(battle_item_valid(&x, 253, R_COUNT, v21) == (ok));                              \
+    } while (0)
+    V21_ITEM(x.records[0].hp.divisor = 0, false);
+    V21_ITEM(x.records[0].hp.divisor = 1, false);
+    V21_ITEM(x.records[0].hp.divisor = 2, true);
+    V21_ITEM(x.records[0].hp.divisor = 255, true);
+    V21_ITEM(x.records[0].hp.reserved = 1, false);
+    V21_ITEM((x.records[0].hp.pred = (BattlePredicate){BPRED_NONE, 1}), false);
+    V21_ITEM((x.records[0].hp.pred = (BattlePredicate){BPRED_HAS_TYPE, R_FIRE}), false);
+    V21_ITEM((x.records[0].hp.pred = (BattlePredicate){BPRED_HP_AT_MOST, 2}), false);
+    V21_ITEM(x.records[0].flags = BIREC_CONSUMED, false);
+    V21_ITEM(x.records[0].flags = 2, false);
+    for (uint8_t t = 0; t <= BITIME_COUNT; ++t) V21_ITEM(x.records[0].hp.timing = t, t == BITIME_AFTER_MOVE);
+    for (uint8_t op = 0; op <= BIHP_COUNT; ++op) V21_ITEM(x.records[0].hp.op = op, op == BIHP_HEAL_DEALT || op == BIHP_DAMAGE);
+    V21_ITEM((x.count = 2, x.records[1] = x.records[0]), false);       // two after-move records
+    V21_ITEM((x.count = 2, x.records[1] = orb.records[1]), false);     // Shell Bell's and Life Orb's
+    V21_ITEM((x.count = 2, x.records[1] = orb.records[0]), true);      // with a modifier: one after-move record
+    V21_ITEM(x.source = 254, false);                                   // the block names the held item
+    V21_ITEM((x.cls = BICLASS_UNSUPPORTED, x.count = 0), true);        // what a V20 exporter sends
+    V21_ITEM((x.cls = BICLASS_NONE, x.count = 0), true);
+    // A V21 request (Shell Bell, Life Orb on the foe) round-trips; its item block is the documented bytes.
+    sb_single(&r, 400, 100, v19_hit(120), 999);
+    hold(&r.opponent[0], orb);
+    const uint32_t n = battle_request_encode(&r, bytes, sizeof bytes);
+    assert(n && bytes[0] == v21 && n == battle_request_size(&r) && n <= BATTLE_REQUEST_MAX_BYTES(6, 21));
+    assert(battle_request_decode(bytes, n, &d) && d.version == v21);
+    for (unsigned side = 0; side < 2; ++side) {
+        const BattleItem *a = side ? &r.opponent[0].mon.item : &r.player[0].mon.item;
+        const BattleItem *x = side ? &d.opponent[0].mon.item : &d.player[0].mon.item;
+        assert(a->cls == x->cls && a->count == x->count && a->source == x->source);
+        for (unsigned i = 0; i < a->count; ++i) assert(!memcmp(&a->records[i], &x->records[i], sizeof a->records[i]));
+    }
+    static const uint8_t record[BATTLE_ITEM_RECORD_BYTES] = {BITEM_HP, BITIME_AFTER_MOVE, BIHP_HEAL_DEALT, 8, 0, 0, 0, 0};
+    unsigned found = 0;
+    for (uint32_t i = BATTLE_ITEM_HEADER_BYTES; i + sizeof record <= n; ++i)
+        if (!memcmp(bytes + i, record, sizeof record) && bytes[i - 4] == BICLASS_RECORDS && bytes[i - 3] == 1) ++found;
+    assert(found == 1);
+    // Relabelled V20 the bytes are malformed; there is no V22.
+    bytes[0] = v20;
+    assert(!battle_request_decode(bytes, n, &d));
+    bytes[0] = v21 + 1;
+    assert(!battle_request_decode(bytes, n, &d));
+    bytes[0] = v21;
+    assert(battle_request_decode(bytes, n, &d));
+    // Never encoded for a V20 peer, nor run from memory as V20; V22 is not a version.
+    r.version = v20;
+    assert(!battle_request_encode(&r, bytes, sizeof bytes) && battle_init(&b, &r, 1) == BI_CONDITIONS);
+    r.version = v21 + 1;
+    assert(!battle_request_encode(&r, bytes, sizeof bytes) && battle_init(&b, &r, 1) != BI_OK);
+    // Built in memory as V21 with a bad record: battle_init refuses it as the decoder does.
+    r.version = v21;
+    r.player[0].mon.item.records[0].hp.divisor = 1;
+    assert(battle_init(&b, &r, 1) == BI_CONDITIONS && !battle_request_encode(&r, bytes, sizeof bytes));
+    // Without Shell Bell a V20 request relabelled V21 has the same bytes but the version byte.
+    v20_single(&r, 300, 300, v19_hit(40), wait_move());
+    const uint32_t n20 = battle_request_encode(&r, v20_bytes, sizeof v20_bytes);
+    r.version = v21;
+    const uint32_t n21 = battle_request_encode(&r, bytes, sizeof bytes);
+    assert(n20 && n20 == n21 && v20_bytes[0] == v20 && bytes[0] == v21 && !memcmp(v20_bytes + 1, bytes + 1, n20 - 1));
+    assert(BATTLE_REQUEST_MAX_BYTES(6, 21) == 3165);  // the layout is V20's
+    printf("v21 wire: Shell Bell V21 only, Life Orb kept, edges, the record bytes, V20 and V22 refused, "
+           "init check, request %u B (max 3165)\n", (unsigned)n);
+#undef V21_ITEM
+}
+
+// Items off (RULE_IGNORE_ITEMS): no heal, the notice; strict refuses normalising
+// and runs Shell Bell in full; before V21 the exporter's UNSUPPORTED block.
+static void test_v21_rules(void) {
+    static BattleRequest r;
+    static V20Run run;
+    const Action single[] = {move(0, 0, 0), move(1, 0, 0)};
+    sb_single(&r, 400, 100, v19_hit(120), 999);
+    r.rules |= RULE_IGNORE_ITEMS;
+    v21_go(&run, &r);
+    battle_run_turn(&run.b, single, 2, &run.log);
+    assert(!sb_heal(&run.log) && battle_active(&run.b, 0)->hp == 100 && battle_items_normalized(&run.b));
+    r.rules |= RULE_STRICT_ITEMS;
+    assert(battle_init(&run.b, &r, 1) == BI_ITEMS_NORMALIZED);
+    r.rules &= (uint16_t)~RULE_IGNORE_ITEMS;
+    v21_go(&run, &r);
+    battle_run_turn(&run.b, single, 2, &run.log);
+    assert(sb_heal(&run.log) && battle_active(&run.b, 0)->hp > 100);
+    for (uint8_t v = BATTLE_REQUEST_VERSION_CONSUMABLE_ITEMS; v <= BATTLE_REQUEST_VERSION_AFTER_MOVE_HEAL; ++v) {
+        sb_single(&r, 400, 100, v19_hit(120), 999);
+        r.version = v;
+        r.player[0].mon.item = (BattleItem){.cls = BICLASS_UNSUPPORTED, .source = 253};
+        assert(battle_init(&run.b, &r, 1) == BI_UNSUPPORTED_ITEM);
+        r.rules |= RULE_IGNORE_ITEMS;
+        assert(battle_init(&run.b, &r, 1) == BI_OK);
+    }
+    printf("v21 rules: items off, strict, UNSUPPORTED before V21\n");
+}
+
+static void test_v21_amounts(void) {
+    static BattleRequest r;
+    static V20Run run;
+    const Action single[] = {move(0, 0, 0), move(1, 0, 0)};
+    // Every amount from 1 to 100 HP taken: a foe with that HP, knocked out by one hit.
+    unsigned table[101] = {0};
+    for (unsigned k = 1; k <= 100; ++k) {
+        sb_single(&r, 400, 100, v19_hit(300), (uint16_t)k);
+        v21_go(&run, &r);
+        battle_run_turn(&run.b, single, 2, &run.log);
+        const BattleEvent *heal = sb_heal(&run.log);
+        assert(run.b.sides[1].battlers[0].fainted && find(&run.log, EV_DAMAGE)->amount > k);
+        assert(heal && heal->amount == (k / 8 ? k / 8 : 1) && heal->hp_after == 100 + heal->amount &&
+               heal->item == 253 && v21_count(&run.log, EV_ITEM_HEAL, 0, 0) == 1);
+        assert(v20_index(&run.log, heal) < v20_index(&run.log, find(&run.log, EV_END)));  // before the battle ends
+        assert(!find(&run.log, EV_ITEM_CONSUMED) && battle_held_item(battle_active(&run.b, 0)) == 253);
+        table[k] = heal->amount;
+    }
+    // The foe stands: the HP it lost is the damage.
+    for (uint16_t power = 20; power <= 160; power *= 2) {
+        sb_single(&r, 400, 100, v19_hit(power), 999);
+        v21_go(&run, &r);
+        battle_run_turn(&run.b, single, 2, &run.log);
+        const unsigned lost = sb_foe_lost(&run, 0, 999);
+        assert(lost == find(&run.log, EV_DAMAGE)->amount && sb_heal(&run.log)->amount == sb_heal_for(lost));
+    }
+    // The cap: 100 HP taken heals 12, never past the max HP; nothing at full HP.
+    static const struct { uint16_t hp, heal; } cap[] = {{400, 0}, {399, 1}, {395, 5}, {388, 12}, {387, 12}};
+    for (unsigned i = 0; i < sizeof cap / sizeof cap[0]; ++i) {
+        sb_single(&r, 400, cap[i].hp, v19_hit(300), 100);
+        v21_go(&run, &r);
+        battle_run_turn(&run.b, single, 2, &run.log);
+        const BattleEvent *heal = sb_heal(&run.log);
+        if (!cap[i].heal) assert(!heal && battle_active(&run.b, 0)->hp == 400);
+        else assert(heal && heal->amount == cap[i].heal && heal->hp_after == cap[i].hp + cap[i].heal &&
+                    battle_active(&run.b, 0)->hp == heal->hp_after);
+    }
+    printf("v21 amounts: 1..100 HP taken (1:%u 7:%u 8:%u 9:%u 15:%u 16:%u 17:%u 50:%u 100:%u), the damage when the "
+           "foe stands, cap 400/399/395/388/387 -> 0/1/5/12/12, not used up\n",
+           table[1], table[7], table[8], table[9], table[15], table[16], table[17], table[50], table[100]);
+}
+
+static void test_v21_paths(void) {
+    static BattleRequest r;
+    static V20Run run;
+    const Action single[] = {move(0, 0, 0), move(1, 0, 0)};
+    BattleMove guard = status_move(BTARGET_SELF, 0);
+    guard.priority = 4;
+    push(&guard, fx(BEFF_PROTECT, BWHO_USER, 0, 3, 0, 0));
+    // Nothing taken, nothing healed: a miss (the foe in the air), an immune foe, Protect, a status move.
+    sb_single(&r, 400, 100, v19_hit(120), 999);
+    v21_go(&run, &r);
+    battle_active(&run.b, 1)->vol.semi_invulnerable = BSEMI_AIR;
+    battle_run_turn(&run.b, single, 2, &run.log);
+    assert(find(&run.log, EV_MISS) && !sb_heal(&run.log) && battle_active(&run.b, 1)->hp == 999);
+    sb_single(&r, 400, 100, v19_hit(120), 999);
+    r.opponent[0].mon.types[0] = r.opponent[0].mon.types[1] = R_GHOST;
+    r.type_chart[R_NORMAL * r.type_count + R_GHOST] = 0;
+    v21_go(&run, &r);
+    battle_run_turn(&run.b, single, 2, &run.log);
+    assert(find(&run.log, EV_NO_EFFECT) && !sb_heal(&run.log));
+    sb_single(&r, 400, 100, v19_hit(120), 999);
+    v19_mon(&r.opponent[0], 999, 999, 30, (BattleItem){0}, guard);
+    v21_go(&run, &r);
+    battle_run_turn(&run.b, single, 2, &run.log);
+    assert(find(&run.log, EV_PROTECTED) && !sb_heal(&run.log));
+    sb_single(&r, 400, 100, v19_status(BST_PARALYSIS), 999);
+    v21_go(&run, &r);
+    battle_run_turn(&run.b, single, 2, &run.log);
+    assert(find(&run.log, EV_STATUS) && !sb_heal(&run.log));
+    // A charging move: nothing on the first turn, the heal when it strikes.
+    sb_single(&r, 400, 100, charge_move(90, BSEMI_AIR), 999);
+    v21_go(&run, &r);
+    battle_run_turn(&run.b, single, 2, &run.log);
+    assert(find(&run.log, EV_CHARGE) && !sb_heal(&run.log));
+    battle_run_turn(&run.b, single, 2, &run.log);
+    assert(sb_heal(&run.log) && sb_heal(&run.log)->amount == sb_heal_for(sb_foe_lost(&run, 0, 999)));
+    // Only the holder's own move: not the foe's hit on it, not its partner's move.
+    sb_single(&r, 400, 100, wait_move(), 999);
+    v19_mon(&r.opponent[0], 999, 999, 30, (BattleItem){0}, v19_hit(60));
+    v21_go(&run, &r);
+    battle_run_turn(&run.b, single, 2, &run.log);
+    assert(v21_count(&run.log, EV_DAMAGE, 0, 0) == 1 && !sb_heal(&run.log));
+    make_consumable(&r, BATTLE_FORMAT_DOUBLE);
+    r.version = SB_V21;
+    v19_mon(&r.player[0], 400, 100, 100, (BattleItem){0}, v19_hit(120));
+    v19_mon(&r.player[1], 400, 100, 20, sb_shell_bell(), wait_move());
+    v19_mon(&r.opponent[0], 999, 999, 30, (BattleItem){0}, wait_move());
+    v19_mon(&r.opponent[1], 999, 999, 25, (BattleItem){0}, wait_move());
+    v21_go(&run, &r);
+    battle_run_turn(&run.b, (Action[]){move(0, 0, 0), v19_wait(0, 1), v19_wait(1, 0), v19_wait(1, 1)}, 4, &run.log);
+    assert(find(&run.log, EV_DAMAGE) && !sb_heal(&run.log));
+    // Each move by itself: two turns, two heals of each turn's HP.
+    sb_single(&r, 400, 100, v19_hit(120), 999);
+    v21_go(&run, &r);
+    battle_run_turn(&run.b, single, 2, &run.log);
+    const uint16_t after1 = battle_active(&run.b, 1)->hp, hp1 = battle_active(&run.b, 0)->hp;
+    assert(sb_heal(&run.log)->amount == sb_heal_for(999u - after1));
+    battle_run_turn(&run.b, single, 2, &run.log);
+    assert(sb_heal(&run.log)->amount == sb_heal_for((unsigned)(after1 - battle_active(&run.b, 1)->hp)) &&
+           battle_active(&run.b, 0)->hp == hp1 + sb_heal(&run.log)->amount);
+    // A multi-hit move knocking the foe out at a middle hit: what it had (50 -> 6), one heal.
+    sb_single(&r, 400, 100, v19_multi(40, 5), 50);
+    v21_go(&run, &r);
+    battle_run_turn(&run.b, single, 2, &run.log);
+    assert(event_count(&run.log, EV_DAMAGE) < 5 && v21_count(&run.log, EV_ITEM_HEAL, 0, 0) == 1 &&
+           sb_heal(&run.log)->amount == 6);
+    // A substitute that takes one hit: its 10 HP, not the damage (1); the foe keeps its HP.
+    sb_single(&r, 400, 100, v19_hit(120), 999);
+    v21_go(&run, &r);
+    battle_active(&run.b, 1)->vol.substitute_hp = 10;
+    battle_run_turn(&run.b, single, 2, &run.log);
+    assert(find(&run.log, EV_SUBSTITUTE_BREAK) && sb_heal(&run.log)->amount == 1 && battle_active(&run.b, 1)->hp == 999);
+    // The foe's Focus Sash: it keeps 1 HP, so the move took 59 (7).
+    sb_single(&r, 400, 100, v19_hit(300), 60);
+    v19_mon(&r.opponent[0], 60, 60, 30, I_SASH, wait_move());
+    v21_go(&run, &r);
+    battle_run_turn(&run.b, single, 2, &run.log);
+    assert(find(&run.log, EV_ITEM_ENDURE) && battle_active(&run.b, 1)->hp == 1 && sb_heal(&run.log)->amount == 7 &&
+           v20_index(&run.log, find(&run.log, EV_ITEM_ENDURE)) < v20_index(&run.log, sb_heal(&run.log)));
+    // A hit that lands but takes no HP (the foe's Focus Sash at 1 max HP): no heal
+    // (MoveContext.lost 0), while Life Orb still costs its HP (MoveContext.landed).
+    sb_single(&r, 400, 100, v19_hit(120), 1);
+    v19_mon(&r.opponent[0], 1, 1, 30, I_SASH, wait_move());
+    v21_go(&run, &r);
+    battle_run_turn(&run.b, single, 2, &run.log);
+    assert(find(&run.log, EV_ITEM_ENDURE) && battle_active(&run.b, 1)->hp == 1 && !sb_heal(&run.log) &&
+           battle_active(&run.b, 0)->hp == 100);
+    v20_single(&r, 300, 300, v19_hit(120), wait_move());
+    r.version = SB_V21;
+    v19_mon(&r.opponent[0], 1, 1, 30, I_SASH, wait_move());
+    v21_go(&run, &r);
+    battle_run_turn(&run.b, single, 2, &run.log);
+    assert(find(&run.log, EV_ITEM_ENDURE) && battle_active(&run.b, 1)->hp == 1 && find(&run.log, EV_ITEM_DAMAGE) &&
+           battle_active(&run.b, 0)->hp == 270);
+    // Struggle's recoil knocking the holder out (max HP / 4 = 100): no heal.
+    sb_single(&r, 400, 100, v19_hit(40), 999);
+    add_reserve(&r, 0);
+    v21_go(&run, &r);
+    for (unsigned i = 0; i < 4; ++i) battle_active(&run.b, 0)->pp[i] = 0;
+    battle_run_turn(&run.b, (Action[]){{.kind = ACT_STRUGGLE, .user = {0, 0}}, move(1, 0, 0)}, 2, &run.log);
+    assert(find(&run.log, EV_RECOIL) && find(&run.log, EV_RECOIL)->amount == 100 && !sb_heal(&run.log) &&
+           run.b.sides[0].battlers[0].fainted);
+    // Moxie (a foe knocked out, a reserve left) before the heal.
+    sb_single(&r, 400, 100, v19_hit(120), 1);
+    give(&r.player[0], MOXIE);
+    add_reserve(&r, 1);
+    v21_go(&run, &r);
+    battle_run_turn(&run.b, single, 2, &run.log);
+    {
+        const BattleEvent *stage = find(&run.log, EV_STAGE), *heal = sb_heal(&run.log);
+        assert(stage && heal && heal->amount == 1 && v20_index(&run.log, stage) < v20_index(&run.log, heal));
+    }
+    printf("v21 paths: miss, immune, Protect, status move, charge turn, the foe's and the partner's moves, per move, "
+           "multi-hit knock-out, substitute, Focus Sash, a hit that takes no HP (no heal, Life Orb loses), Struggle recoil knock-out, Moxie first\n");
+}
+
+// Double and Triple spreads (Protect, knock-outs, a substitute), the four
+// formats, and two holders (Life Orb, Shell Bell) in one turn.
+static void test_v21_formats(void) {
+    static BattleRequest r;
+    static V20Run run;
+    BattleMove guard = status_move(BTARGET_SELF, 0);
+    guard.priority = 4;
+    push(&guard, fx(BEFF_PROTECT, BWHO_USER, 0, 3, 0, 0));
+    const Action dbl_guard[] = {move(0, 0, 0), v19_wait(0, 1), move(1, 0, 0), v19_wait(1, 1)};
+    const Action dbl[] = {move(0, 0, 0), v19_wait(0, 1), v19_wait(1, 0), v19_wait(1, 1)};
+    // Double: one foe protected; both foes knocked out (9 + 14 = 23 -> 2); a substitute (39) and a knock-out (11).
+    for (unsigned k = 0; k < 3; ++k) {
+        make_consumable(&r, BATTLE_FORMAT_DOUBLE);
+        r.version = SB_V21;
+        v19_mon(&r.player[0], 400, 100, 100, sb_shell_bell(), v19_spread(k ? 200 : 60));
+        v19_mon(&r.player[1], 400, 400, 20, (BattleItem){0}, wait_move());
+        v19_mon(&r.opponent[0], 999, k == 1 ? 9 : 999, 30, (BattleItem){0}, k ? wait_move() : guard);
+        v19_mon(&r.opponent[1], 999, k ? (k == 1 ? 14 : 11) : 999, 25, (BattleItem){0}, wait_move());
+        v21_go(&run, &r);
+        if (k == 2) battle_active(&run.b, 1)->vol.substitute_hp = 39;
+        battle_run_turn(&run.b, k ? dbl : dbl_guard, 4, &run.log);
+        const BattleEvent *heal = sb_heal(&run.log);
+        if (!k) assert(find(&run.log, EV_PROTECTED) && run.b.sides[1].battlers[0].hp == 999 &&
+                       heal->amount == sb_heal_for(999u - run.b.sides[1].battlers[1].hp));
+        else if (k == 1) assert(run.b.sides[1].battlers[0].fainted && run.b.sides[1].battlers[1].fainted &&
+                                heal->amount == 2);
+        else assert(find(&run.log, EV_SUBSTITUTE_BREAK) && run.b.sides[1].battlers[1].fainted &&
+                    run.b.sides[1].battlers[0].hp == 999 && heal->amount == 6);
+        assert(v21_count(&run.log, EV_ITEM_HEAL, 0, 0) == 1);
+    }
+    // Triple: the centre holder's spread move over the three foes, one heal of the sum.
+    make_consumable(&r, BATTLE_FORMAT_TRIPLE);
+    r.version = SB_V21;
+    for (unsigned i = 0; i < 3; ++i) {
+        v19_mon(&r.player[i], 400, 400, 20, (BattleItem){0}, wait_move());
+        v19_mon(&r.opponent[i], 999, 999, 10, (BattleItem){0}, wait_move());
+    }
+    v19_mon(&r.player[1], 400, 100, 100, sb_shell_bell(), v19_spread(60));
+    v21_go(&run, &r);
+    {
+        Action a[6];
+        unsigned n = 0;
+        for (uint8_t side = 0; side < 2; ++side)
+            for (uint8_t slot = 0; slot < 3; ++slot) a[n++] = v19_wait(side, slot);
+        a[1] = move(0, 1, 1);
+        battle_run_turn(&run.b, a, n, &run.log);
+        const unsigned lost = v21_side_lost(&run.b, 1, 999);
+        assert(event_count(&run.log, EV_DAMAGE) == 3 && v21_count(&run.log, EV_ITEM_HEAL, 0, 1) == 1 &&
+               v21_heal_at(&run.log, 0, 1)->amount == sb_heal_for(lost) && event_count(&run.log, EV_ITEM_HEAL) == 1);
+    }
+    // The four formats: the lead hits the foe's lead once, one heal at the lead.
+    for (uint8_t format = BATTLE_FORMAT_SINGLE; format <= BATTLE_FORMAT_ROTATION; ++format) {
+        const unsigned per = format == BATTLE_FORMAT_SINGLE ? 1 : format == BATTLE_FORMAT_DOUBLE ? 2 : 3;
+        const uint8_t lead = format == BATTLE_FORMAT_ROTATION ? BPOS_CENTER : 0;
+        make_consumable(&r, format);
+        r.version = SB_V21;
+        for (unsigned i = 0; i < per; ++i) {
+            v19_mon(&r.player[i], 400, 400, 20, (BattleItem){0}, wait_move());
+            v19_mon(&r.opponent[i], 999, 999, 10, (BattleItem){0}, wait_move());
+        }
+        v19_mon(&r.player[0], 400, 100, 100, sb_shell_bell(), v19_hit(120));
+        v21_go(&run, &r);
+        Action a[6];
+        unsigned n = 0;
+        for (uint8_t side = 0; side < 2; ++side)
+            for (uint8_t slot = 0; slot < (format == BATTLE_FORMAT_ROTATION ? 1 : per); ++slot)
+                a[n++] = v19_wait(side, format == BATTLE_FORMAT_ROTATION ? lead : slot);
+        a[0] = move(0, lead, lead);
+        battle_run_turn(&run.b, a, n, &run.log);
+        const Battler *user = battle_at(&run.b, (Position){0, lead});
+        const BattleEvent *heal = v21_heal_at(&run.log, 0, lead);
+        assert(event_count(&run.log, EV_ITEM_HEAL) == 1 && heal &&
+               heal->amount == sb_heal_for(999u - battle_at(&run.b, (Position){1, lead})->hp) && user->hp == heal->hp_after);
+    }
+    // Two holders in one turn: the Life Orb holder loses, the Shell Bell holder heals, each after its own move.
+    make_consumable(&r, BATTLE_FORMAT_DOUBLE);
+    r.version = SB_V21;
+    v19_mon(&r.player[0], 300, 300, 100, v20_life_orb(), v19_hit(60));
+    v19_mon(&r.player[1], 400, 100, 90, sb_shell_bell(), v19_hit(60));
+    v19_mon(&r.opponent[0], 999, 999, 30, (BattleItem){0}, wait_move());
+    v19_mon(&r.opponent[1], 999, 999, 25, (BattleItem){0}, wait_move());
+    v21_go(&run, &r);
+    battle_run_turn(&run.b, (Action[]){move(0, 0, 0), move(0, 1, 1), v19_wait(1, 0), v19_wait(1, 1)}, 4, &run.log);
+    {
+        const BattleEvent *loss = find(&run.log, EV_ITEM_DAMAGE), *heal = v21_heal_at(&run.log, 0, 1);
+        assert(loss && loss->target.slot == 0 && battle_active(&run.b, 0)->hp == 270 && heal &&
+               heal->amount == sb_heal_for(999u - run.b.sides[1].battlers[1].hp) && !v21_heal_at(&run.log, 0, 0) &&
+               v21_count(&run.log, EV_ITEM_DAMAGE, 0, 1) == 0 && v20_index(&run.log, loss) < v20_index(&run.log, heal));
+    }
+    printf("v21 formats: Double Protect / double knock-out 23 -> 2 / substitute 39 + 11 -> 6, Triple spread, "
+           "four formats, Life Orb and Shell Bell holders in one turn\n");
+}
+
+// V20's Life Orb in a V21 request: the same events, HP and RNG, turn by turn
+// (each run has its own decoded request; the log holds one turn).
+static bool v21_same_log(const V20Run *x, const V20Run *y) {
+    bool same = x->log.count == y->log.count && x->b.rng == y->b.rng && x->b.turn == y->b.turn &&
+                x->b.outcome == y->b.outcome;
+    for (unsigned i = 0; same && i < x->log.count; ++i) same = v21_same_event(&x->log.events[i], &y->log.events[i]);
+    for (unsigned side = 0; same && side < 2; ++side)
+        for (unsigned i = 0; same && i < x->b.sides[side].count; ++i)
+            same = x->b.sides[side].battlers[i].hp == y->b.sides[side].battlers[i].hp;
+    return same;
+}
+static void v21_same(BattleRequest *r, const Action *a, unsigned n, unsigned turns, bool struggle, const char *what) {
+    static V20Run x, y;
+    static BattleRequest dx, dy;
+    static uint8_t bytes[8192];
+    V20Run *runs[2] = {&x, &y};
+    BattleRequest *decoded[2] = {&dx, &dy};
+    unsigned losses = 0;
+    for (unsigned k = 0; k < 2; ++k) {
+        r->version = k ? BATTLE_REQUEST_VERSION_AFTER_MOVE_HEAL : BATTLE_REQUEST_VERSION_MOVE_ITEMS;
+        const uint32_t len = battle_request_encode(r, bytes, sizeof bytes);
+        assert(len && battle_request_decode(bytes, len, decoded[k]) && battle_init(&runs[k]->b, decoded[k], 1) == BI_OK);
+        battle_begin(&runs[k]->b, &runs[k]->log);
+        if (struggle)
+            for (unsigned i = 0; i < 4; ++i) battle_active(&runs[k]->b, 0)->pp[i] = 0;
+    }
+    bool same = v21_same_log(&x, &y);
+    for (unsigned t = 0; same && t < turns && x.b.outcome == OUTCOME_NONE; ++t) {
+        battle_run_turn(&x.b, a, n, &x.log);
+        battle_run_turn(&y.b, a, n, &y.log);
+        same = v21_same_log(&x, &y);
+        losses += event_count(&y.log, EV_ITEM_DAMAGE);
+    }
+    if (!same) printf("  v21 Life Orb differs from V20: %s\n", what);
+    assert(same && losses >= 1);
+}
+static void test_v21_life_orb(void) {
+    static BattleRequest r;
+    const Action single[] = {move(0, 0, 0), move(1, 0, 0)};
+    const Action dbl[] = {move(0, 0, 0), v19_wait(0, 1), v19_wait(1, 0), v19_wait(1, 1)};
+    const Action struggle[] = {{.kind = ACT_STRUGGLE, .user = {0, 0}}, move(1, 0, 0)};
+    unsigned paths = 0;
+    v20_single(&r, 300, 300, v19_hit(40), wait_move());
+    v21_same(&r, single, 2, 1, false, "one hit"), ++paths;
+    v20_single(&r, 300, 300, v19_multi(40, 5), wait_move());
+    v21_same(&r, single, 2, 1, false, "multi-hit"), ++paths;
+    v20_single(&r, 300, 300, v19_hit(40), wait_move());
+    v21_same(&r, struggle, 2, 1, true, "Struggle"), ++paths;
+    BattleMove uturn = v19_hit(40);
+    push(&uturn, fx(BEFF_PIVOT, BWHO_TARGET, 0, 0, 0, 0));
+    v20_single(&r, 200, 200, uturn, wait_move());
+    add_reserve(&r, 0);
+    v21_same(&r, single, 2, 1, false, "pivot"), ++paths;
+    v20_single(&r, 300, 300, v19_hit(40), wait_move());
+    hold(&r.opponent[0], I_SITRUS);
+    r.opponent[0].record.hp = 500;
+    v21_same(&r, single, 2, 3, false, "the foe's Sitrus Berry"), ++paths;
+    v20_single(&r, 300, 300, v19_hit_with(40, fx(BEFF_RECOIL, BWHO_USER, 0, 33, 0, 0)), wait_move());
+    v21_same(&r, single, 2, 2, false, "recoil"), ++paths;
+    make_consumable(&r, BATTLE_FORMAT_DOUBLE);
+    v19_mon(&r.player[0], 300, 300, 100, v20_life_orb(), v19_spread(40));
+    v19_mon(&r.player[1], 200, 200, 20, (BattleItem){0}, wait_move());
+    v19_mon(&r.opponent[0], 999, 999, 30, (BattleItem){0}, wait_move());
+    v19_mon(&r.opponent[1], 999, 999, 25, (BattleItem){0}, wait_move());
+    v21_same(&r, dbl, 4, 2, false, "spread"), ++paths;
+    printf("v21 Life Orb: %u V20 paths give the same events, HP and RNG in V21\n", paths);
+}
 
 static void test_v19_wire(void) {
     static BattleRequest r, d;
@@ -10515,6 +10993,13 @@ int main(void) {
     test_v20_rules();
     test_v20_paths();
     test_c1a_lost();
+    assert(test_v21_shell_bell() == 0);
+    test_v21_wire();
+    test_v21_rules();
+    test_v21_amounts();
+    test_v21_paths();
+    test_v21_formats();
+    test_v21_life_orb();
     test_v19_wire();
     test_v19_formats();
     puts("battle tests passed");
