@@ -270,14 +270,21 @@ void bc_items_actor_check(Battle *b, Position actor, EventLog *log) {
 
 // The end of an action: the actor (MOVEEND_ITEM_EFFECTS_ATTACKER_2, unless
 // done already), every other Pokemon's HP (MOVEEND_KEE_MARANGA_HP_THRESHOLD_
-// ITEM_TARGET), then every Pokemon's status and HP (MOVEEND_ITEMS_EFFECTS_ALL).
-void bc_items_after_action(Battle *b, Position actor, bool actor_checked, EventLog *log) {
-    if (!bc_items_consumable(b)) return;
-    if (!actor_checked) bc_items_actor_check(b, actor, log);
+// ITEM_TARGET), V20 Life Orb of the move's user when it hit (`life_orb`, the
+// Pokemon that started the move; MOVEEND_LIFE_ORB_SHELL_BELL), then every
+// Pokemon's status and HP (MOVEEND_ITEMS_EFFECTS_ALL). Life Orb comes after
+// the other Pokemon's HP berries (M4-B1c-0c, docs/items.md 15.4).
+void bc_items_after_action(Battle *b, Position actor, bool actor_checked, const Battler *life_orb, EventLog *log) {
+    const bool items = bc_items_consumable(b);
     Position order[BC_MAX_ACTIONS];
-    const unsigned count = battler_order(b, order);
-    for (unsigned i = 0; i < count; ++i)
-        if (order[i].side != actor.side || order[i].slot != actor.slot) bc_item_hp_check(b, order[i], log);
+    unsigned count = 0;
+    if (items) {
+        if (!actor_checked) bc_items_actor_check(b, actor, log);
+        count = battler_order(b, order);
+        for (unsigned i = 0; i < count; ++i)
+            if (order[i].side != actor.side || order[i].slot != actor.slot) bc_item_hp_check(b, order[i], log);
+    }
+    if (life_orb) bc_item_after_move(b, actor, life_orb, true, log);
     for (unsigned i = 0; i < count; ++i)
         if (!bc_item_status_check(b, order[i], log)) bc_item_hp_check(b, order[i], log);
 }

@@ -15,9 +15,11 @@
 //      gamecube/battle/battle_modifiers.c gamecube/battle/battle_field.c gamecube/battle/battle_items.c
 //      gamecube/battle/battle_replay.c
 //      -o build/battle-replay
-//   build/battle-replay dolphin.log [-print | -without | -version N]
+//   build/battle-replay dolphin.log [-print | -without | -without-items | -version N]
 // -without removes every V13 modifier record first (same bytes otherwise,
 // same seed and commands) and prints the damage events: the counterfactual.
+// -without-items (V20) removes every held item's modifier record (Life Orb's
+// final factor) and prints the damage events: the same hits without it.
 // -version N relabels the request (V13 <-> V14 share the layout, so a V14
 // run replays with the V13 arithmetic) and prints its damage events too.
 
@@ -30,7 +32,7 @@
 #define MAX_LINES 20000
 static char *expected[MAX_LINES];
 static unsigned expected_count, compared, mismatches;
-static bool print_all, without;
+static bool print_all, without, without_items;
 static int relabel = -1;
 
 typedef struct { unsigned turn, actor, kind, slot, target, rotation; } Command;
@@ -44,8 +46,8 @@ static unsigned byte_count;
 static uint32_t seed;
 
 static void check(const char *line) {
-    if (without) {  // the counterfactual: only its damage lines
-        if (strstr(line, " kind=2 ")) printf("%s\n", line);
+    if (without) {  // the counterfactual: only its damage lines (-without-items: every line)
+        if (without_items || strstr(line, " kind=2 ")) printf("%s\n", line);
         return;
     }
     if (print_all) printf("%s\n", line);
@@ -138,6 +140,8 @@ int main(int argc, char **argv) {
     }
     print_all = argc > 2 && strcmp(argv[2], "-print") == 0;
     without = argc > 2 && strcmp(argv[2], "-without") == 0;
+    without_items = argc > 2 && strcmp(argv[2], "-without-items") == 0;
+    if (without_items) without = true;  // print every line, compare none
     if (argc > 3 && strcmp(argv[2], "-version") == 0) {
         relabel = atoi(argv[3]);
         without = true;  // a counterfactual: print its damage lines, do not compare
@@ -150,7 +154,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 #ifdef BATTLE_REQUEST_VERSION_MODIFIERS  // (absent when built against a V12 tree)
-    for (unsigned side = 0; without && relabel < 0 && side < 2; ++side)  // -without only
+    for (unsigned side = 0; without && !without_items && relabel < 0 && side < 2; ++side)  // -without only
         for (unsigned i = 0; i < (side ? r.opponent_count : r.player_count); ++i) {
             BattleMon *m = side ? &r.opponent[i].mon : &r.player[i].mon;
             for (unsigned k = 0; k < 4; ++k) {
@@ -165,6 +169,17 @@ int main(int argc, char **argv) {
                 if (m->ability.hooks[h].kind != BABIL_MODIFIER) m->ability.hooks[kept++] = m->ability.hooks[h];
             if (m->ability.cls == BACLASS_HOOKS && !kept) m->ability.cls = BACLASS_NONE;
             m->ability.count = (uint8_t)kept;
+        }
+#endif
+#ifdef BATTLE_REQUEST_VERSION_MOVE_ITEMS
+    for (unsigned side = 0; without_items && side < 2; ++side)  // -without-items only
+        for (unsigned i = 0; i < (side ? r.opponent_count : r.player_count); ++i) {
+            BattleItem *it = side ? &r.opponent[i].mon.item : &r.player[i].mon.item;
+            unsigned kept = 0;
+            for (unsigned x = 0; x < it->count; ++x)
+                if (it->records[x].kind != BITEM_MODIFIER) it->records[kept++] = it->records[x];
+            it->count = (uint8_t)kept;
+            if (it->cls == BICLASS_RECORDS && !kept) it->cls = BICLASS_NONE;
         }
 #endif
     if (relabel >= 0) {

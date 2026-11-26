@@ -9745,6 +9745,20 @@ static void test_v20_paths(void) {
         const BattleEvent *stage = find(&run.log, EV_STAGE), *loss = find(&run.log, EV_ITEM_DAMAGE);
         assert(stage && loss && v20_index(&run.log, stage) < v20_index(&run.log, loss));
     }
+    // M4-B1c-0c (Dolphin L75): the foe's Sitrus Berry, due after the hit, comes before the loss
+    // (MOVEEND_KEE_MARANGA_HP_THRESHOLD_ITEM_TARGET, then MOVEEND_LIFE_ORB_SHELL_BELL).
+    v20_single(&r, 300, 300, v19_hit(40), wait_move());
+    hold(&r.opponent[0], I_SITRUS);
+    r.opponent[0].record.hp = 500;
+    assert(v20_start(&run, &r, 1));
+    battle_run_turn(&run.b, (Action[]){move(0, 0, 0), move(1, 0, 0)}, 2, &run.log);
+    {
+        const BattleEvent *hit = find(&run.log, EV_DAMAGE), *heal = find(&run.log, EV_ITEM_HEAL),
+                          *loss = find(&run.log, EV_ITEM_DAMAGE);
+        assert(hit && heal && loss && heal->target.side == 1 && loss->target.side == 0);
+        assert(v20_index(&run.log, hit) < v20_index(&run.log, heal) &&
+               v20_index(&run.log, heal) < v20_index(&run.log, loss));
+    }
     // Four formats: the lead hits the foe's lead once, one loss, the others wait.
     for (uint8_t format = BATTLE_FORMAT_SINGLE; format <= BATTLE_FORMAT_ROTATION; ++format) {
         const unsigned per = format == BATTLE_FORMAT_SINGLE ? 1 : format == BATTLE_FORMAT_DOUBLE ? 2 : 3;
@@ -9768,7 +9782,7 @@ static void test_v20_paths(void) {
         assert(event_count(&run.log, EV_ITEM_DAMAGE) == 1 && user->hp == 270 &&
                v20_nth(&run.log, EV_ITEM_DAMAGE, 0, 0)->target.slot == lead);
     }
-    printf("v20 paths: spread, pivot, Struggle, the last foe, four formats\n");
+    printf("v20 paths: spread, pivot, Struggle, the last foe, the foe's Sitrus first, four formats\n");
 }
 
 static void test_v19_wire(void) {

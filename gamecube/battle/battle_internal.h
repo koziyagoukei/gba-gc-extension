@@ -152,11 +152,14 @@ uint16_t bc_item_endure(const Battle *battle, Position target, uint16_t amount, 
 void bc_item_endured(Battle *battle, Position target, EventLog *log);  // EV_ITEM_ENDURE, then the use
 void bc_item_on_entry(Battle *battle, Position position, EventLog *log);  // status, then HP check
 // The end of an action (the reference's move end): the actor's checks (once),
-// every other Pokemon's HP check, then every Pokemon's checks, in battler order.
+// every other Pokemon's HP check, V20 the user's Life Orb (`life_orb`: the
+// Pokemon that started a move that landed, else NULL), then every Pokemon's
+// checks, in battler order.
 void bc_items_actor_check(Battle *battle, Position actor, EventLog *log);
-void bc_items_after_action(Battle *battle, Position actor, bool actor_checked, EventLog *log);
-// V20 (docs/items.md 14): once after a move `origin` used from `user`, after
-// Moxie and before a pivot's switch: its BITIME_AFTER_MOVE record (Life Orb)
+void bc_items_after_action(Battle *battle, Position actor, bool actor_checked, const Battler *life_orb, EventLog *log);
+// V20 (docs/items.md 14, 15.4): once after a move `origin` used from `user`,
+// called by bc_items_after_action after Moxie and the other Pokemon's HP
+// berries, before a pivot's switch: its BITIME_AFTER_MOVE record (Life Orb)
 // if the move landed on a target (a substitute counts) and `origin` still
 // stands there.
 void bc_item_after_move(Battle *battle, Position user, const Battler *origin, bool landed, EventLog *log);

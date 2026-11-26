@@ -735,7 +735,8 @@ bool bc_struggle_strike(Battle *b, Position user, Position target, const BattleM
     return landed;
 }
 
-static bool execute_move(Battle *b, Position user, uint8_t slot, Position selected, EventLog *log, bool *checked) {
+static bool execute_move(Battle *b, Position user, uint8_t slot, Position selected, EventLog *log, bool *checked,
+                         const Battler **life_orb) {
     Battler *a = bc_mutable_at(b, user);
     const BattleMove *m = &a->moves[slot];
     // V15: a move whose type follows the weather (Weather Ball) is that type for
@@ -835,7 +836,7 @@ static bool execute_move(Battle *b, Position user, uint8_t slot, Position select
         *checked = true;
     }
     if (damage) bc_ability_after_move(b, user, knocked_out(&c), log);  // Moxie, after recoil
-    bc_item_after_move(b, user, a, c.landed, log);  // V20 Life Orb: after Moxie, before the pivot's switch
+    if (c.landed) *life_orb = a;  // V20 Life Orb: in the move end, after the other Pokemon's HP berries
     if (c.landed && find_effect(m, BEFF_RECHARGE) && !battle_at(b, user)->fainted &&
         !(all_fainted && (b->request->volatiles.flags & BVR_RECHARGE_SKIP_ON_KO)))
         bc_mutable_at(b, user)->vol.recharge = 2;  // blocks the next turn, ticks down at turn ends
@@ -846,7 +847,8 @@ static bool execute_move(Battle *b, Position user, uint8_t slot, Position select
 // nothing earlier).
 bool bc_execute_move(Battle *b, Position user, uint8_t slot, Position selected, EventLog *log) {
     bool checked = false;
-    const bool pivot = execute_move(b, user, slot, selected, log, &checked);
-    bc_items_after_action(b, user, checked, log);
+    const Battler *life_orb = NULL;
+    const bool pivot = execute_move(b, user, slot, selected, log, &checked, &life_orb);
+    bc_items_after_action(b, user, checked, life_orb, log);  // before the pivot's switch
     return pivot;
 }
