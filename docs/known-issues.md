@@ -300,3 +300,19 @@
   ended); both are covered by the native and Expansion tests of section 14.
 - The draw when the last foe and then the holder faint is the GC's result;
   the reference's was not run.
+
+## M4-B1c-1b (release 13 kept, development only)
+
+- Shell Bell is the only after-move heal (request V21, [Shell
+  Bell](shell-bell.md) section 11). Rocky Helmet, Weakness Policy, the
+  Choice items and the other items of B1c stay UNSUPPORTED.
+- Sheer Force, Klutz, an item ability (Pickpocket, Magician ...) or an
+  ability copier (Trace, Receiver, Power of Alchemy, Wandering Spirit) on a
+  Shell Bell holder turns every item off (strict: refused). Magic Guard keeps
+  the bell, as in the reference.
+- Heal Block, Psychic Noise, Embargo and the item moves (Thief, Covet,
+  Knock Off, Trick ...) are not run, so no GC battle blocks or moves the bell;
+  the reference's rule that a bell taken during a move heals on that move is
+  recorded only (B2).
+- Only the test hooks build APP V21 requests: the normal, Cube Tester and Lab
+  battles (L01-L83) keep their APP versions. Not run in Dolphin (M4-B1c-1c).

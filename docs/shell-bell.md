@@ -1,4 +1,4 @@
-# Shell Bell: specification, reference and design (M4-B1c-1a)
+# Shell Bell: specification, reference, design and implementation (M4-B1c-1a, M4-B1c-1b)
 
 Stage M4-B1c-1a: investigation, Expansion reference tests, failing-first GC
 tests and the implementation design. **No battle logic, exporter or
@@ -6,11 +6,18 @@ request/APP change** in this stage. Branches `milestone4b1c1a` (GC) and
 `frontier-gc-m4b1c1a` (Frontier), based on M4-B1c-0c (`60e7517` /
 `ceb867b5d6`).
 
+Stage M4-B1c-1b implements it: request/APP V21, the GC core and the Frontier
+exporter, checked natively and against the reference (section 11).
+Branches `milestone4b1c1b` (GC) and `frontier-gc-m4b1c1b` (Frontier), based
+on M4-B1c-1a (`7c2a16c` / `ce3b8de214`). Dolphin and JoyBus are M4-B1c-1c:
+nothing in section 11 was run in Dolphin.
+
 Evidence words: `SOURCE_CONFIRMED` (read in code), `TEST_CONFIRMED` (run:
 Expansion tests in this build, or GC native tests), `INFERRED` (a design or a
 reading not run), `UNKNOWN`. Section 1-4 are what Expansion does (the
-reference); sections 5-9 are the GC: what it has today (measured) and what is
-proposed (`INFERRED` until M4-B1c-1b implements it).
+reference); sections 5-9 are the GC: what it had in M4-B1c-1a (measured) and
+what was proposed (`INFERRED` there); section 11 is what M4-B1c-1b built and
+ran (`TEST_CONFIRMED` natively, not in Dolphin).
 
 Sources (Frontier `ceb867b5d6`):
 [TryShellBell](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/ceb867b5d69eb7cbd9e01fac213fd9d911375f9d/src/battle_hold_effects.c#L494) ·
@@ -147,7 +154,7 @@ So `lost` is the same quantity as Expansion's `savedDmg` for every case the
 GC can produce (Disguise, False Swipe and Future Sight have no GC path).
 The recoil already uses it as the reference does (`savedDmg * recoil%`).
 
-## 6. Design for M4-B1c-1b (`INFERRED`)
+## 6. Design for M4-B1c-1b (`INFERRED` in M4-B1c-1a; built as planned, section 11)
 
 | Option | Verdict |
 |---|---|
@@ -200,10 +207,10 @@ requests are unchanged and a V21 record never reaches a V20 peer.
 
 ## 8. Failing-first GC tests
 
-`battle_test.c`, `#ifdef GC_TEST_SHELL_BELL`, run by
-`tools/shell-bell-tests.sh` (left out of the default build; it uses the
-proposed names, or the real ones once the protocol defines
-`BATTLE_REQUEST_VERSION_AFTER_MOVE_HEAL`):
+`battle_test.c`, run alone by `tools/shell-bell-tests.sh`
+(`-DGC_TEST_SHELL_BELL`). In M4-B1c-1a they were left out of the default
+build and used the proposed names; since M4-B1c-1b they use the protocol's
+names and run in the default suite too. The cases are unchanged.
 
 | # | Case | Today |
 |---|---|---|
@@ -224,9 +231,15 @@ proposed names, or the real ones once the protocol defines
 | 15 | records: the valid one accepted in V21 | fails (V21 unknown); 6 bad records refused: hold |
 | 16 | V19 and V20 refuse the record (`battle_item_valid`, encoder, `battle_init`) | 6 refusals: hold |
 
-Today: 17 cases, 0 started, 18 checks reached (17 start failures and the
-V21 acceptance), 18 failed; refusals 12 of 12 hold; exit 18. When V21 is
-implemented every case must start and reach its own assertion.
+M4-B1c-1a: 17 cases, 0 started, 18 checks reached (17 start failures and
+the V21 acceptance), 18 failed; refusals 12 of 12 hold; exit 18.
+
+M4-B1c-1b (`TEST_CONFIRMED`, GC native): 17 cases, 17 started (0 refused at
+the start), 20 effect checks, 0 failed, 0 started without reaching an effect
+check; refusals 12 of 12 hold; exit 0, alone and in the default suite. A
+start is now counted apart from the effect checks, and a case that starts
+but reaches no effect check fails, so passing the request alone is not
+counted as a pass.
 
 ## 9. Battle Frontier
 
@@ -242,5 +255,112 @@ move-damage sum and the after-move heal for later items.
 - Emergency Exit with Shell Bell (`shellBellEmergencyExit`), Eject Pack,
   Dynamax HP: no GC path; reference rules recorded only.
 - Thief, Covet, Magician, Pickpocket and other item transfers: B2.
-- A heal-blocking effect in the GC: none today; it would add a holder
-  condition.
+- A heal-blocking effect in the GC: none (Heal Block, Psychic Noise and
+  Embargo are moves the exporter does not send, `TEST_CONFIRMED` in
+  M4-B1c-1b); it would add a holder condition.
+- Red Card, Eject Button, Emergency Exit: no GC path. The core keeps the
+  origin check (the holder must be the Pokemon that started the move) for
+  them; today nothing can replace the user inside its move, so the check
+  never decides (section 11.6).
+- Dolphin and JoyBus with V21: M4-B1c-1c.
+
+## 11. M4-B1c-1b: implementation and verification
+
+`TEST_CONFIRMED` natively (GC `battle_test.c`, Frontier tests); **not run in
+Dolphin** (M4-B1c-1c). Release 13 is kept.
+
+### 11.1 Request / APP V21
+
+| Point | V21 |
+|---|---|
+| Versions | `BATTLE_REQUEST_VERSION_AFTER_MOVE_HEAL = 21` (`_LATEST`), `BATTLE_APP_VERSION_AFTER_MOVE_HEAL = 21`; V20 request, action, result and event layout |
+| New operation | `BIHP_HEAL_DEALT = 4` (`BIHP_COUNT` 5) |
+| Record | `BITEM_HP`, timing `BITIME_AFTER_MOVE`, operation `BIHP_HEAL_DEALT`, divisor 2..255, predicate `BPRED_NONE` with argument 0, reserved 0, flags 0 (no `BIREC_CONSUMED`); still one after-move record per item (with Life Orb's, two are refused). Bytes `04 05 04 08 00 00 00 00` for Shell Bell |
+| Validity | `item_record_valid` (shared by the encoder, the decoder and `bc_items_check` / `battle_init`): `BIHP_DAMAGE` at the after-move timing from V20, `BIHP_HEAL_DEALT` from V21; the operation at any other timing is refused |
+| Older peers | a V20 or older request with the record: the encoder writes nothing, the decoder refuses the bytes (also a V21 request relabelled V20), `battle_init` refuses it from memory (`BI_CONDITIONS`); no V22 |
+| Size | `BATTLE_REQUEST_MAX_BYTES(6, 21)` = 3,165 unchanged; a Shell Bell block is 12 B against the 4 B UNSUPPORTED block (+8 per holder, +96 at most) |
+| GC companion | `party_view.c` accepts APP 1..21 at the mode check; `battle_view.c` keeps the V6 action layout for V21; the PH12 diagnostic line names `heal dealt 1/8` |
+| V20 GC, V21 GBA | `SOURCE_CONFIRMED`: the V20 DOL accepts APP 1..20, so a V21 mode falls through to "MODE 2 not supported by this host" / "Unsupported mode" before any request is fetched (the M4-B1c-0c check of a V19 DOL against V20 showed this path in Dolphin; V21 itself is M4-B1c-1c) |
+
+### 11.2 Core
+
+The design of section 6 (option C), unchanged:
+
+- `BcMoveEnd {origin, landed, lost}` (`battle_internal.h`) replaces the Life
+  Orb pointer of M4-B1c-0c. `execute_move` fills it at the end of a move
+  that reached its hits (`landed` = `MoveContext.landed`, `lost` =
+  `MoveContext.lost`); early ends (charge, Protect, Substitute, no target)
+  leave it empty. `bc_struggle_strike` now returns `strike`'s loss and
+  `execute_struggle` passes `{origin, true, lost}`. No state is added to
+  `Battle` or `Battler` (the value lives on the stack of one action).
+- `bc_items_after_action` calls `bc_item_after_move` at the same point as in
+  M4-B1c-0c: after the actor's checks and every other Pokemon's HP check,
+  before every Pokemon's checks; it runs before the pivot's switch.
+- `bc_item_after_move` (V20+, the holder is `origin` and stands) runs the
+  item's after-move record through `item_hp`, the shared `BITEM_HP` code
+  (`bc_item_hp` is `item_hp` without a move): Life Orb's damage needs
+  `landed` (as in V20); Shell Bell's heal needs `lost > 0` and heals
+  `lost / divisor`, at least 1, up to max HP, nothing at full HP, through the
+  existing `EV_ITEM_HEAL` (amount, `hp_after`, item id) and its message; the
+  record is not used up and the item stays held after the battle (no save
+  is written).
+
+Order in one action (`TEST_CONFIRMED`): the hits on every target (drain,
+contact abilities and faints per target, the target's status check) → the
+move's own recoil → the actor's item checks → Moxie → every other Pokemon's
+HP berry → **Shell Bell** → every Pokemon's checks → the pivot's switch.
+
+### 11.3 Exporter
+
+| Point | Rule |
+|---|---|
+| Record | `HOLD_EFFECT_SHELL_BELL` → `HP(AFTER_MOVE, HEAL_DEALT, GetItemHoldEffectParam(item))` (8, the item's own parameter, not the power cap) from roster V21; outside 2..255 it would stay UNSUPPORTED |
+| Before V21 | UNSUPPORTED as before: every item off (`RULE_IGNORE_ITEMS`, notice), strict refused |
+| Magic Guard | simulated (a heal is not damage; `HpItemAbility` reacts to damage records only) |
+| Sheer Force | every item off (strict: refused), as for Life Orb: it skips the after-move stage for the moves it boosts, which the GC does not model |
+| Trace, Receiver, Power of Alchemy, Wandering Spirit | every item off beside any after-move record (new: they could give a Shell Bell holder Sheer Force; Life Orb was already off through its damage record) |
+| Klutz, Pickpocket, Magician and the other item abilities | every item off (`ItemAbility`, unchanged) |
+| Neutralizing Gas | an ability the GC does not run: UNSUPPORTED, strict abilities refused by the GC (`BI_UNSUPPORTED_ABILITY`); the bell is kept |
+| Heal Block, Psychic Noise, Embargo, Gastro Acid, Thief, Covet, Knock Off, Trick, Switcheroo, Future Sight | not run by the GC in any format (`FrontierGcBattle_TestMoveSupport`) |
+| Life Orb | the same block and state as V20 |
+
+### 11.4 Verification
+
+| Check | Result |
+|---|---|
+| Failing-first cases (section 8) | 17 cases, 17 started, 20 effect checks, 0 failed; 12 of 12 refusals; `tools/shell-bell-tests.sh` exit 0 |
+| GC native, new (`test_v21_*`) | wire (versions, every edge of the record, the bytes, V20/V22 refused, a V20 request relabelled V21 is byte-identical but the version byte), rules (items off with the notice, strict, UNSUPPORTED before V21), amounts (every HP taken 1..100: 1:1 7:1 8:1 9:1 15:1 16:2 17:2 50:6 100:12; the damage when the foe stands; cap 400/399/395/388/387 → 0/1/5/12/12), paths (miss, immune, Protect, a status move, a charge turn, the foe's and the partner's moves, each move apart, a multi-hit knock-out, a substitute's 10 HP, the foe's Focus Sash, a hit that takes no HP, Struggle recoil knock-out, Moxie first), formats (Double: Protect, both foes knocked out 9 + 14 → 2, a substitute 39 + a knock-out 11 → 6; Triple centre spread; the lead in Single, Double, Triple and Rotation; Life Orb and Shell Bell holders in one turn) |
+| V20 Life Orb | the 14 saved cases (26 effect checks) and `test_v20_*` unchanged; 7 Life Orb paths (one hit, multi-hit, Struggle, pivot, the foe's Sitrus, recoil, spread) give the same events, HP and RNG as a V20 and as a V21 request |
+| Native builds | -O2 -Wall -Wextra -Werror, ASan/UBSan, presentation test, `battle_replay` build: pass |
+| Fixed-seed traces | V11-V20 identical to M4-B1c-1a (V12 `36e5712c` … V20 `65a3b885`); the corpus relabelled V21 is V20's |
+| Expansion reference | the 34 tests of section 4: 34/34 PASS twice, the 75 measured `SB_*` values the same in both runs and the same as M4-B1c-1a's; new `test/battle/gc_v21_reference.c` (2): a hit that takes no HP (the foe's Focus Sash at 1 max HP) heals nothing (savedDmg 0) and still costs Life Orb 40 of 400 (damagedByAttack): the GC's `lost` and `landed` |
+| Frontier exporter | `test/battle/gc_shell_bell_export.c` (7): the block on both sides and in reserve, V19/V20 UNSUPPORTED and strict refusal, the abilities above, Neutralizing Gas, the moves above, Life Orb in V21, the set tally |
+| Frontier `make check` | 7,043 tests: PASS 4,127 (+9, the new ones), FAILED 2,455, KNOWN_FAILING 19, TO_DO 419, EXPECT_FAILING 9, ASSUMPTION_FAIL 14; against M4-B1c-1a no test changed status (the 2,455 failures are the same tests, the baseline of earlier stages; ACT-002, ABL-G05, ABL-G04 and ITM-TIME-003 tests as before) |
+| Mutations | GC core and protocol 26: 23 killed, 3 equivalent today (11.6); exporter 8: 8 killed (Shell Bell from V20, no record in V21, a fixed divisor 4, the damage operation, used up, Magic Guard off, the Sheer Force gate for damage only, the copiers without the after-move gate) |
+
+### 11.5 Size and time
+
+| Measure | Result |
+|---|---|
+| `Battle`, `Battler`, `BattleRequest`, `EventLog`, `BattleEvent`, `BattleItem` | 4,472 / 352 / 6,344 / 47,812 / 24 / 36 B (host), unchanged; `BcMoveEnd` 16 B on the stack only |
+| Max request | 3,165 B unchanged; the V21 test request with Shell Bell and Life Orb is 844 B |
+| Event log | at most one after-move item event per action, as for Life Orb (`BC_MAX_EVENTS` 1,992 unchanged); the busiest Triple turn measured (every Pokemon holding Shell Bell, multi-hit spread moves, 200 seeds): 100 events (91 without items) |
+| DOL (release 13) | 363,712 B (+384 over M4-B1c-1a's 363,328): text +224, data +128, bss unchanged |
+| ROM | text + data 26,374,605 B (+192 over M4-B1c-1a, which is M4-B1c-0c's 26,374,413: the exporter's Shell Bell case and the V21 checks); Labs and debug menu unchanged |
+| Host time of one turn | V21 Shell Bell 1.62-1.68 µs against 1.55-1.77 µs without an item and 1.64-1.77 µs with Life Orb (three runs, noise level) |
+| Link | +8 B per Shell Bell holder in the request; nothing else changes. Measured on the link in M4-B1c-1c |
+
+### 11.6 Mutations that survive (equivalent today)
+
+- The after-move call moved after the all-items pass: every check that pass
+  makes after a Shell Bell move has run already (the target's checks after
+  its hit, the actor's after the recoil, the others' HP), and the holder has
+  no second item, so no observable order changes.
+- No origin check: nothing in the GC replaces the user inside its own move
+  (no Red Card, Eject Button or Emergency Exit; a fainted holder is caught by
+  the faint check).
+- No version check in `bc_item_after_move`: before V20 no item can have an
+  after-move record (`battle_item_valid`).
+
+The two that M4-B1c-1b's first tests missed (Shell Bell on `landed`, Life
+Orb on `lost`) are killed by the hit that takes no HP (11.4).

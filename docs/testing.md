@@ -417,3 +417,17 @@ traces V11-V20 are those of M4-B1c-0c. Frontier `make check` (-j8): 7,034 tests,
 PASS, 2,455 FAILED, 19 KNOWN_FAILING, 419 TO_DO, 9 EXPECT_FAILING, 14
 ASSUMPTION_FAIL; the 34 new tests pass and no other test changed status
 against M4-B1c-0c.
+
+M4-B1c-1b (branches `milestone4b1c1b`, `frontier-gc-m4b1c1b`, [Shell
+Bell](shell-bell.md) section 11): request/APP V21. `battle_test.c` runs the
+17 failing-first Shell Bell cases in the default suite (17 started, 20 effect
+checks, 0 failed, 12 refusals; `tools/shell-bell-tests.sh` exits 0) and adds
+`test_v21_wire`, `test_v21_rules`, `test_v21_amounts` (every HP taken from 1
+to 100, the cap), `test_v21_paths`, `test_v21_formats` (Single, Double,
+Triple, Rotation) and `test_v21_life_orb` (V20 Life Orb paths equal in V21).
+-O2 -Werror, ASan/UBSan and the presentation test pass; traces V11-V20 are
+those of M4-B1c-1a and the corpus relabelled V21 is V20's. Frontier adds
+`test/battle/gc_shell_bell_export.c` (7, `GC V21 export`) and
+`test/battle/gc_v21_reference.c` (2, `GC V21 reference`); the 34 `GC Shell
+Bell reference` tests: 34/34 PASS twice, the 75 measured `SB_*` values the same in both runs and the same as M4-B1c-1a's. Frontier `make check`: 7,043 tests, PASS 4,127 (+9), FAILED 2,455, KNOWN_FAILING 19, TO_DO 419, EXPECT_FAILING 9, ASSUMPTION_FAIL 14, no status changed against M4-B1c-1a. Not run in
+Dolphin (M4-B1c-1c).

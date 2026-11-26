@@ -1434,3 +1434,26 @@ is [Shell Bell](shell-bell.md); in short:
   Orb pointer into `bc_items_after_action`; no new persistent state.
 - Failing-first: `tools/shell-bell-tests.sh` (17 cases, all refused at the
   start today). Battle Frontier sets holding Shell Bell: 0.
+
+## 17. M4-B1c-1b: Shell Bell in request V21
+
+Branches `milestone4b1c1b` (GC) and `frontier-gc-m4b1c1b` (Frontier), based
+on M4-B1c-1a; release 13 kept. The record is [Shell Bell](shell-bell.md)
+section 11; in short (`TEST_CONFIRMED` natively, Dolphin is M4-B1c-1c):
+
+- Request/APP V21 (`BATTLE_*_VERSION_AFTER_MOVE_HEAL`), the V20 layout, adds
+  `BIHP_HEAL_DEALT = 4`: `BITEM_HP` at `BITIME_AFTER_MOVE`, divisor 2..255,
+  no predicate, not used up, one after-move record per item. V20 and older
+  refuse it in the encoder, the decoder and `battle_init`.
+- The core passes `BcMoveEnd {origin, landed, lost}` (the M4-B1c-0c Life
+  Orb point) to `bc_item_after_move`: Life Orb still on `landed`, Shell Bell
+  on `lost` (`MoveContext.lost`, every hit and target, the ally included, at
+  most the HP each had): `lost / 8`, at least 1, up to max HP, after the
+  other Pokemon's HP berries and before the pivot's switch; Struggle returns
+  its loss. No new state.
+- Exporter: `HOLD_EFFECT_SHELL_BELL` → `HP(AFTER_MOVE, HEAL_DEALT,
+  holdEffectParam)` from roster V21; Magic Guard keeps it; Sheer Force,
+  Klutz, the item abilities and the ability copiers turn every item off.
+- Battle Frontier: 0 of 2,040 sets hold Shell Bell, so V21 adds no set; the
+  1,996 requests built, 1,118 with items simulated and 1,118 strict ones are
+  V20's, item block for item block.

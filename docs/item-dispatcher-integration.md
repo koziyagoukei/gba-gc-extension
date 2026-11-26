@@ -80,3 +80,18 @@ B1c-0bの「既存 `bc_item_*` の拡張のみ」（B案）を維持する。技
 | 失敗先行 | `tools/shell-bell-tests.sh`（17件、現状は開始時に拒否） |
 
 詳細は [Shell Bell](shell-bell.md)。
+
+## B1c-1b（かいがらのすず）の実装結果（TEST_CONFIRMED、GC Native・Exporter）
+
+B1c-1aの計画どおり、独立したDispatcherも永続状態も追加せずに実装した。技終了フックがダメージ（いのちのたま）と回復（かいがらのすず）の両方に使えることを、同じ呼び出し位置と同じ `BITEM_HP` 実行コードで確認した。
+
+| 計画 | 実装 |
+| --- | --- |
+| 版 | Request/APP V21（`BATTLE_*_VERSION_AFTER_MOVE_HEAL`）。`BIHP_HEAL_DEALT = 4`。encoder・decoder・`battle_init` は共通の `item_record_valid` で判定 |
+| 値の受け渡し | `BcMoveEnd {origin, landed, lost}`（`battle_internal.h`）。`execute_move` と `execute_struggle` が埋め、`bc_items_after_action` → `bc_item_after_move` → `item_hp`（`bc_item_hp` と共通）。いのちのたまは `landed`、すずは `lost > 0` |
+| わるあがき | `bc_struggle_strike` が `strike` の損失を返す |
+| 永続状態 | なし（`BcMoveEnd` は1行動のスタック上） |
+| Exporter | 計画どおり。加えて、特性コピー系（トレース等）は技終了レコードの所持者で全持ち物オフ（ちからずくを得る可能性のため。いのちのたまは従来からオフ） |
+| 失敗先行 | 17件すべて開始・成功（20効果チェック、拒否12件） |
+
+詳細は [Shell Bell](shell-bell.md) 第11章。
