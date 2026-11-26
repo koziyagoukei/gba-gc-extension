@@ -9785,6 +9785,366 @@ static void test_v20_paths(void) {
     printf("v20 paths: spread, pivot, Struggle, the last foe, the foe's Sitrus first, four formats\n");
 }
 
+// ---------------------------------------------------------------- M4-B1c-1a: the HP a move took
+//
+// Read-only (docs/shell-bell.md 5): MoveContext.lost as the core keeps it
+// today, seen through a recoil of 100% of it (recoil = lost * 100 / 100, once
+// after the move's hits). Expansion's Shell Bell base (savedDmg) is the HP
+// each target and substitute lost, over every strike and target; these
+// cases show the GC's sum is the same. No core change.
+static BattleMove c1a_take_back(BattleMove m) {
+    push(&m, fx(BEFF_RECOIL, BWHO_USER, 0, 100, 0, 0));
+    return m;
+}
+static unsigned c1a_recoil(const EventLog *log) {
+    const BattleEvent *e = find(log, EV_RECOIL);
+    return e ? e->amount : 0;
+}
+static unsigned c1a_sum(const EventLog *log, EventKind kind) {
+    unsigned sum = 0;
+    for (unsigned i = 0; i < log->count; ++i)
+        if (log->events[i].kind == kind) sum += log->events[i].amount;
+    return sum;
+}
+static void c1a_start(V20Run *run, const BattleRequest *r) {
+    assert(battle_init(&run->b, r, 1) == BI_OK);
+    battle_begin(&run->b, &run->log);
+}
+// Single: the user (999 HP, so the recoil never knocks it out) against a foe with `foe_hp`.
+static void c1a_single(BattleRequest *r, BattleMove m, uint16_t foe_hp) {
+    make_consumable(r, BATTLE_FORMAT_SINGLE);
+    v19_mon(&r->player[0], 999, 999, 100, (BattleItem){0}, c1a_take_back(m));
+    v19_mon(&r->opponent[0], 999, foe_hp, 30, (BattleItem){0}, wait_move());
+}
+// Double: the user, its ally and two foes (999 HP each); `foe0` is the left foe's first move.
+static void c1a_double(BattleRequest *r, BattleMove m, BattleMove foe0) {
+    make_consumable(r, BATTLE_FORMAT_DOUBLE);
+    v19_mon(&r->player[0], 999, 999, 100, (BattleItem){0}, c1a_take_back(m));
+    v19_mon(&r->player[1], 999, 999, 20, (BattleItem){0}, wait_move());
+    v19_mon(&r->opponent[0], 999, 999, 30, (BattleItem){0}, foe0);
+    v19_mon(&r->opponent[1], 999, 999, 25, (BattleItem){0}, wait_move());
+}
+
+static void test_c1a_lost(void) {
+    static BattleRequest r;
+    static V20Run run;
+    const Action single[] = {move(0, 0, 0), move(1, 0, 0)};
+    const Action dbl[] = {move(0, 0, 0), v19_wait(0, 1), move(1, 0, 0), v19_wait(1, 1)};
+    // One hit: the HP the foe lost.
+    c1a_single(&r, v19_hit(120), 999);
+    c1a_start(&run, &r);
+    battle_run_turn(&run.b, single, 2, &run.log);
+    const unsigned one = 999 - battle_active(&run.b, 1)->hp;
+    assert(one > 10 && c1a_recoil(&run.log) == one);
+    // A knock-out counts the HP the foe had, not the damage calculated (the event's amount).
+    c1a_single(&r, v19_hit(120), 10);
+    c1a_start(&run, &r);
+    battle_run_turn(&run.b, single, 2, &run.log);
+    assert(find(&run.log, EV_DAMAGE)->amount > 10 && c1a_recoil(&run.log) == 10);
+    // Multi-hit: every hit; a knock-out at the 2nd hit counts what was left and ends the move.
+    c1a_single(&r, v19_multi(40, 5), 999);
+    c1a_start(&run, &r);
+    battle_run_turn(&run.b, single, 2, &run.log);
+    const unsigned per = find(&run.log, EV_DAMAGE)->amount, five = 999 - battle_active(&run.b, 1)->hp;
+    assert(event_count(&run.log, EV_DAMAGE) == 5 && c1a_recoil(&run.log) == five && five == c1a_sum(&run.log, EV_DAMAGE));
+    c1a_single(&r, v19_multi(40, 5), (uint16_t)(per + per / 2));
+    c1a_start(&run, &r);
+    battle_run_turn(&run.b, single, 2, &run.log);
+    assert(event_count(&run.log, EV_DAMAGE) == 2 && c1a_recoil(&run.log) == per + per / 2);
+    // A substitute broken at the 2nd hit: what it took (its HP), then the hits on the Pokemon.
+    c1a_single(&r, v19_multi(40, 5), 999);
+    c1a_start(&run, &r);
+    const uint16_t sub = (uint16_t)(per + per / 2);
+    battle_active(&run.b, 1)->vol.substitute_hp = sub;
+    battle_run_turn(&run.b, single, 2, &run.log);
+    assert(find(&run.log, EV_SUBSTITUTE_BREAK) && c1a_sum(&run.log, EV_SUBSTITUTE_HIT) == sub);
+    assert(c1a_recoil(&run.log) == sub + (999u - battle_active(&run.b, 1)->hp));
+    // Spread over both foes and the ally: the sum over the three.
+    BattleMove quake = v19_hit(60);
+    quake.target = BTARGET_ALL_ADJACENT;
+    c1a_double(&r, quake, wait_move());
+    c1a_start(&run, &r);
+    battle_run_turn(&run.b, dbl, 4, &run.log);
+    const unsigned three = 3u * 999u - run.b.sides[1].battlers[0].hp - run.b.sides[1].battlers[1].hp -
+                           run.b.sides[0].battlers[1].hp;
+    assert(event_count(&run.log, EV_DAMAGE) == 3 && c1a_recoil(&run.log) == three);
+    // A protected foe and a foe the type chart makes immune add nothing.
+    BattleMove guard = status_move(BTARGET_SELF, 0);
+    guard.priority = 4;
+    push(&guard, fx(BEFF_PROTECT, BWHO_USER, 0, 3, 0, 0));
+    c1a_double(&r, v19_spread(60), guard);
+    c1a_start(&run, &r);
+    battle_run_turn(&run.b, dbl, 4, &run.log);
+    assert(find(&run.log, EV_PROTECTED) && run.b.sides[1].battlers[0].hp == 999 &&
+           c1a_recoil(&run.log) == 999u - run.b.sides[1].battlers[1].hp);
+    c1a_double(&r, v19_spread(60), wait_move());
+    r.opponent[1].mon.types[0] = r.opponent[1].mon.types[1] = R_GHOST;
+    r.type_chart[R_NORMAL * r.type_count + R_GHOST] = 0;
+    c1a_start(&run, &r);
+    battle_run_turn(&run.b, dbl, 4, &run.log);
+    assert(find(&run.log, EV_NO_EFFECT) && run.b.sides[1].battlers[1].hp == 999 &&
+           c1a_recoil(&run.log) == 999u - run.b.sides[1].battlers[0].hp);
+    // Each move starts from 0: the second turn's recoil is that turn's HP only.
+    c1a_single(&r, v19_hit(120), 999);
+    c1a_start(&run, &r);
+    battle_run_turn(&run.b, single, 2, &run.log);
+    const uint16_t after1 = battle_active(&run.b, 1)->hp;
+    battle_run_turn(&run.b, single, 2, &run.log);
+    assert(c1a_recoil(&run.log) == (unsigned)(after1 - battle_active(&run.b, 1)->hp));
+    printf("c1a lost: one hit %u, a knock-out 10 (calculated more), five hits %u, knock-out at hit 2, "
+           "substitute %u then the Pokemon, spread with the ally %u, protected and immune 0, per move\n",
+           one, five, sub, three);
+}
+
+// ---------------------------------------------------------------- M4-B1c-1a: Shell Bell (failing first)
+//
+// The cases of docs/shell-bell.md 8 for the proposed request V21 (Shell Bell:
+// BITEM_HP at BITIME_AFTER_MOVE with the operation BIHP_HEAL_DEALT: the HP the
+// move took / divisor, at least 1). Built only by tools/shell-bell-tests.sh
+// (-DGC_TEST_SHELL_BELL). Until the core implements V21 every V21 case is
+// refused at its start; the old-version refusals already hold.
+#ifdef GC_TEST_SHELL_BELL
+#ifdef BATTLE_REQUEST_VERSION_AFTER_MOVE_HEAL
+#define SB_V21 BATTLE_REQUEST_VERSION_AFTER_MOVE_HEAL
+#define SB_HEAL_DEALT BIHP_HEAL_DEALT
+#else
+#define SB_V21 21          // proposed request/APP V21 (docs/shell-bell.md 7)
+#define SB_HEAL_DEALT 4    // proposed BIHP_HEAL_DEALT (BIHP_COUNT today)
+#endif
+static unsigned sb_cases, sb_started, sb_checks, sb_failed, sb_refusals, sb_refusals_held;
+#define SB_CHECK(name, cond)                                                    \
+    do {                                                                        \
+        ++sb_checks;                                                            \
+        if (!(cond)) {                                                          \
+            ++sb_failed;                                                        \
+            printf("  sb FAIL %-44s %s\n", name, #cond);                        \
+        }                                                                       \
+    } while (0)
+
+static BattleItem sb_shell_bell(void) {
+    BattleItem it = {.cls = BICLASS_RECORDS, .count = 1, .source = 253};
+    it.records[0].kind = BITEM_HP;
+    it.records[0].hp.timing = BITIME_AFTER_MOVE;
+    it.records[0].hp.op = SB_HEAL_DEALT;
+    it.records[0].hp.divisor = 8;
+    return it;
+}
+static unsigned sb_heal_for(unsigned lost) { return lost / 8 ? lost / 8 : 1; }
+
+static bool sb_start(V20Run *run, const BattleRequest *r) {
+    static BattleRequest d;
+    static uint8_t bytes[8192];
+    ++sb_cases;
+    run->started = false;
+    const uint32_t n = battle_request_encode(r, bytes, sizeof bytes);
+    if (!n || !battle_request_decode(bytes, n, &d) || battle_init(&run->b, &d, 1) != BI_OK) {
+        SB_CHECK("the request starts", false);
+        return false;
+    }
+    battle_begin(&run->b, &run->log);
+    ++sb_started;
+    return run->started = true;
+}
+// Single V21: the holder (Speed 100) uses `m` on a foe with `foe_hp` of 999 (Speed 30).
+static void sb_single(BattleRequest *r, uint16_t max_hp, uint16_t hp, BattleMove m, uint16_t foe_hp) {
+    make_consumable(r, BATTLE_FORMAT_SINGLE);
+    r->version = SB_V21;
+    v19_mon(&r->player[0], max_hp, hp, 100, sb_shell_bell(), m);
+    v19_mon(&r->opponent[0], 999, foe_hp, 30, (BattleItem){0}, wait_move());
+}
+static const BattleEvent *sb_heal(const EventLog *log) { return v20_nth(log, EV_ITEM_HEAL, 0, 0); }
+static unsigned sb_foe_lost(V20Run *run, unsigned slot, uint16_t before) {
+    return before - run->b.sides[1].battlers[slot].hp;
+}
+
+static int test_v21_shell_bell(void) {
+    static BattleRequest r;
+    static V20Run run;
+    const Action single[] = {move(0, 0, 0), move(1, 0, 0)};
+    // 1. One hit: 1/8 of the HP the foe lost, after the hit.
+    sb_single(&r, 400, 100, v19_hit(120), 999);
+    if (sb_start(&run, &r)) {
+        battle_run_turn(&run.b, single, 2, &run.log);
+        const unsigned lost = sb_foe_lost(&run, 0, 999);
+        const BattleEvent *heal = sb_heal(&run.log);
+        SB_CHECK("basic: 1/8 of the HP taken", heal && heal->amount == sb_heal_for(lost) && heal->item == 253);
+        SB_CHECK("basic: after the hit", v20_index(&run.log, heal) > v20_index(&run.log, find(&run.log, EV_DAMAGE)));
+    }
+    // 2. At least 1: a foe with 5 HP.
+    sb_single(&r, 400, 100, v19_hit(120), 5);
+    if (sb_start(&run, &r)) {
+        battle_run_turn(&run.b, single, 2, &run.log);
+        SB_CHECK("minimum: 5 HP taken heals 1", sb_heal(&run.log) && sb_heal(&run.log)->amount == 1);
+    }
+    // 3. At full HP nothing; one below, the heal stops at the max.
+    for (unsigned k = 0; k < 2; ++k) {
+        sb_single(&r, 400, (uint16_t)(400 - k), v19_hit(120), 999);
+        if (sb_start(&run, &r)) {
+            battle_run_turn(&run.b, single, 2, &run.log);
+            if (!k) SB_CHECK("full HP: no heal", !sb_heal(&run.log));
+            else SB_CHECK("max HP caps it", sb_heal(&run.log) && sb_heal(&run.log)->amount == 1 && battle_active(&run.b, 0)->hp == 400);
+        }
+    }
+    // 4. Overkill: the HP the foe had (10), not the damage calculated.
+    sb_single(&r, 400, 100, v19_hit(120), 10);
+    if (sb_start(&run, &r)) {
+        battle_run_turn(&run.b, single, 2, &run.log);
+        SB_CHECK("overkill: the HP it had", sb_heal(&run.log) && sb_heal(&run.log)->amount == 1 &&
+                 find(&run.log, EV_DAMAGE)->amount > 15);
+    }
+    // 5. Multi-hit: once, after the last hit, 1/8 of the sum.
+    sb_single(&r, 400, 100, v19_multi(40, 5), 999);
+    if (sb_start(&run, &r)) {
+        battle_run_turn(&run.b, single, 2, &run.log);
+        const unsigned lost = sb_foe_lost(&run, 0, 999);
+        SB_CHECK("multi-hit: one heal of the sum", event_count(&run.log, EV_ITEM_HEAL) == 1 &&
+                 sb_heal(&run.log)->amount == sb_heal_for(lost));
+        SB_CHECK("multi-hit: after the last hit", v20_index(&run.log, sb_heal(&run.log)) >
+                 v20_index(&run.log, v20_nth(&run.log, EV_DAMAGE, 1, 4)));
+    }
+    // 6. Several targets: both foes and the ally, one heal of the sum.
+    {
+        BattleMove quake = v19_hit(60);
+        quake.target = BTARGET_ALL_ADJACENT;
+        make_consumable(&r, BATTLE_FORMAT_DOUBLE);
+        r.version = SB_V21;
+        v19_mon(&r.player[0], 400, 100, 100, sb_shell_bell(), quake);
+        v19_mon(&r.player[1], 999, 999, 20, (BattleItem){0}, wait_move());
+        v19_mon(&r.opponent[0], 999, 999, 30, (BattleItem){0}, wait_move());
+        v19_mon(&r.opponent[1], 999, 999, 25, (BattleItem){0}, wait_move());
+        if (sb_start(&run, &r)) {
+            battle_run_turn(&run.b, (Action[]){move(0, 0, 0), v19_wait(0, 1), v19_wait(1, 0), v19_wait(1, 1)}, 4,
+                            &run.log);
+            const unsigned lost = 3u * 999u - run.b.sides[1].battlers[0].hp - run.b.sides[1].battlers[1].hp -
+                                  run.b.sides[0].battlers[1].hp;
+            SB_CHECK("spread with the ally: one heal of the sum", event_count(&run.log, EV_ITEM_HEAL) == 1 &&
+                     sb_heal(&run.log)->amount == sb_heal_for(lost));
+        }
+    }
+    // 7. A substitute broken mid move: what it took, then the Pokemon.
+    sb_single(&r, 400, 100, v19_multi(40, 5), 999);
+    if (sb_start(&run, &r)) {
+        battle_active(&run.b, 1)->vol.substitute_hp = 30;
+        battle_run_turn(&run.b, single, 2, &run.log);
+        SB_CHECK("substitute counts its HP", sb_heal(&run.log) &&
+                 sb_heal(&run.log)->amount == sb_heal_for(30u + sb_foe_lost(&run, 0, 999)));
+    }
+    // 8. Items off (RULE_IGNORE_ITEMS): no heal. (The GC has no Heal Block.)
+    sb_single(&r, 400, 100, v19_hit(120), 999);
+    r.rules |= RULE_IGNORE_ITEMS;
+    if (sb_start(&run, &r)) {
+        battle_run_turn(&run.b, single, 2, &run.log);
+        SB_CHECK("items off: no heal", !sb_heal(&run.log));
+    }
+    // 9. Recoil first, then the heal; a recoil that knocks the holder out stops it.
+    for (unsigned k = 0; k < 2; ++k) {
+        sb_single(&r, 400, k ? 5 : 100, v19_hit_with(120, fx(BEFF_RECOIL, BWHO_USER, 0, 33, 0, 0)), 999);
+        add_reserve(&r, 0);
+        if (sb_start(&run, &r)) {
+            battle_run_turn(&run.b, single, 2, &run.log);
+            if (!k) SB_CHECK("recoil, then the heal", sb_heal(&run.log) &&
+                             v20_index(&run.log, find(&run.log, EV_RECOIL)) < v20_index(&run.log, sb_heal(&run.log)));
+            else SB_CHECK("recoil knock-out: no heal", !sb_heal(&run.log));
+        }
+    }
+    // 10. The drain first, then the heal; a drain that fills the HP leaves nothing to heal.
+    for (unsigned k = 0; k < 2; ++k) {
+        sb_single(&r, 400, k ? 399 : 100, v19_hit_with(120, fx(BEFF_DRAIN, BWHO_USER, 0, 50, 0, 0)), 999);
+        if (sb_start(&run, &r)) {
+            battle_run_turn(&run.b, single, 2, &run.log);
+            if (!k) SB_CHECK("drain, then the heal", sb_heal(&run.log) &&
+                             v20_index(&run.log, find(&run.log, EV_DRAIN)) < v20_index(&run.log, sb_heal(&run.log)));
+            else SB_CHECK("drain to full: no heal", !sb_heal(&run.log));
+        }
+    }
+    // 11. The holder knocked out mid move (Rough Skin): no heal.
+    {
+        BattleMove scratch = v19_hit(40);
+        scratch.move_flags |= BMF_CONTACT;
+        sb_single(&r, 400, 1, scratch, 999);
+        give(&r.opponent[0], ROUGH_SKIN);
+        add_reserve(&r, 0);
+        if (sb_start(&run, &r)) {
+            battle_run_turn(&run.b, single, 2, &run.log);
+            SB_CHECK("holder down first: no heal", !sb_heal(&run.log) && run.b.sides[0].battlers[0].fainted);
+        }
+    }
+    // 12. The foe's Sitrus Berry first, then the heal (the M4-B1c-0c order).
+    sb_single(&r, 400, 100, v19_hit(120), 500);
+    hold(&r.opponent[0], I_SITRUS);
+    if (sb_start(&run, &r)) {
+        battle_run_turn(&run.b, single, 2, &run.log);
+        const BattleEvent *berry = v20_nth(&run.log, EV_ITEM_HEAL, 1, 0);
+        SB_CHECK("foe's Sitrus, then the heal", berry && sb_heal(&run.log) &&
+                 v20_index(&run.log, berry) < v20_index(&run.log, sb_heal(&run.log)));
+    }
+    // 13. Struggle: its recoil (max HP / 4), then the heal.
+    sb_single(&r, 400, 300, v19_hit(40), 999);
+    if (sb_start(&run, &r)) {
+        Battler *user = battle_active(&run.b, 0);
+        for (unsigned i = 0; i < 4; ++i) user->pp[i] = 0;
+        battle_run_turn(&run.b, (Action[]){{.kind = ACT_STRUGGLE, .user = {0, 0}}, move(1, 0, 0)}, 2, &run.log);
+        SB_CHECK("Struggle: recoil, then 1/8", sb_heal(&run.log) && find(&run.log, EV_RECOIL) &&
+                 v20_index(&run.log, find(&run.log, EV_RECOIL)) < v20_index(&run.log, sb_heal(&run.log)) &&
+                 sb_heal(&run.log)->amount == sb_heal_for(sb_foe_lost(&run, 0, 999)));
+    }
+    // 14. A pivot: the heal before the switch prompt.
+    {
+        BattleMove uturn = v19_hit(70);
+        push(&uturn, fx(BEFF_PIVOT, BWHO_TARGET, 0, 0, 0, 0));
+        sb_single(&r, 400, 100, uturn, 999);
+        add_reserve(&r, 0);
+        Position pending;
+        if (sb_start(&run, &r)) {
+            battle_run_turn(&run.b, single, 2, &run.log);
+            SB_CHECK("pivot: the heal, then the prompt", sb_heal(&run.log) && battle_pending_pivot(&run.b, &pending));
+        }
+    }
+    // 15. Records: the valid one is accepted in V21; bad ones are refused (codec and battle_init alike).
+    {
+        const BattleItem good = sb_shell_bell();
+        SB_CHECK("V21 accepts the Shell Bell record", battle_item_valid(&good, 253, R_COUNT, SB_V21));
+        static const struct { uint8_t timing, divisor, pred, flags, count; const char *what; } bad[] = {
+            {BITIME_AFTER_MOVE, 0, 0, 0, 1, "divisor 0"},
+            {BITIME_AFTER_MOVE, 1, 0, 0, 1, "divisor 1"},
+            {BITIME_AFTER_MOVE, 8, BPRED_HAS_TYPE, 0, 1, "a predicate"},
+            {BITIME_AFTER_MOVE, 8, 0, BIREC_CONSUMED, 1, "used up"},
+            {BITIME_END_TURN, 8, 0, 0, 1, "another timing"},
+            {BITIME_AFTER_MOVE, 8, 0, 0, 2, "two after-move records"},
+        };
+        for (unsigned i = 0; i < sizeof bad / sizeof bad[0]; ++i) {
+            BattleItem x = sb_shell_bell();
+            x.records[0].hp.timing = bad[i].timing;
+            x.records[0].hp.divisor = bad[i].divisor;
+            x.records[0].hp.pred.kind = bad[i].pred;
+            x.records[0].flags = bad[i].flags;
+            if (bad[i].count == 2) {
+                x.count = 2;
+                x.records[1] = v20_life_orb().records[1];
+            }
+            ++sb_refusals;
+            if (!battle_item_valid(&x, 253, R_COUNT, SB_V21)) ++sb_refusals_held;
+            else printf("  sb refusal does not hold: %s\n", bad[i].what);
+        }
+    }
+    // 16. Older versions refuse the record: encoder, decoder and battle_init.
+    for (uint8_t v = BATTLE_REQUEST_VERSION_CONSUMABLE_ITEMS; v <= BATTLE_REQUEST_VERSION_MOVE_ITEMS; ++v) {
+        static uint8_t bytes[8192];
+        static Battle b;
+        sb_single(&r, 400, 100, v19_hit(120), 999);
+        r.version = v;
+        const BattleItem it = sb_shell_bell();
+        sb_refusals += 3;
+        if (!battle_item_valid(&it, 253, R_COUNT, v)) ++sb_refusals_held;
+        if (!battle_request_encode(&r, bytes, sizeof bytes)) ++sb_refusals_held;
+        if (battle_init(&b, &r, 1) != BI_OK) ++sb_refusals_held;
+    }
+    printf("shell bell (V%u proposed): %u cases, %u started, %u checks reached, %u failed; refusals %u of %u hold\n",
+           (unsigned)SB_V21, sb_cases, sb_started, sb_checks, sb_failed, sb_refusals_held, sb_refusals);
+    return (int)sb_failed + (int)(sb_refusals - sb_refusals_held);
+}
+#endif
+
 static void test_v19_wire(void) {
     static BattleRequest r, d;
     static Battle b;
@@ -10018,6 +10378,9 @@ int main(void) {
 #ifdef GC_TEST_V20
     return test_v20_life_orb();  // only the saved V20 cases (docs/items.md 14.8)
 #endif
+#ifdef GC_TEST_SHELL_BELL
+    return test_v21_shell_bell();  // only the Shell Bell cases (docs/shell-bell.md 8)
+#endif
     test_request_roundtrip();
     test_messages();
     test_core();
@@ -10151,6 +10514,7 @@ int main(void) {
     test_v20_wire();
     test_v20_rules();
     test_v20_paths();
+    test_c1a_lost();
     test_v19_wire();
     test_v19_formats();
     puts("battle tests passed");
