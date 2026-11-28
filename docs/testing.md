@@ -441,3 +441,13 @@ V17 expectation now refuses a decoder-refused record. Frontier adds
 `gc_contact_drain_reference.c` (6, `GC contact drain reference`) and
 `gc_v21_fix_export.c` (4, `GC V21 fix export`). Expansion: Shell Bell 34/34, V21 references 2/2, Life Orb (`GC V20 reference`) 27/27, the new contact drain references 6/6, all `GC V21` exporter and reference tests 13/13. `make
 check`: 7,053 tests: PASS 4,137 (+10, the new ones), FAILED 2,455, KNOWN_FAILING 19, TO_DO 419, EXPECT_FAILING 9, ASSUMPTION_FAIL 14; against M4-B1c-1b no test changed status. Traces V11-V21 unchanged.
+
+M4-B1c-1b-fix2 (branches `milestone4b1c1b-fix2`, docs only, and
+`frontier-gc-m4b1c1b-fix2`, [items](items.md) section 19): Frontier adds
+`gc_imposter_life_orb_export.c` (8, `GC Imposter Life Orb export`: V20 / V21,
+both sides, strict on / off, reserves and Triple / Rotation slots, the
+controls, V17-V19, the Frontier tally) and `gc_imposter_life_orb_reference.c`
+(3, `GC Imposter Life Orb reference`); `gc_v21_fix_export.c` drops Life Orb
+from its "keeps its verdict" list. Expansion: the new Imposter Life Orb references 3/3 and exporter tests 8/8; Shell Bell 34/34, V21 references 2/2, Life Orb (`GC V20 reference`) 27/27, contact drain 6/6, every `GC V20` test 39/39 and `GC V21` test 13/13. `make check`: 7,064 tests: PASS 4,148 (+11: the new ones, and the renamed `GC V21 fix export` test), FAILED 2,455, KNOWN_FAILING 19, TO_DO 419, EXPECT_FAILING 9, ASSUMPTION_FAIL 14; against M4-B1c-1b-fix no test changed status (the 2,455 failures are the same tests).
+Exporter mutations: 5 killed (no gate, i.e. the code before the fix; the loss read at the end of the turn; the loss read as a heal; Imposter off beside any HP record; the gate given to Color Change too). GC Native rerun (no GC code change): all pass,
+traces V11-V21 unchanged.

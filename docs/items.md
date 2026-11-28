@@ -1470,3 +1470,83 @@ kept ([Shell Bell](shell-bell.md) section 12):
 - Exporter: Imposter beside a V21 Shell Bell turns every item off (strict
   items: refused).
 - `battle_init` checks item blocks from V17, as the encoder and the decoder.
+
+## 19. M4-B1c-1b-fix2: Imposter beside Life Orb (exporter gate)
+
+Branches `milestone4b1c1b-fix2` (documentation only) / `frontier-gc-m4b1c1b-fix2`.
+This is a safe normalisation added to the V20 and V21 exporter. Request/APP
+V20 and V21, their layouts, the GC battle code (no source change:
+`gamecube/`, `protocol/` and `tools/` equal to M4-B1c-1b-fix) and release 13
+are unchanged; a request the GC accepted before is read as before.
+
+### 19.1 The finding (Codex's re-review of M4-B1c-1b-fix, MAJOR)
+
+Imposter copies its target's ability on entry. In the reference a copied
+Sheer Force skips Life Orb's loss after the moves it boosts
+(`MOVEEND_SHEER_FORCE` jumps past `MOVEEND_LIFE_ORB_SHELL_BELL`) and a copied
+Magic Guard stops it (`TryLifeOrb`); the copy follows the target and its
+switches. Expansion, this build (`gc_imposter_life_orb_reference.c`, 3 tests):
+
+| Holder: Ditto, Imposter, Life Orb, 100 / 400 HP | Life Orb loss | HP after |
+|---|---|---|
+| against Nidoking (Sheer Force), Flamethrower (boosted) | none | 100 |
+| against Nidoking (Sheer Force), Tackle (not boosted) | 40 | 60 |
+| against Clefable (Magic Guard), Tackle | none | 100 |
+| Ditto with Limber, Flamethrower | 40 | 60 |
+
+The GC runs neither copy. `HpItemAbility` gated Imposter only beside typed
+records (V18) and heal-dealt records (V21 Shell Bell), so the exporter
+accepted an Imposter Life Orb holder: V20 / V21, the player's / the
+opponent's, strict items on / off, all 8 built with items simulated. The
+exporter's own request bytes, decoded and run by GC Native (Flamethrower):
+Life Orb 40, 60 HP in all four non-strict requests, where the reference
+keeps 100.
+
+### 19.2 The fix
+
+`HpItemAbility` (Frontier `src/frontier_gc_battle.c`): Imposter turns every
+item off beside an after-move damage record (`BITEM_HP` with
+`BITIME_AFTER_MOVE` and `BIHP_DAMAGE`: Life Orb's loss, V20 and V21), next
+to its typed (V18) and heal-dealt (V21) gates. The gate is the holder's, not
+the foe's: the foe's starting ability is not checked (switches, and Magic
+Guard as well as Sheer Force, change the outcome). Strict items refuse the
+battle ("Strict items: item ability: かわりもの"); otherwise the existing
+all-items-off path: the held item id and its records stay in the request,
+`RULE_IGNORE_ITEMS` is set, and both screens say "ALL ITEMS OFF: かわりもの".
+
+After the fix: the 4 non-strict requests are built with items off for
+Imposter, the 4 strict ones refused; GC Native on the new requests: no
+Life Orb event, 100 HP. That is the normalised battle (no item runs, so no
+Life Orb boost either), not the reference's per-move result, and it is
+announced as such.
+
+### 19.3 What stays as it was
+
+| Case | Verdict (V20 and V21) |
+|---|---|
+| Imposter with no item, Leftovers, Focus Sash, Sitrus Berry | simulated |
+| Imposter with Choice Scarf | every item off for the item (unsupported), as before |
+| Imposter with Shell Bell (V21) | every item off (the M4-B1c-1b-fix gate); V20: Shell Bell unsupported |
+| Life Orb without Imposter (Ditto with Limber, Snorlax, Kecleon with Color Change), strict items too | simulated |
+| Magic Guard with Shell Bell (V21) | simulated |
+| Magic Guard, Sheer Force, Trace with Life Orb | every item off for that ability |
+| V17-V19 with Life Orb | unsupported item (every item off for Life Orb), Imposter or not |
+
+### 19.4 Verification
+
+| Check | Result |
+|---|---|
+| Exporter (`gc_imposter_life_orb_export.c`, 8 tests) | the 8 conditions; a Double reserve (both sides) and Triple / Rotation slots 2 and 3 (both sides); any foe ability; the controls above; V17-V19; the Frontier tally |
+| Expansion | the new Imposter Life Orb references 3/3 and exporter tests 8/8; Shell Bell 34/34, V21 references 2/2, Life Orb (`GC V20 reference`) 27/27, contact drain 6/6, every `GC V20` test 39/39 and `GC V21` test 13/13 |
+| GC Native (rerun, code unchanged) | -O2 -Werror, ASan/UBSan, presentation, `tools/v20-tests.sh` (14), `tools/shell-bell-tests.sh` (17 cases, 20 effect checks, 12 refusals), `test_fix_contact_drain`, `test_fix_item_init` (V17-V21): pass; fixed-seed traces V11-V21 equal to M4-B1c-1b |
+| Frontier `make check` | 7,064 tests: PASS 4,148 (+11: the new ones, and the renamed `GC V21 fix export` test), FAILED 2,455, KNOWN_FAILING 19, TO_DO 419, EXPECT_FAILING 9, ASSUMPTION_FAIL 14; against M4-B1c-1b-fix no test changed status (the 2,455 failures are the same tests) |
+| Mutations (exporter) | 5 killed (no gate, i.e. the code before the fix; the loss read at the end of the turn; the loss read as a heal; Imposter off beside any HP record; the gate given to Color Change too) |
+| Battle Frontier sets (2,040, against a plain Snorlax) | V20 and V21 alike: 1,996 requests built; 1,118 run their items as held (no normalisation); 1,118 built with strict items; 130 start with every strict rule (items, abilities, moves); 126 run Life Orb; 0 Shell Bell; 3 sets have Imposter (Choice Scarf, Focus Band, Focus Sash), none with Life Orb, so no figure changes (equal to section 15.8) |
+| Sizes | ROM text + data 26,374,725 B (+88 over M4-B1c-1b-fix); Labs and debug menu unchanged; DOL not rebuilt (no GC code change: the M4-B1c-1b-fix DOL, 364,384 B) |
+
+### 19.5 Not covered
+
+- The GC still runs no ability copy; any Imposter holder of a record whose
+  outcome a copied ability changes must be gated in the exporter like this.
+- Life Orb's damage factor beside Imposter is not modelled either: the whole
+  battle runs with items off.

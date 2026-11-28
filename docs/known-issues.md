@@ -323,8 +323,19 @@
   the contact statuses, so a holder at low HP could faint before draining
   (and before Shell Bell). V20 and older keep that order.
 - Fixed: Imposter beside a V21 Shell Bell was simulated; it now turns every
-  item off (strict items: refused). Imposter beside Life Orb keeps its V20
-  verdict (simulated), although Imposter could copy Sheer Force.
+  item off (strict items: refused). Imposter beside Life Orb kept its V20
+  verdict (simulated), although Imposter could copy Sheer Force: fixed in
+  M4-B1c-1b-fix2 (below).
 - Fixed: `battle_init` now checks item blocks from V17 (V18 before).
 - When a contact drain knocks the target out, its faint is announced before
   the drain (the ABL-G04 order); HP and outcome are the reference's.
+
+## M4-B1c-1b-fix2 (release 13 kept, exporter only)
+
+- Fixed (exporter, V20 and V21): an Imposter Life Orb holder was simulated,
+  so the GC took Life Orb's loss where the reference skips it (a copied
+  Sheer Force after a boosted move) or stops it (a copied Magic Guard). It
+  now turns every item off (strict items: refused). No request format or GC
+  battle change.
+- The GC still runs no ability copy (Imposter, Trace ...); the exporter
+  gates each record such a copy could change.

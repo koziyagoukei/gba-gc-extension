@@ -29,7 +29,7 @@
 
 ## いのちのたまとの組み合わせ（M4-B1c-0b、V20）
 
-`TEST_CONFIRMED`（Expansion参照とExporter試験）。Expansionでは、マジックガードは最終補正を残してHP減少だけを止め、ちからずくは追加効果が対象になる技だけ減少を止め（補正は両方掛かる）、ぶきようは補正も減少も止める。いえきで抑制すると通常どおり。GC V20はこれらの特性を実行しないため、所持者がいる戦闘では全持ち物をオフにする（strictは拒否）：マジックガードは既存 `HpItemAbility`（ダメージのHPレコード）、ちからずくは技終了HPレコードの所持者に追加、ぶきようは既存 `ItemAbility`。ちからずくをすべての技で減少なしと扱う実装はしない。かがくへんかガスは未対応特性（strictで拒否）。[Exporter](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/8219d703a08acc659a919709ba94ce0832da52ca/src/frontier_gc_battle.c#L1800) · [Exporter試験](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/8219d703a08acc659a919709ba94ce0832da52ca/test/battle/gc_life_orb_export.c#L92) · [仕様](../items.md#14-m4-b1c-0b-life-orb-in-request-v20)
+`TEST_CONFIRMED`（Expansion参照とExporter試験）。Expansionでは、マジックガードは最終補正を残してHP減少だけを止め、ちからずくは追加効果が対象になる技だけ減少を止め（補正は両方掛かる）、ぶきようは補正も減少も止める。いえきで抑制すると通常どおり。GC V20はこれらの特性を実行しないため、所持者がいる戦闘では全持ち物をオフにする（strictは拒否）：マジックガードは既存 `HpItemAbility`（ダメージのHPレコード）、ちからずくは技終了HPレコードの所持者に追加、ぶきようは既存 `ItemAbility`。ちからずくをすべての技で減少なしと扱う実装はしない。B1c-1b-fix2：**かわりもの**も、技終了時のHP減少レコード（`BITEM_HP`・`BITIME_AFTER_MOVE`・`BIHP_DAMAGE`、V20・V21のいのちのたま）の所持者なら全持ち物オフ（strictは拒否）。コピーしたちからずくは対象技の後の減少を飛ばし、コピーしたマジックガードは減少を止める（Expansion参照3件）。相手の初期特性では判定しない。Request形式とGC戦闘処理は変更なし。[記録](../items.md#19-m4-b1c-1b-fix2-imposter-beside-life-orb-exporter-gate)かがくへんかガスは未対応特性（strictで拒否）。[Exporter](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/8219d703a08acc659a919709ba94ce0832da52ca/src/frontier_gc_battle.c#L1800) · [Exporter試験](https://github.com/koziyagoukei/PokeEm-expansion-CanuseJP/blob/8219d703a08acc659a919709ba94ce0832da52ca/test/battle/gc_life_orb_export.c#L92) · [仕様](../items.md#14-m4-b1c-0b-life-orb-in-request-v20)
 
 ## かいがらのすずとの組み合わせ（M4-B1c-1b／fix、V21）
 

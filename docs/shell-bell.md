@@ -458,8 +458,9 @@ items start in V17, the V19-V21 records do not.
 ### 12.5 Not covered
 
 - Life Orb with Imposter (V20 and V21): Imposter could copy Sheer Force,
-  which skips Life Orb's loss; the V20 verdict (simulated) is kept, as the
-  review asked V20 to stay; recorded for a later stage.
+  which skips Life Orb's loss; the V20 verdict (simulated) was kept here.
+  Closed in M4-B1c-1b-fix2 ([items](items.md) section 19): Imposter beside
+  an after-move damage record now turns every item off (strict: refused).
 - The target's faint is announced before the drain when a contact drain
   knocks it out (the ABL-G04 order of `EV_FAINT`); HP and outcome are the
   reference's.
